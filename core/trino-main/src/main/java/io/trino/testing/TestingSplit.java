@@ -21,6 +21,7 @@ import io.trino.spi.connector.ConnectorSplit;
 
 import java.util.List;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
 import static io.airlift.slice.SizeOf.instanceSize;
 
@@ -71,9 +72,12 @@ public class TestingSplit
     }
 
     @Override
-    public Object getInfo()
+    public String toString()
     {
-        return this;
+        return toStringHelper(this)
+                .add("remotelyAccessible", remotelyAccessible)
+                .add("addresses", addresses)
+                .toString();
     }
 
     @Override

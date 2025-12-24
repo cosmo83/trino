@@ -13,6 +13,7 @@
  */
 package io.trino.sql.gen;
 
+import com.google.common.base.CharMatcher;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Primitives;
@@ -67,6 +68,14 @@ import static java.lang.String.format;
 
 public final class BytecodeUtils
 {
+    private static final CharMatcher DISALLOWED_IDENTIFIER_CHARS = CharMatcher.inRange('a', 'z')
+            .or(CharMatcher.inRange('A', 'Z'))
+            .or(CharMatcher.inRange('0', '9'))
+            .or(CharMatcher.is('_'))
+            .or(CharMatcher.is('$'))
+            .negate()
+            .precomputed();
+
     private BytecodeUtils() {}
 
     public static BytecodeNode ifWasNullPopAndGoto(Scope scope, LabelNode label, Class<?> returnType, Class<?>... stackArgsToPop)
@@ -163,8 +172,8 @@ public final class BytecodeUtils
     {
         return generateInvocation(
                 scope,
-                resolvedFunction.getSignature().getName().getFunctionName(),
-                resolvedFunction.getFunctionNullability(),
+                resolvedFunction.signature().getName().getFunctionName(),
+                resolvedFunction.functionNullability(),
                 invocationConvention -> functionManager.getScalarFunctionImplementation(resolvedFunction, invocationConvention),
                 arguments,
                 binder);
@@ -211,9 +220,9 @@ public final class BytecodeUtils
     {
         return generateFullInvocation(
                 scope,
-                resolvedFunction.getSignature().getName().getFunctionName(),
-                resolvedFunction.getFunctionNullability(),
-                resolvedFunction.getSignature().getArgumentTypes().stream()
+                resolvedFunction.signature().getName().getFunctionName(),
+                resolvedFunction.functionNullability(),
+                resolvedFunction.signature().getArgumentTypes().stream()
                         .map(FunctionType.class::isInstance)
                         .collect(toImmutableList()),
                 invocationConvention -> functionManager.getScalarFunctionImplementation(resolvedFunction, invocationConvention),
@@ -452,7 +461,7 @@ public final class BytecodeUtils
      */
     public static String sanitizeName(String name)
     {
-        return name.replaceAll("[^A-Za-z0-9_$]", "_");
+        return DISALLOWED_IDENTIFIER_CHARS.replaceFrom(name, '_');
     }
 
     public static BytecodeNode generateWrite(CallSiteBinder callSiteBinder, Scope scope, Variable wasNullVariable, Type type)
@@ -470,9 +479,9 @@ public final class BytecodeUtils
         // use temp variables to re-shuffle the stack to the right shape before Type.writeXXX is called
         // Unfortunately, because of the assumptions made by try_cast, we can't get around it yet.
         // TODO: clean up once try_cast is fixed
-        Variable tempValue = scope.createTempVariable(valueJavaType);
-        Variable tempOutput = scope.createTempVariable(BlockBuilder.class);
-        return new BytecodeBlock()
+        Variable tempValue = scope.getOrCreateTempVariable(valueJavaType);
+        Variable tempOutput = scope.getOrCreateTempVariable(BlockBuilder.class);
+        BytecodeBlock block = new BytecodeBlock()
                 .comment("if (wasNull)")
                 .append(new IfStatement()
                         .condition(wasNullVariable)
@@ -489,5 +498,8 @@ public final class BytecodeUtils
                                 .getVariable(tempOutput)
                                 .getVariable(tempValue)
                                 .invokeInterface(Type.class, methodName, void.class, BlockBuilder.class, valueJavaType)));
+        scope.releaseTempVariableForReuse(tempOutput);
+        scope.releaseTempVariableForReuse(tempValue);
+        return block;
     }
 }

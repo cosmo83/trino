@@ -40,6 +40,7 @@ public class OperatorStats
     private final int pipelineId;
     private final int operatorId;
     private final PlanNodeId planNodeId;
+    private final Optional<PlanNodeId> sourceId;
     private final String operatorType;
 
     private final long totalDrivers;
@@ -52,7 +53,6 @@ public class OperatorStats
     private final Duration physicalInputReadTime;
     private final DataSize internalNetworkInputDataSize;
     private final long internalNetworkInputPositions;
-    private final DataSize rawInputDataSize;
     private final DataSize inputDataSize;
     private final long inputPositions;
     private final double sumSquaredInputPositions;
@@ -66,6 +66,7 @@ public class OperatorStats
     private final long dynamicFilterSplitsProcessed;
     private final Metrics metrics;
     private final Metrics connectorMetrics;
+    private final Metrics pipelineMetrics;
 
     private final DataSize physicalWrittenDataSize;
 
@@ -94,6 +95,7 @@ public class OperatorStats
             @JsonProperty("pipelineId") int pipelineId,
             @JsonProperty("operatorId") int operatorId,
             @JsonProperty("planNodeId") PlanNodeId planNodeId,
+            @JsonProperty("sourceId") Optional<PlanNodeId> sourceId,
             @JsonProperty("operatorType") String operatorType,
 
             @JsonProperty("totalDrivers") long totalDrivers,
@@ -106,7 +108,6 @@ public class OperatorStats
             @JsonProperty("physicalInputReadTime") Duration physicalInputReadTime,
             @JsonProperty("internalNetworkInputDataSize") DataSize internalNetworkInputDataSize,
             @JsonProperty("internalNetworkInputPositions") long internalNetworkInputPositions,
-            @JsonProperty("rawInputDataSize") DataSize rawInputDataSize,
             @JsonProperty("inputDataSize") DataSize inputDataSize,
             @JsonProperty("inputPositions") long inputPositions,
             @JsonProperty("sumSquaredInputPositions") double sumSquaredInputPositions,
@@ -120,6 +121,7 @@ public class OperatorStats
             @JsonProperty("dynamicFilterSplitsProcessed") long dynamicFilterSplitsProcessed,
             @JsonProperty("metrics") Metrics metrics,
             @JsonProperty("connectorMetrics") Metrics connectorMetrics,
+            @JsonProperty("pipelineMetrics") Metrics pipelineMetrics,
 
             @JsonProperty("physicalWrittenDataSize") DataSize physicalWrittenDataSize,
 
@@ -148,6 +150,7 @@ public class OperatorStats
         checkArgument(operatorId >= 0, "operatorId is negative");
         this.operatorId = operatorId;
         this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
+        this.sourceId = requireNonNull(sourceId, "sourceId is null");
         this.operatorType = requireNonNull(operatorType, "operatorType is null");
 
         this.totalDrivers = totalDrivers;
@@ -160,7 +163,6 @@ public class OperatorStats
         this.physicalInputReadTime = requireNonNull(physicalInputReadTime, "physicalInputReadTime is null");
         this.internalNetworkInputDataSize = requireNonNull(internalNetworkInputDataSize, "internalNetworkInputDataSize is null");
         this.internalNetworkInputPositions = internalNetworkInputPositions;
-        this.rawInputDataSize = requireNonNull(rawInputDataSize, "rawInputDataSize is null");
         this.inputDataSize = requireNonNull(inputDataSize, "inputDataSize is null");
         checkArgument(inputPositions >= 0, "inputPositions is negative");
         this.inputPositions = inputPositions;
@@ -176,6 +178,7 @@ public class OperatorStats
         this.dynamicFilterSplitsProcessed = dynamicFilterSplitsProcessed;
         this.metrics = requireNonNull(metrics, "metrics is null");
         this.connectorMetrics = requireNonNull(connectorMetrics, "connectorMetrics is null");
+        this.pipelineMetrics = requireNonNull(pipelineMetrics, "pipelineMetrics is null");
 
         this.physicalWrittenDataSize = requireNonNull(physicalWrittenDataSize, "physicalWrittenDataSize is null");
 
@@ -221,6 +224,12 @@ public class OperatorStats
     public PlanNodeId getPlanNodeId()
     {
         return planNodeId;
+    }
+
+    @JsonProperty
+    public Optional<PlanNodeId> getSourceId()
+    {
+        return sourceId;
     }
 
     @JsonProperty
@@ -281,12 +290,6 @@ public class OperatorStats
     public long getInternalNetworkInputPositions()
     {
         return internalNetworkInputPositions;
-    }
-
-    @JsonProperty
-    public DataSize getRawInputDataSize()
-    {
-        return rawInputDataSize;
     }
 
     @JsonProperty
@@ -353,6 +356,12 @@ public class OperatorStats
     public Metrics getConnectorMetrics()
     {
         return connectorMetrics;
+    }
+
+    @JsonProperty
+    public Metrics getPipelineMetrics()
+    {
+        return pipelineMetrics;
     }
 
     @JsonProperty
@@ -434,12 +443,22 @@ public class OperatorStats
         return info;
     }
 
-    public OperatorStats add(OperatorStats operatorStats)
+    public OperatorStats addFillingPipelineMetrics(OperatorStats operators, Metrics pipelineMetrics)
     {
-        return add(ImmutableList.of(operatorStats));
+        return add(ImmutableList.of(operators), Optional.of(pipelineMetrics));
+    }
+
+    public OperatorStats addFillingPipelineMetrics(Iterable<OperatorStats> operators, Metrics pipelineMetrics)
+    {
+        return add(operators, Optional.of(pipelineMetrics));
     }
 
     public OperatorStats add(Iterable<OperatorStats> operators)
+    {
+        return add(operators, Optional.empty());
+    }
+
+    private OperatorStats add(Iterable<OperatorStats> operators, Optional<Metrics> pipelineMetrics)
     {
         long totalDrivers = this.totalDrivers;
 
@@ -451,7 +470,6 @@ public class OperatorStats
         long physicalInputReadTimeNanos = this.physicalInputReadTime.roundTo(NANOSECONDS);
         long internalNetworkInputDataSize = this.internalNetworkInputDataSize.toBytes();
         long internalNetworkInputPositions = this.internalNetworkInputPositions;
-        long rawInputDataSize = this.rawInputDataSize.toBytes();
         long inputDataSize = this.inputDataSize.toBytes();
         long inputPositions = this.inputPositions;
         double sumSquaredInputPositions = this.sumSquaredInputPositions;
@@ -465,6 +483,7 @@ public class OperatorStats
         long dynamicFilterSplitsProcessed = this.dynamicFilterSplitsProcessed;
         Metrics.Accumulator metricsAccumulator = Metrics.accumulator().add(this.getMetrics());
         Metrics.Accumulator connectorMetricsAccumulator = Metrics.accumulator().add(this.getConnectorMetrics());
+        Optional<Metrics.Accumulator> pipelineMetricsAccumulator = pipelineMetrics.isPresent() ? Optional.empty() : Optional.of(Metrics.accumulator().add(this.getPipelineMetrics()));
 
         long physicalWrittenDataSize = this.physicalWrittenDataSize.toBytes();
 
@@ -500,7 +519,6 @@ public class OperatorStats
             physicalInputReadTimeNanos += operator.getPhysicalInputReadTime().roundTo(NANOSECONDS);
             internalNetworkInputDataSize += operator.getInternalNetworkInputDataSize().toBytes();
             internalNetworkInputPositions += operator.getInternalNetworkInputPositions();
-            rawInputDataSize += operator.getRawInputDataSize().toBytes();
             inputDataSize += operator.getInputDataSize().toBytes();
             inputPositions += operator.getInputPositions();
             sumSquaredInputPositions += operator.getSumSquaredInputPositions();
@@ -514,6 +532,7 @@ public class OperatorStats
             dynamicFilterSplitsProcessed += operator.getDynamicFilterSplitsProcessed();
             metricsAccumulator.add(operator.getMetrics());
             connectorMetricsAccumulator.add(operator.getConnectorMetrics());
+            pipelineMetricsAccumulator.ifPresent(accumulator -> accumulator.add(operator.getPipelineMetrics()));
 
             physicalWrittenDataSize += operator.getPhysicalWrittenDataSize().toBytes();
 
@@ -548,6 +567,7 @@ public class OperatorStats
                 pipelineId,
                 operatorId,
                 planNodeId,
+                sourceId,
                 operatorType,
 
                 totalDrivers,
@@ -560,7 +580,6 @@ public class OperatorStats
                 new Duration(physicalInputReadTimeNanos, NANOSECONDS).convertToMostSuccinctTimeUnit(),
                 DataSize.ofBytes(internalNetworkInputDataSize),
                 internalNetworkInputPositions,
-                DataSize.ofBytes(rawInputDataSize),
                 DataSize.ofBytes(inputDataSize),
                 inputPositions,
                 sumSquaredInputPositions,
@@ -574,6 +593,7 @@ public class OperatorStats
                 dynamicFilterSplitsProcessed,
                 metricsAccumulator.get(),
                 connectorMetricsAccumulator.get(),
+                pipelineMetrics.orElseGet(() -> pipelineMetricsAccumulator.orElseThrow().get()),
 
                 DataSize.ofBytes(physicalWrittenDataSize),
 
@@ -626,6 +646,7 @@ public class OperatorStats
                 pipelineId,
                 operatorId,
                 planNodeId,
+                sourceId,
                 operatorType,
                 totalDrivers,
                 addInputCalls,
@@ -636,7 +657,6 @@ public class OperatorStats
                 physicalInputReadTime,
                 internalNetworkInputDataSize,
                 internalNetworkInputPositions,
-                rawInputDataSize,
                 inputDataSize,
                 inputPositions,
                 sumSquaredInputPositions,
@@ -648,6 +668,97 @@ public class OperatorStats
                 dynamicFilterSplitsProcessed,
                 metrics,
                 connectorMetrics,
+                pipelineMetrics,
+                physicalWrittenDataSize,
+                blockedWall,
+                finishCalls,
+                finishWall,
+                finishCpu,
+                userMemoryReservation,
+                revocableMemoryReservation,
+                peakUserMemoryReservation,
+                peakRevocableMemoryReservation,
+                peakTotalMemoryReservation,
+                spilledDataSize,
+                blockedReason,
+                info);
+    }
+
+    public OperatorStats withPipelineMetrics(Metrics pipelineMetrics)
+    {
+        return new OperatorStats(
+                stageId,
+                pipelineId,
+                operatorId,
+                planNodeId,
+                sourceId,
+                operatorType,
+                totalDrivers,
+                addInputCalls,
+                addInputWall,
+                addInputCpu,
+                physicalInputDataSize,
+                physicalInputPositions,
+                physicalInputReadTime,
+                internalNetworkInputDataSize,
+                internalNetworkInputPositions,
+                inputDataSize,
+                inputPositions,
+                sumSquaredInputPositions,
+                getOutputCalls,
+                getOutputWall,
+                getOutputCpu,
+                outputDataSize,
+                outputPositions,
+                dynamicFilterSplitsProcessed,
+                metrics,
+                connectorMetrics,
+                pipelineMetrics,
+                physicalWrittenDataSize,
+                blockedWall,
+                finishCalls,
+                finishWall,
+                finishCpu,
+                userMemoryReservation,
+                revocableMemoryReservation,
+                peakUserMemoryReservation,
+                peakRevocableMemoryReservation,
+                peakTotalMemoryReservation,
+                spilledDataSize,
+                blockedReason,
+                info);
+    }
+
+    public OperatorStats withConnectorSplitSourceMetrics(Metrics splitSourceMetrics)
+    {
+        return new OperatorStats(
+                stageId,
+                pipelineId,
+                operatorId,
+                planNodeId,
+                sourceId,
+                operatorType,
+                totalDrivers,
+                addInputCalls,
+                addInputWall,
+                addInputCpu,
+                physicalInputDataSize,
+                physicalInputPositions,
+                physicalInputReadTime,
+                internalNetworkInputDataSize,
+                internalNetworkInputPositions,
+                inputDataSize,
+                inputPositions,
+                sumSquaredInputPositions,
+                getOutputCalls,
+                getOutputWall,
+                getOutputCpu,
+                outputDataSize,
+                outputPositions,
+                dynamicFilterSplitsProcessed,
+                metrics,
+                connectorMetrics.mergeWith(splitSourceMetrics),
+                pipelineMetrics,
                 physicalWrittenDataSize,
                 blockedWall,
                 finishCalls,

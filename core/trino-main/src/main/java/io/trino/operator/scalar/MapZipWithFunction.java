@@ -18,6 +18,7 @@ import io.trino.metadata.SqlScalarFunction;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BufferedMapValueBuilder;
 import io.trino.spi.block.SqlMap;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.function.BoundSignature;
 import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.function.Signature;
@@ -59,7 +60,6 @@ public final class MapZipWithFunction
                         .argumentType(mapType(new TypeSignature("K"), new TypeSignature("V2")))
                         .argumentType(functionType(new TypeSignature("K"), new TypeSignature("V1"), new TypeSignature("V2"), new TypeSignature("V3")))
                         .build())
-                .nondeterministic()
                 .description("Merge two maps into a single map by applying the lambda function to the pair of values with the same key")
                 .build());
     }
@@ -112,6 +112,7 @@ public final class MapZipWithFunction
         return mapValueBuilder.build(maxOutputSize, (keyBuilder, valueBuilder) -> {
             // seekKey() can take non-trivial time when key is a complicated value, such as a long VARCHAR or ROW.
             boolean[] keyFound = new boolean[rightSize];
+            ValueBlock leftKeyBlock = leftRawKeyBlock.getUnderlyingValueBlock();
             for (int leftIndex = 0; leftIndex < leftSize; leftIndex++) {
                 Object key = readNativeValue(keyType, leftRawKeyBlock, leftRawOffset + leftIndex);
                 Object leftValue = readNativeValue(leftValueType, leftRawValueBlock, leftRawOffset + leftIndex);
@@ -125,11 +126,12 @@ public final class MapZipWithFunction
 
                 Object outputValue = function.apply(key, leftValue, rightValue);
 
-                keyType.appendTo(leftRawKeyBlock, leftRawOffset + leftIndex, keyBuilder);
+                keyBuilder.append(leftKeyBlock, leftRawKeyBlock.getUnderlyingValuePosition(leftRawOffset + leftIndex));
                 writeNativeValue(outputValueType, valueBuilder, outputValue);
             }
 
             // iterate over keys that only exists in rightMap
+            ValueBlock rightKeyBlock = rightRawKeyBlock.getUnderlyingValueBlock();
             for (int rightIndex = 0; rightIndex < rightSize; rightIndex++) {
                 if (!keyFound[rightIndex]) {
                     Object key = readNativeValue(keyType, rightRawKeyBlock, rightRawOffset + rightIndex);
@@ -137,7 +139,7 @@ public final class MapZipWithFunction
 
                     Object outputValue = function.apply(key, null, rightValue);
 
-                    keyType.appendTo(rightRawKeyBlock, rightRawOffset + rightIndex, keyBuilder);
+                    keyBuilder.append(rightKeyBlock, rightRawKeyBlock.getUnderlyingValuePosition(rightRawOffset + rightIndex));
                     writeNativeValue(outputValueType, valueBuilder, outputValue);
                 }
             }

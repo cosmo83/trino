@@ -19,7 +19,7 @@ import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slices;
 import io.trino.cost.StatsAndCosts;
 import io.trino.operator.RetryPolicy;
-import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Booleans;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Row;
 import io.trino.sql.planner.plan.IndexJoinNode;
@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.spi.type.VarcharType.VARCHAR;
@@ -130,8 +131,6 @@ public class TestTopologicalOrderSubPlanVisitor
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
                 ImmutableMap.of(),
                 Optional.empty());
     }
@@ -146,8 +145,6 @@ public class TestTopologicalOrderSubPlanVisitor
                 right.getOutputSymbols().get(0),
                 new Symbol(UNKNOWN, id),
                 Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
                 Optional.empty());
     }
 
@@ -158,9 +155,7 @@ public class TestTopologicalOrderSubPlanVisitor
                 IndexJoinNode.Type.INNER,
                 left,
                 right,
-                ImmutableList.of(),
-                Optional.empty(),
-                Optional.empty());
+                ImmutableList.of());
     }
 
     private static SpatialJoinNode spatialJoin(String id, PlanNode left, PlanNode right)
@@ -171,7 +166,7 @@ public class TestTopologicalOrderSubPlanVisitor
                 left,
                 right,
                 left.getOutputSymbols(),
-                BooleanLiteral.TRUE_LITERAL,
+                Booleans.TRUE,
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty());
@@ -195,12 +190,13 @@ public class TestTopologicalOrderSubPlanVisitor
                 plan,
                 ImmutableSet.of(symbol),
                 SOURCE_DISTRIBUTION,
-                Optional.empty(),
+                OptionalInt.empty(),
                 ImmutableList.of(valuesNodeId),
                 new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of(symbol)),
+                OptionalInt.empty(),
                 StatsAndCosts.empty(),
                 ImmutableList.of(),
-                ImmutableList.of(),
+                ImmutableMap.of(),
                 Optional.empty());
         return new SubPlan(planFragment, children);
     }

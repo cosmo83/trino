@@ -36,19 +36,24 @@ import static java.math.BigDecimal.TWO;
 
 @DefunctConfig({
         "experimental.big-query-max-task-memory",
-        "task.max-memory",
+        "sink.new-implementation",
         "task.http-notification-threads",
         "task.info-refresh-max-wait",
-        "task.operator-pre-allocated-memory",
-        "sink.new-implementation",
         "task.legacy-scheduling-behavior",
-        "task.level-absolute-priority"})
+        "task.level-absolute-priority",
+        "task.max-memory",
+        "task.operator-pre-allocated-memory",
+        "task.shard.max-threads",
+        "task.verbose-stats",
+        "task.statistics-cpu-timer-enabled",
+})
 public class TaskManagerConfig
 {
+    public static final int MAX_WRITER_COUNT = 64;
+
     private boolean threadPerDriverSchedulerEnabled = true;
     private boolean perOperatorCpuTimerEnabled = true;
     private boolean taskCpuTimerEnabled = true;
-    private boolean statisticsCpuTimerEnabled = true;
     private DataSize maxPartialAggregationMemoryUsage = DataSize.of(16, Unit.MEGABYTE);
     private DataSize maxPartialTopNMemory = DataSize.of(16, Unit.MEGABYTE);
     private DataSize maxLocalExchangeBufferSize = DataSize.of(128, Unit.MEGABYTE);
@@ -67,7 +72,7 @@ public class TaskManagerConfig
     private int pagePartitioningBufferPoolSize = 8;
 
     private Duration clientTimeout = new Duration(2, TimeUnit.MINUTES);
-    private Duration infoMaxAge = new Duration(15, TimeUnit.MINUTES);
+    private Duration infoMaxAge = new Duration(5, TimeUnit.MINUTES);
 
     private Duration statusRefreshMaxWait = new Duration(1, TimeUnit.SECONDS);
     private Duration infoUpdateInterval = new Duration(3, TimeUnit.SECONDS);
@@ -85,7 +90,7 @@ public class TaskManagerConfig
     // available processor. Whereas, on the worker nodes due to more available processors, the default value could
     // be above 1. Therefore, it can cause error due to config mismatch during execution. Additionally, cap
     // it to 64 in order to avoid small pages produced by local partitioning exchanges.
-    private int maxWriterCount = clamp(nextPowerOfTwo(getAvailablePhysicalProcessorCount() * 2), 2, 64);
+    private int maxWriterCount = clamp(nextPowerOfTwo(getAvailablePhysicalProcessorCount() * 2), 2, MAX_WRITER_COUNT);
     // Default value of task concurrency should be above 1, otherwise it can create a plan with a single gather
     // exchange node on the coordinator due to a single available processor. Whereas, on the worker nodes due to
     // more available processors, the default value could be above 1. Therefore, it can cause error due to config
@@ -117,7 +122,7 @@ public class TaskManagerConfig
     }
 
     @MinDuration("1ms")
-    @MaxDuration("10s")
+    @MaxDuration("60s")
     @NotNull
     public Duration getStatusRefreshMaxWait()
     {
@@ -167,7 +172,6 @@ public class TaskManagerConfig
         return perOperatorCpuTimerEnabled;
     }
 
-    @LegacyConfig("task.verbose-stats")
     @Config("task.per-operator-cpu-timer-enabled")
     public TaskManagerConfig setPerOperatorCpuTimerEnabled(boolean perOperatorCpuTimerEnabled)
     {
@@ -184,18 +188,6 @@ public class TaskManagerConfig
     public TaskManagerConfig setTaskCpuTimerEnabled(boolean taskCpuTimerEnabled)
     {
         this.taskCpuTimerEnabled = taskCpuTimerEnabled;
-        return this;
-    }
-
-    public boolean isStatisticsCpuTimerEnabled()
-    {
-        return statisticsCpuTimerEnabled;
-    }
-
-    @Config("task.statistics-cpu-timer-enabled")
-    public TaskManagerConfig setStatisticsCpuTimerEnabled(boolean statisticsCpuTimerEnabled)
-    {
-        this.statisticsCpuTimerEnabled = statisticsCpuTimerEnabled;
         return this;
     }
 
@@ -251,7 +243,6 @@ public class TaskManagerConfig
         return this;
     }
 
-    @NotNull
     public boolean isShareIndexLoading()
     {
         return shareIndexLoading;
@@ -284,7 +275,6 @@ public class TaskManagerConfig
         return maxWorkerThreads;
     }
 
-    @LegacyConfig("task.shard.max-threads")
     @Config("task.max-worker-threads")
     public TaskManagerConfig setMaxWorkerThreads(String maxWorkerThreads)
     {
@@ -523,9 +513,9 @@ public class TaskManagerConfig
     }
 
     @Config("task.http-response-threads")
-    public TaskManagerConfig setHttpResponseThreads(int httpResponseThreads)
+    public TaskManagerConfig setHttpResponseThreads(String httpResponseThreads)
     {
-        this.httpResponseThreads = httpResponseThreads;
+        this.httpResponseThreads = ThreadCountParser.DEFAULT.parse(httpResponseThreads);
         return this;
     }
 
@@ -536,9 +526,9 @@ public class TaskManagerConfig
     }
 
     @Config("task.http-timeout-threads")
-    public TaskManagerConfig setHttpTimeoutThreads(int httpTimeoutThreads)
+    public TaskManagerConfig setHttpTimeoutThreads(String httpTimeoutThreads)
     {
-        this.httpTimeoutThreads = httpTimeoutThreads;
+        this.httpTimeoutThreads = ThreadCountParser.DEFAULT.parse(httpTimeoutThreads);
         return this;
     }
 
@@ -550,9 +540,9 @@ public class TaskManagerConfig
 
     @Config("task.task-notification-threads")
     @ConfigDescription("Number of threads used for internal task event notifications")
-    public TaskManagerConfig setTaskNotificationThreads(int taskNotificationThreads)
+    public TaskManagerConfig setTaskNotificationThreads(String taskNotificationThreads)
     {
-        this.taskNotificationThreads = taskNotificationThreads;
+        this.taskNotificationThreads = ThreadCountParser.DEFAULT.parse(taskNotificationThreads);
         return this;
     }
 
@@ -564,9 +554,9 @@ public class TaskManagerConfig
 
     @Config("task.task-yield-threads")
     @ConfigDescription("Number of threads used for setting yield signals")
-    public TaskManagerConfig setTaskYieldThreads(int taskYieldThreads)
+    public TaskManagerConfig setTaskYieldThreads(String taskYieldThreads)
     {
-        this.taskYieldThreads = taskYieldThreads;
+        this.taskYieldThreads = ThreadCountParser.DEFAULT.parse(taskYieldThreads);
         return this;
     }
 
@@ -578,9 +568,9 @@ public class TaskManagerConfig
 
     @Config("task.driver-timeout-threads")
     @ConfigDescription("Number of threads used for timing out blocked drivers if the timeout is set")
-    public TaskManagerConfig setDriverTimeoutThreads(int driverTimeoutThreads)
+    public TaskManagerConfig setDriverTimeoutThreads(String driverTimeoutThreads)
     {
-        this.driverTimeoutThreads = driverTimeoutThreads;
+        this.driverTimeoutThreads = ThreadCountParser.DEFAULT.parse(driverTimeoutThreads);
         return this;
     }
 

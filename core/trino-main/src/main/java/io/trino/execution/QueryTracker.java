@@ -13,7 +13,6 @@
  */
 package io.trino.execution;
 
-import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.ThreadSafe;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.log.Logger;
@@ -22,8 +21,9 @@ import io.trino.Session;
 import io.trino.execution.QueryTracker.TrackedQuery;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
-import org.joda.time.DateTime;
+import org.weakref.jmx.Managed;
 
+import java.time.Instant;
 import java.util.Collection;
 import java.util.NoSuchElementException;
 import java.util.Optional;
@@ -34,6 +34,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.common.base.Preconditions.checkState;
 import static io.trino.SystemSessionProperties.getQueryMaxExecutionTime;
@@ -43,6 +44,7 @@ import static io.trino.spi.StandardErrorCode.ABANDONED_QUERY;
 import static io.trino.spi.StandardErrorCode.EXCEEDED_TIME_LIMIT;
 import static io.trino.spi.StandardErrorCode.SERVER_SHUTTING_DOWN;
 import static java.lang.String.format;
+import static java.util.Collections.unmodifiableCollection;
 import static java.util.Objects.requireNonNull;
 
 @ThreadSafe
@@ -55,6 +57,7 @@ public class QueryTracker<T extends TrackedQuery>
 
     private final ConcurrentMap<QueryId, T> queries = new ConcurrentHashMap<>();
     private final Queue<T> expirationQueue = new LinkedBlockingQueue<>();
+    private final AtomicInteger prunedQueriesCount = new AtomicInteger();
 
     private final Duration clientTimeout;
 
@@ -136,14 +139,14 @@ public class QueryTracker<T extends TrackedQuery>
 
     public Collection<T> getAllQueries()
     {
-        return ImmutableList.copyOf(queries.values());
+        return unmodifiableCollection(queries.values());
     }
 
     public T getQuery(QueryId queryId)
             throws NoSuchElementException
     {
         return tryGetQuery(queryId)
-                .orElseThrow(() -> new NoSuchElementException(queryId.toString()));
+                .orElseThrow(() -> new NoSuchElementException(queryId.id()));
     }
 
     public boolean hasQuery(QueryId queryId)
@@ -181,19 +184,20 @@ public class QueryTracker<T extends TrackedQuery>
             if (query.isDone()) {
                 continue;
             }
+            Instant now = Instant.now();
             Duration queryMaxRunTime = getQueryMaxRunTime(query.getSession());
             Duration queryMaxExecutionTime = getQueryMaxExecutionTime(query.getSession());
             Duration queryMaxPlanningTime = getQueryMaxPlanningTime(query.getSession());
-            Optional<DateTime> executionStartTime = query.getExecutionStartTime();
+            Optional<Instant> executionStartTime = query.getExecutionStartTime();
             Optional<Duration> planningTime = query.getPlanningTime();
-            DateTime createTime = query.getCreateTime();
-            if (executionStartTime.isPresent() && executionStartTime.get().plus(queryMaxExecutionTime.toMillis()).isBeforeNow()) {
+            Instant createTime = query.getCreateTime();
+            if (executionStartTime.isPresent() && executionStartTime.get().plusMillis(queryMaxExecutionTime.toMillis()).isBefore(now)) {
                 query.fail(new TrinoException(EXCEEDED_TIME_LIMIT, "Query exceeded the maximum execution time limit of " + queryMaxExecutionTime));
             }
             planningTime
                     .filter(duration -> duration.compareTo(queryMaxPlanningTime) > 0)
-                    .ifPresent(ignored -> query.fail(new TrinoException(EXCEEDED_TIME_LIMIT, "Query exceeded the maximum planning time limit of " + queryMaxPlanningTime)));
-            if (createTime.plus(queryMaxRunTime.toMillis()).isBeforeNow()) {
+                    .ifPresent(_ -> query.fail(new TrinoException(EXCEEDED_TIME_LIMIT, "Query exceeded the maximum planning time limit of " + queryMaxPlanningTime)));
+            if (createTime.plusMillis(queryMaxRunTime.toMillis()).isBefore(now)) {
                 query.fail(new TrinoException(EXCEEDED_TIME_LIMIT, "Query exceeded maximum time limit of " + queryMaxRunTime));
             }
         }
@@ -209,14 +213,19 @@ public class QueryTracker<T extends TrackedQuery>
         }
 
         int count = 0;
+        int prunedCount = 0;
         // we're willing to keep full info for up to maxQueryHistory queries
         for (T query : expirationQueue) {
             if (expirationQueue.size() - count <= maxQueryHistory) {
                 break;
             }
             query.pruneInfo();
+            if (query.isInfoPruned()) {
+                prunedCount++;
+            }
             count++;
         }
+        prunedQueriesCount.set(prunedCount);
     }
 
     /**
@@ -224,7 +233,7 @@ public class QueryTracker<T extends TrackedQuery>
      */
     private void removeExpiredQueries()
     {
-        DateTime timeHorizon = DateTime.now().minus(minQueryExpireAge.toMillis());
+        Instant timeHorizon = Instant.now().minusMillis(minQueryExpireAge.toMillis());
 
         // we're willing to keep queries beyond timeHorizon as long as we have fewer than maxQueryHistory
         while (expirationQueue.size() > maxQueryHistory) {
@@ -235,7 +244,7 @@ public class QueryTracker<T extends TrackedQuery>
 
             // expirationQueue is FIFO based on query end time. Stop when we see the
             // first query that's too young to expire
-            Optional<DateTime> endTime = query.getEndTime();
+            Optional<Instant> endTime = query.getEndTime();
             if (endTime.isEmpty()) {
                 // this shouldn't happen but it is better to be safe here
                 continue;
@@ -268,7 +277,7 @@ public class QueryTracker<T extends TrackedQuery>
                             "Query %s was abandoned by the client, as it may have exited or stopped checking for query results. Query results have not been accessed since %s: currentTime %s",
                             query.getQueryId(),
                             query.getLastHeartbeat(),
-                            DateTime.now())));
+                            Instant.now())));
                 }
             }
             catch (RuntimeException e) {
@@ -279,10 +288,28 @@ public class QueryTracker<T extends TrackedQuery>
 
     private boolean isAbandoned(T query)
     {
-        DateTime oldestAllowedHeartbeat = DateTime.now().minus(clientTimeout.toMillis());
-        DateTime lastHeartbeat = query.getLastHeartbeat();
+        Instant oldestAllowedHeartbeat = Instant.now().minusMillis(clientTimeout.toMillis());
+        Instant lastHeartbeat = query.getLastHeartbeat();
 
         return lastHeartbeat != null && lastHeartbeat.isBefore(oldestAllowedHeartbeat);
+    }
+
+    @Managed
+    public int getAllQueriesCount()
+    {
+        return queries.size();
+    }
+
+    @Managed
+    public int getExpiredQueriesCount()
+    {
+        return expirationQueue.size();
+    }
+
+    @Managed
+    public int getPrunedQueriesCount()
+    {
+        return prunedQueriesCount.get();
     }
 
     public interface TrackedQuery
@@ -293,19 +320,21 @@ public class QueryTracker<T extends TrackedQuery>
 
         Session getSession();
 
-        DateTime getCreateTime();
+        Instant getCreateTime();
 
-        Optional<DateTime> getExecutionStartTime();
+        Optional<Instant> getExecutionStartTime();
 
         Optional<Duration> getPlanningTime();
 
-        DateTime getLastHeartbeat();
+        Instant getLastHeartbeat();
 
-        Optional<DateTime> getEndTime();
+        Optional<Instant> getEndTime();
 
         void fail(Throwable cause);
 
         // XXX: This should be removed when the client protocol is improved, so that we don't need to hold onto so much query history
         void pruneInfo();
+
+        boolean isInfoPruned();
     }
 }

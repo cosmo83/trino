@@ -16,12 +16,14 @@ package io.trino.parquet.reader;
 import io.trino.parquet.DataPage;
 import io.trino.parquet.DictionaryPage;
 import io.trino.parquet.ParquetEncoding;
+import io.trino.parquet.ParquetReaderOptions;
 import io.trino.parquet.PrimitiveField;
 import io.trino.spi.block.Block;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.values.ValuesWriter;
 import org.apache.parquet.column.values.dictionary.DictionaryValuesWriter;
-import org.testng.annotations.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.util.List;
@@ -53,14 +55,15 @@ public class TestNestedColumnReader
                         descriptor.getMaxRepetitionLevel(),
                         descriptor.getMaxDefinitionLevel()),
                 field.getId());
-        ColumnReaderFactory columnReaderFactory = new ColumnReaderFactory(UTC);
+        ColumnReaderFactory columnReaderFactory = new ColumnReaderFactory(UTC, ParquetReaderOptions.defaultOptions());
         ColumnReader columnReader = columnReaderFactory.create(tesingField, newSimpleAggregatedMemoryContext());
         assertThat(columnReader).isInstanceOf(NestedColumnReader.class);
         return columnReader;
     }
 
     @Override
-    @Test(dataProvider = "dictionaryReadersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#dictionaryReadersWithPageVersions")
     public <T> void testSingleValueDictionaryNullableWithNoNullsUsingColumnStats(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -79,7 +82,8 @@ public class TestNestedColumnReader
         format.assertBlock(values, actual);
     }
 
-    @Test(dataProvider = "readersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#readersWithPageVersions")
     public <T> void testMultipleValuesPerPosition(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -106,7 +110,8 @@ public class TestNestedColumnReader
         format.assertBlock(values3, actual3, 0, 1, 3);
     }
 
-    @Test(dataProvider = "readersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#readersWithPageVersions")
     public <T> void testDefinitionLevelNullable(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -125,7 +130,8 @@ public class TestNestedColumnReader
         format.assertBlock(values1, actual1);
     }
 
-    @Test(dataProvider = "readersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#readersWithPageVersions")
     public <T> void testDefinitionLevelNullableWithNoNulls(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -144,7 +150,8 @@ public class TestNestedColumnReader
         format.assertBlock(values1, actual1);
     }
 
-    @Test(dataProvider = "readersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#readersWithPageVersions")
     public <T> void testDefinitionLevelNonNull(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -163,7 +170,8 @@ public class TestNestedColumnReader
         format.assertBlock(values1, actual1);
     }
 
-    @Test(dataProvider = "dictionaryReadersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#dictionaryReadersWithPageVersions")
     public <T> void testDefinitionLevelNullableWithDictionaries(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -183,7 +191,8 @@ public class TestNestedColumnReader
         format.assertBlock(values1, actual1);
     }
 
-    @Test(dataProvider = "dictionaryReadersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#dictionaryReadersWithPageVersions")
     public <T> void testDefinitionLevelNullableWithDictionariesAndNoNulls(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -203,7 +212,8 @@ public class TestNestedColumnReader
         format.assertBlock(values1, actual1);
     }
 
-    @Test(dataProvider = "dictionaryReadersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#dictionaryReadersWithPageVersions")
     public <T> void testDefinitionLevelNonNullWithDictionaries(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -223,7 +233,8 @@ public class TestNestedColumnReader
         format.assertBlock(values1, actual1);
     }
 
-    @Test(dataProvider = "dictionaryReadersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#dictionaryReadersWithPageVersions")
     public <T> void testSingleRowPerTwoPagesNonNull(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -247,7 +258,8 @@ public class TestNestedColumnReader
         format.assertBlock(values3, actual1, 0, 5, 3);
     }
 
-    @Test(dataProvider = "dictionaryReadersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#dictionaryReadersWithPageVersions")
     public <T> void testSingleRowPerTwoPagesNullable(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -271,7 +283,8 @@ public class TestNestedColumnReader
         format.assertBlock(values3, actual1, 0, 3, 2);
     }
 
-    @Test(dataProvider = "dictionaryReadersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#dictionaryReadersWithPageVersions")
     public <T> void testSingleRowPerMultiplePagesNonNull(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -295,7 +308,8 @@ public class TestNestedColumnReader
         format.assertBlock(values3, actual1, 0, 5, 3);
     }
 
-    @Test(dataProvider = "dictionaryReadersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#dictionaryReadersWithPageVersions")
     public <T> void testSingleRowPerMultiplePagesNullable(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -319,7 +333,8 @@ public class TestNestedColumnReader
         format.assertBlock(values3, actual1, 0, 3, 2);
     }
 
-    @Test(dataProvider = "dictionaryReadersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#dictionaryReadersWithPageVersions")
     public <T> void testSingleRowPerMultiplePagesNonNullSeek(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {
@@ -342,7 +357,8 @@ public class TestNestedColumnReader
         format.assertBlock(values3, actual1, 1, 0, 2);
     }
 
-    @Test(dataProvider = "dictionaryReadersWithPageVersions", dataProviderClass = TestingColumnReader.class)
+    @ParameterizedTest
+    @MethodSource("io.trino.parquet.reader.TestingColumnReader#dictionaryReadersWithPageVersions")
     public <T> void testSingleRowPerMultiplePagesNullableSeek(DataPageVersion version, ColumnReaderFormat<T> format)
             throws IOException
     {

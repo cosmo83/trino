@@ -48,7 +48,7 @@ public class TestUserImpersonationAccessControl
     {
         String securityConfigFile = new File(getResource("access_control_rules.json").toURI()).getPath();
         QueryRunner queryRunner = DistributedQueryRunner.builder(TEST_SESSION)
-                .setNodeCount(1)
+                .setWorkerCount(0)
                 .setSystemAccessControl("file", Map.of(SECURITY_CONFIG_FILE, securityConfigFile))
                 .build();
 
@@ -75,14 +75,14 @@ public class TestUserImpersonationAccessControl
     }
 
     @Nullable
-    private QueryError trySelectQuery(String assumedUser)
+    private QueryError trySelectQuery(String sessionUser)
     {
         OkHttpClient httpClient = new OkHttpClient();
         try {
             ClientSession clientSession = ClientSession.builder()
                     .server(getDistributedQueryRunner().getCoordinator().getBaseUrl())
-                    .principal(Optional.of("user"))
-                    .user(Optional.of(assumedUser))
+                    .user(Optional.of("user"))
+                    .sessionUser(Optional.of(sessionUser))
                     .source("source")
                     .timeZone(ZoneId.of("America/Los_Angeles"))
                     .locale(Locale.ENGLISH)

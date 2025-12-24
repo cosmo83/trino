@@ -61,16 +61,6 @@ public record TableChangesSplit(
     }
 
     @Override
-    public Object getInfo()
-    {
-        return ImmutableMap.builder()
-                .put("path", path)
-                .put("start", start)
-                .put("length", length)
-                .buildOrThrow();
-    }
-
-    @Override
     public long getRetainedSizeInBytes()
     {
         return INSTANCE_SIZE

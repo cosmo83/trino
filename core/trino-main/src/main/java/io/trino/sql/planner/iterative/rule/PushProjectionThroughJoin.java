@@ -16,6 +16,7 @@ package io.trino.sql.planner.iterative.rule;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Streams;
 import io.trino.sql.ir.Expression;
+import io.trino.sql.planner.DeterminismEvaluator;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolsExtractor;
@@ -33,7 +34,6 @@ import java.util.Set;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.trino.sql.planner.DeterminismEvaluator.isDeterministic;
 import static io.trino.sql.planner.SymbolsExtractor.extractUnique;
 import static io.trino.sql.planner.plan.JoinType.INNER;
 
@@ -48,7 +48,7 @@ public final class PushProjectionThroughJoin
             Lookup lookup,
             PlanNodeIdAllocator planNodeIdAllocator)
     {
-        if (!projectNode.getAssignments().getExpressions().stream().allMatch(expression -> isDeterministic(expression))) {
+        if (!projectNode.getAssignments().expressions().stream().allMatch(DeterminismEvaluator::isDeterministic)) {
             return Optional.empty();
         }
 
@@ -97,10 +97,10 @@ public final class PushProjectionThroughJoin
 
         Assignments leftAssignments = leftAssignmentsBuilder.build();
         Assignments rightAssignments = rightAssignmentsBuilder.build();
-        List<Symbol> leftOutputSymbols = leftAssignments.getOutputs().stream()
+        List<Symbol> leftOutputSymbols = leftAssignments.outputs().stream()
                 .filter(ImmutableSet.copyOf(projectNode.getOutputSymbols())::contains)
                 .collect(toImmutableList());
-        List<Symbol> rightOutputSymbols = rightAssignments.getOutputs().stream()
+        List<Symbol> rightOutputSymbols = rightAssignments.outputs().stream()
                 .filter(ImmutableSet.copyOf(projectNode.getOutputSymbols())::contains)
                 .collect(toImmutableList());
 
@@ -118,8 +118,6 @@ public final class PushProjectionThroughJoin
                 rightOutputSymbols,
                 joinNode.isMaySkipOutputDuplicates(),
                 joinNode.getFilter(),
-                joinNode.getLeftHashSymbol(),
-                joinNode.getRightHashSymbol(),
                 joinNode.getDistributionType(),
                 joinNode.isSpillable(),
                 joinNode.getDynamicFilters(),
@@ -146,9 +144,7 @@ public final class PushProjectionThroughJoin
         return Streams.concat(
                 node.getCriteria().stream().map(JoinNode.EquiJoinClause::getLeft),
                 node.getCriteria().stream().map(JoinNode.EquiJoinClause::getRight),
-                node.getFilter().map(SymbolsExtractor::extractUnique).orElse(ImmutableSet.of()).stream(),
-                node.getLeftHashSymbol().map(ImmutableSet::of).orElse(ImmutableSet.of()).stream(),
-                node.getRightHashSymbol().map(ImmutableSet::of).orElse(ImmutableSet.of()).stream())
+                node.getFilter().map(SymbolsExtractor::extractUnique).orElse(ImmutableSet.of()).stream())
                 .collect(toImmutableSet());
     }
 

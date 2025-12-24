@@ -13,9 +13,8 @@
  */
 package io.trino.plugin.bigquery;
 
-import com.google.common.collect.ImmutableMap;
+import com.google.inject.Module;
 import io.trino.operator.RetryPolicy;
-import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.testing.BaseFailureRecoveryTest;
 import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
@@ -40,20 +39,17 @@ public abstract class BaseBigQueryFailureRecoveryTest
     protected QueryRunner createQueryRunner(
             List<TpchTable<?>> requiredTpchTables,
             Map<String, String> configProperties,
-            Map<String, String> coordinatorProperties)
+            Map<String, String> coordinatorProperties,
+            Module failureInjectionModule)
             throws Exception
     {
-        return BigQueryQueryRunner.createQueryRunner(
-                configProperties,
-                coordinatorProperties,
-                ImmutableMap.of(),
-                requiredTpchTables,
-                runner -> {
-                    runner.installPlugin(new FileSystemExchangePlugin());
-                    runner.loadExchangeManager("filesystem", ImmutableMap.<String, String>builder()
-                            .put("exchange.base-directories", System.getProperty("java.io.tmpdir") + "/trino-local-file-system-exchange-manager")
-                            .buildOrThrow());
-                });
+        return BigQueryQueryRunner.builder()
+                .setExtraProperties(configProperties)
+                .setCoordinatorProperties(coordinatorProperties)
+                .withExchange("filesystem")
+                .setAdditionalModule(failureInjectionModule)
+                .setInitialTables(requiredTpchTables)
+                .build();
     }
 
     @Override

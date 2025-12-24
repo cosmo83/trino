@@ -14,17 +14,18 @@
 package io.trino.plugin.deltalake;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
+import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.plugin.deltalake.transactionlog.AddFileEntry;
 import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
 import io.trino.plugin.deltalake.transactionlog.statistics.DeltaLakeFileStatistics;
-import io.trino.plugin.hive.containers.HiveMinioDataLake;
+import io.trino.plugin.hive.containers.Hive3MinioDataLake;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.DoubleType;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Isolated;
 
@@ -42,8 +43,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.plugin.deltalake.DeltaLakeColumnType.REGULAR;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner;
 import static io.trino.plugin.deltalake.TestingDeltaLakeUtils.getConnectorService;
 import static io.trino.plugin.deltalake.TestingDeltaLakeUtils.getTableActiveFiles;
 import static io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone;
@@ -62,26 +61,30 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class TestDeltaLakeCreateTableStatistics
         extends AbstractTestQueryFramework
 {
-    private static final String SCHEMA = "default";
-
     private String bucketName;
     private TransactionLogAccess transactionLogAccess;
+    private TrinoFileSystemFactory fileSystemFactory;
 
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
         this.bucketName = "delta-test-create-table-statistics-" + randomNameSuffix();
-        HiveMinioDataLake hiveMinioDataLake = closeAfterClass(new HiveMinioDataLake(bucketName));
+        Hive3MinioDataLake hiveMinioDataLake = closeAfterClass(new Hive3MinioDataLake(bucketName));
         hiveMinioDataLake.start();
-        QueryRunner queryRunner = createS3DeltaLakeQueryRunner(
-                DELTA_CATALOG,
-                SCHEMA,
-                ImmutableMap.of("delta.enable-non-concurrent-writes", "true"),
-                hiveMinioDataLake.getMinio().getMinioAddress(),
-                hiveMinioDataLake.getHiveHadoop());
-        this.transactionLogAccess = getConnectorService(queryRunner, TransactionLogAccess.class);
-        return queryRunner;
+
+        return DeltaLakeQueryRunner.builder()
+                .addMetastoreProperties(hiveMinioDataLake.getHiveHadoop())
+                .addS3Properties(hiveMinioDataLake.getMinio(), bucketName)
+                .addDeltaProperty("delta.enable-non-concurrent-writes", "true")
+                .build();
+    }
+
+    @BeforeAll
+    public void initTransactionLogAccess()
+    {
+        transactionLogAccess = getConnectorService(getQueryRunner(), TransactionLogAccess.class);
+        fileSystemFactory = getConnectorService(getQueryRunner(), TrinoFileSystemFactory.class);
     }
 
     @Test
@@ -404,7 +407,7 @@ public class TestDeltaLakeCreateTableStatistics
                 ImmutableList.of(partitionColumn),
                 "VALUES ('a', 1), ('b', 1), ('c', 1), ('c', 2), ('d', 2), ('e', 2), (null, 1)")) {
             List<AddFileEntry> addFileEntries = getAddFileEntries(table.getName());
-            assertThat(addFileEntries.size()).isEqualTo(2);
+            assertThat(addFileEntries).hasSize(2);
 
             for (AddFileEntry addFileEntry : addFileEntries) {
                 assertThat(addFileEntry.getStats()).isPresent();
@@ -488,6 +491,6 @@ public class TestDeltaLakeCreateTableStatistics
     protected List<AddFileEntry> getAddFileEntries(String tableName)
             throws IOException
     {
-        return getTableActiveFiles(transactionLogAccess, format("s3://%s/%s", bucketName, tableName));
+        return getTableActiveFiles(transactionLogAccess, fileSystemFactory, format("s3://%s/%s", bucketName, tableName));
     }
 }

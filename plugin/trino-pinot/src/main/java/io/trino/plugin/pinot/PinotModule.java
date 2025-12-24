@@ -30,10 +30,8 @@ import io.trino.plugin.pinot.client.PinotGrpcDataFetcher;
 import io.trino.plugin.pinot.client.PinotGrpcServerQueryClientConfig;
 import io.trino.plugin.pinot.client.PinotGrpcServerQueryClientTlsConfig;
 import io.trino.plugin.pinot.client.PinotHostMapper;
-import io.trino.plugin.pinot.client.PinotLegacyDataFetcher;
-import io.trino.plugin.pinot.client.PinotLegacyServerQueryClientConfig;
-import io.trino.spi.NodeManager;
 import io.trino.spi.connector.ConnectorNodePartitioningProvider;
+import org.apache.pinot.common.response.broker.BrokerResponseNative;
 import org.apache.pinot.common.utils.DataSchema;
 
 import java.io.IOException;
@@ -48,7 +46,6 @@ import static io.airlift.json.JsonBinder.jsonBinder;
 import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.Locale.ENGLISH;
-import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
@@ -56,12 +53,10 @@ public class PinotModule
         extends AbstractConfigurationAwareModule
 {
     private final String catalogName;
-    private final NodeManager nodeManager;
 
-    public PinotModule(String catalogName, NodeManager nodeManager)
+    public PinotModule(String catalogName)
     {
         this.catalogName = catalogName;
-        this.nodeManager = requireNonNull(nodeManager, "nodeManager is null");
     }
 
     @Override
@@ -92,16 +87,13 @@ public class PinotModule
                 });
 
         jsonBinder(binder).addDeserializerBinding(DataSchema.class).to(DataSchemaDeserializer.class);
+        jsonBinder(binder).addDeserializerBinding(BrokerResponseNative.class).to(BrokerResponseNativeDeserializer.class);
+
         PinotClient.addJsonBinders(jsonCodecBinder(binder));
-        binder.bind(NodeManager.class).toInstance(nodeManager);
         binder.bind(ConnectorNodePartitioningProvider.class).to(PinotNodePartitioningProvider.class).in(Scopes.SINGLETON);
         newOptionalBinder(binder, PinotHostMapper.class).setDefault().to(IdentityPinotHostMapper.class).in(Scopes.SINGLETON);
 
-        install(conditionalModule(
-                PinotConfig.class,
-                config -> config.isGrpcEnabled(),
-                new PinotGrpcModule(),
-                new LegacyClientModule()));
+        install(new PinotGrpcModule());
     }
 
     public static final class DataSchemaDeserializer
@@ -126,6 +118,19 @@ public class PinotModule
         }
     }
 
+    public static class BrokerResponseNativeDeserializer
+            extends JsonDeserializer<BrokerResponseNative>
+    {
+        @Override
+        public BrokerResponseNative deserialize(JsonParser p, DeserializationContext ctxt)
+                throws IOException
+        {
+            JsonNode jsonNode = ctxt.readTree(p);
+            String value = jsonNode.toString();
+            return BrokerResponseNative.fromJsonString(value);
+        }
+    }
+
     public static class PinotGrpcModule
             extends AbstractConfigurationAwareModule
     {
@@ -136,23 +141,12 @@ public class PinotModule
             binder.bind(PinotDataFetcher.Factory.class).to(PinotGrpcDataFetcher.Factory.class).in(Scopes.SINGLETON);
             install(conditionalModule(
                     PinotGrpcServerQueryClientConfig.class,
-                    config -> config.isUsePlainText(),
+                    PinotGrpcServerQueryClientConfig::isUsePlainText,
                     plainTextBinder -> plainTextBinder.bind(PinotGrpcDataFetcher.GrpcQueryClientFactory.class).to(PinotGrpcDataFetcher.PlainTextGrpcQueryClientFactory.class).in(Scopes.SINGLETON),
                     tlsBinder -> {
                         configBinder(tlsBinder).bindConfig(PinotGrpcServerQueryClientTlsConfig.class);
                         tlsBinder.bind(PinotGrpcDataFetcher.GrpcQueryClientFactory.class).to(PinotGrpcDataFetcher.TlsGrpcQueryClientFactory.class).in(Scopes.SINGLETON);
                     }));
-        }
-    }
-
-    public static class LegacyClientModule
-            extends AbstractConfigurationAwareModule
-    {
-        @Override
-        public void setup(Binder binder)
-        {
-            configBinder(binder).bindConfig(PinotLegacyServerQueryClientConfig.class);
-            binder.bind(PinotDataFetcher.Factory.class).to(PinotLegacyDataFetcher.Factory.class).in(Scopes.SINGLETON);
         }
     }
 }

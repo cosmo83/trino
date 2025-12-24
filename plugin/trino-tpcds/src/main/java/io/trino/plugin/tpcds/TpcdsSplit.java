@@ -27,6 +27,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
 import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
 public class TpcdsSplit
         implements ConnectorSplit
@@ -69,12 +70,6 @@ public class TpcdsSplit
     }
 
     @Override
-    public Object getInfo()
-    {
-        return this;
-    }
-
-    @Override
     public long getRetainedSizeInBytes()
     {
         return INSTANCE_SIZE
@@ -110,9 +105,9 @@ public class TpcdsSplit
             return false;
         }
         TpcdsSplit other = (TpcdsSplit) obj;
-        return Objects.equals(this.totalParts, other.totalParts) &&
-                Objects.equals(this.partNumber, other.partNumber) &&
-                Objects.equals(this.noSexism, other.noSexism);
+        return this.totalParts == other.totalParts &&
+                this.partNumber == other.partNumber &&
+                this.noSexism == other.noSexism;
     }
 
     @Override
@@ -125,6 +120,7 @@ public class TpcdsSplit
     public String toString()
     {
         return toStringHelper(this)
+                .add("addresses", addresses.stream().map(HostAddress::toString).collect(joining(",")))
                 .add("partNumber", partNumber)
                 .add("totalParts", totalParts)
                 .add("noSexism", noSexism)

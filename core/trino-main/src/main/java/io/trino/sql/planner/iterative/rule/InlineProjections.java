@@ -22,8 +22,8 @@ import io.trino.matching.Pattern;
 import io.trino.spi.type.RowType;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolsExtractor;
 import io.trino.sql.planner.iterative.Rule;
@@ -87,11 +87,10 @@ public class InlineProjections
 
         // inline the expressions
         Assignments assignments = child.getAssignments().filter(targets::contains);
-        Map<Symbol, Expression> parentAssignments = parent.getAssignments()
-                .entrySet().stream()
-                .collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        entry -> inlineReferences(entry.getValue(), assignments)));
+        Assignments.Builder parentAssignments = Assignments.builder();
+        for (Map.Entry<Symbol, Expression> assignment : parent.getAssignments().entrySet()) {
+            parentAssignments.put(assignment.getKey(), inlineReferences(assignment.getValue(), assignments));
+        }
 
         // Synthesize identity assignments for the inputs of expressions that were inlined
         // to place in the child projection.
@@ -132,7 +131,7 @@ public class InlineProjections
                 new ProjectNode(
                         parent.getId(),
                         newChild,
-                        Assignments.copyOf(parentAssignments)));
+                        parentAssignments.build()));
     }
 
     private static Expression inlineReferences(Expression expression, Assignments assignments)
@@ -162,14 +161,14 @@ public class InlineProjections
         Set<Symbol> childOutputSet = ImmutableSet.copyOf(child.getOutputSymbols());
 
         Map<Symbol, Long> dependencies = parent.getAssignments()
-                .getExpressions().stream()
+                .expressions().stream()
                 .flatMap(expression -> SymbolsExtractor.extractAll(expression).stream())
                 .filter(childOutputSet::contains)
                 .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()));
 
         // find references to simple constants or symbol references
         Set<Symbol> basicReferences = dependencies.keySet().stream()
-                .filter(input -> child.getAssignments().get(input) instanceof Constant || child.getAssignments().get(input) instanceof SymbolReference)
+                .filter(input -> child.getAssignments().get(input) instanceof Constant || child.getAssignments().get(input) instanceof Reference)
                 .filter(input -> !child.getAssignments().isIdentity(input)) // skip identities, otherwise, this rule will keep firing forever
                 .collect(toSet());
 
@@ -180,10 +179,8 @@ public class InlineProjections
                     // skip dereferences, otherwise, inlining can cause conflicts with PushdownDereferences
                     Expression assignment = child.getAssignments().get(entry.getKey());
 
-                    if (assignment instanceof SubscriptExpression) {
-                        if (((SubscriptExpression) assignment).getBase().type() instanceof RowType) {
-                            return false;
-                        }
+                    if (assignment instanceof FieldReference fieldReference) {
+                        return !(fieldReference.base().type() instanceof RowType);
                     }
 
                     return true;
@@ -196,6 +193,6 @@ public class InlineProjections
 
     private static boolean isSymbolReference(Symbol symbol, Expression expression)
     {
-        return expression instanceof SymbolReference && ((SymbolReference) expression).getName().equals(symbol.getName());
+        return expression instanceof Reference reference && reference.name().equals(symbol.name());
     }
 }

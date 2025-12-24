@@ -23,6 +23,7 @@ import dev.failsafe.RetryPolicy;
 import io.airlift.log.Logger;
 import io.trino.testing.minio.MinioClient;
 import org.testcontainers.containers.Network;
+import org.testcontainers.utility.DockerImageName;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -41,7 +42,8 @@ public class Minio
 {
     private static final Logger log = Logger.get(Minio.class);
 
-    public static final String DEFAULT_IMAGE = "minio/minio:RELEASE.2023-05-18T00-05-36Z";
+    public static final String DEFAULT_IMAGE = DockerImageName.parse("cgr.dev/chainguard/minio@sha256:66bd82c8fe5e75868ae7d0b2e102d9a0dcf971b270a41bd060a9e6a643476ff8")
+            .asCanonicalNameString();
     public static final String DEFAULT_HOST_NAME = "minio";
 
     public static final int MINIO_API_PORT = 4566;
@@ -80,6 +82,7 @@ public class Minio
     protected void setupContainer()
     {
         super.setupContainer();
+        withCreateContainerModifier(cmd -> cmd.withUser("root")); // Required to create buckets externally
         withRunCommand(
                 ImmutableList.of(
                         "server",
@@ -112,6 +115,11 @@ public class Minio
 
     public void createBucket(String bucketName)
     {
+        createBucket(bucketName, false);
+    }
+
+    public void createBucket(String bucketName, boolean objectLock)
+    {
         try (MinioClient minioClient = createMinioClient()) {
             // use retry loop for minioClient.makeBucket as minio container tends to return "Server not initialized, please try again" error
             // for some time after starting up
@@ -120,7 +128,7 @@ public class Minio
                     .withMaxAttempts(Integer.MAX_VALUE) // limited by MaxDuration
                     .withDelay(Duration.of(10, SECONDS))
                     .build();
-            Failsafe.with(retryPolicy).run(() -> minioClient.makeBucket(bucketName));
+            Failsafe.with(retryPolicy).run(() -> minioClient.makeBucket(bucketName, objectLock));
         }
     }
 

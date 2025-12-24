@@ -43,23 +43,30 @@ import io.trino.spi.type.VarcharType;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.text.ParsePosition;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
+import java.time.format.SignStyle;
+import java.time.temporal.TemporalAccessor;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.IntFunction;
+import java.util.function.IntUnaryOperator;
 import java.util.regex.Pattern;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.hive.formats.HiveFormatUtils.parseHiveDate;
 import static io.trino.hive.formats.HiveFormatUtils.parseHiveTimestamp;
 import static io.trino.hive.formats.HiveFormatUtils.scaleDecimal;
 import static io.trino.hive.formats.line.openxjson.JsonWriter.canonicalizeJsonString;
@@ -89,6 +96,9 @@ import static java.lang.StrictMath.toIntExact;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 import static java.time.format.ResolverStyle.LENIENT;
+import static java.time.temporal.ChronoField.DAY_OF_MONTH;
+import static java.time.temporal.ChronoField.MONTH_OF_YEAR;
+import static java.time.temporal.ChronoField.YEAR;
 import static java.util.HexFormat.isHexDigit;
 import static java.util.Objects.requireNonNull;
 import static org.joda.time.DateTimeZone.UTC;
@@ -113,6 +123,12 @@ public final class OpenXJsonDeserializer
                 .map(formatter -> formatter.withZone(ZoneOffset.UTC))
                 .collect(toImmutableList());
 
+        ImmutableMap.Builder<Integer, Integer> ordinals = ImmutableMap.builderWithExpectedSize(columns.size());
+        for (int i = 0; i < columns.size(); i++) {
+            ordinals.put(columns.get(i).ordinal(), i);
+        }
+        Map<Integer, Integer> topLevelOrdinalMap = ordinals.buildOrThrow();
+
         rowDecoder = new RowDecoder(
                 RowType.from(columns.stream()
                         .map(column -> field(column.name().toLowerCase(Locale.ROOT), column.type()))
@@ -121,7 +137,8 @@ public final class OpenXJsonDeserializer
                 columns.stream()
                         .map(Column::type)
                         .map(fieldType -> createDecoder(fieldType, options, timestampFormatters))
-                        .collect(toImmutableList()));
+                        .toArray(Decoder[]::new),
+                ordinal -> topLevelOrdinalMap.getOrDefault(ordinal, -1));
     }
 
     @Override
@@ -219,7 +236,8 @@ public final class OpenXJsonDeserializer
                     rowType.getFields().stream()
                             .map(Field::getType)
                             .map(fieldType -> createDecoder(fieldType, options, timestampFormatters))
-                            .collect(toImmutableList()));
+                            .toArray(Decoder[]::new),
+                    ordinal -> ordinal < rowType.getFields().size() ? ordinal : -1);
         }
         throw new UnsupportedOperationException("Unsupported column type: " + type);
     }
@@ -270,7 +288,7 @@ public final class OpenXJsonDeserializer
                 BIGINT.writeLong(builder, parseLong(jsonString.value()));
                 return;
             }
-            catch (NumberFormatException | ArithmeticException ignored) {
+            catch (NumberFormatException | ArithmeticException _) {
             }
             builder.appendNull();
         }
@@ -293,7 +311,7 @@ public final class OpenXJsonDeserializer
                     return;
                 }
             }
-            catch (NumberFormatException | ArithmeticException ignored) {
+            catch (NumberFormatException | ArithmeticException _) {
             }
             builder.appendNull();
         }
@@ -316,7 +334,7 @@ public final class OpenXJsonDeserializer
                     return;
                 }
             }
-            catch (NumberFormatException | ArithmeticException ignored) {
+            catch (NumberFormatException | ArithmeticException _) {
             }
             builder.appendNull();
         }
@@ -339,7 +357,7 @@ public final class OpenXJsonDeserializer
                     return;
                 }
             }
-            catch (NumberFormatException | ArithmeticException ignored) {
+            catch (NumberFormatException | ArithmeticException _) {
             }
             builder.appendNull();
         }
@@ -374,7 +392,7 @@ public final class OpenXJsonDeserializer
                     return;
                 }
             }
-            catch (NumberFormatException ignored) {
+            catch (NumberFormatException _) {
             }
             builder.appendNull();
         }
@@ -393,7 +411,7 @@ public final class OpenXJsonDeserializer
             try {
                 REAL.writeLong(builder, floatToRawIntBits(Float.parseFloat(jsonString.value())));
             }
-            catch (NumberFormatException ignored) {
+            catch (NumberFormatException _) {
                 builder.appendNull();
             }
         }
@@ -421,6 +439,13 @@ public final class OpenXJsonDeserializer
     private static class DateDecoder
             extends Decoder
     {
+        // This is taken from https://github.com/apache/hive/blob/84b42876441ec8984f1a39367ae77627cc96a275/common/src/java/org/apache/hadoop/hive/common/type/Date.java#L86-L89
+        // Here we use ResolverStyle.LENIENT while the Hive 4 uses ResolverStyle.STRICT.
+        private static final DateTimeFormatter PARSE_FORMATTER =
+                new DateTimeFormatterBuilder().appendValue(YEAR, 1, 4, SignStyle.NORMAL).appendLiteral('-')
+                        .appendValue(MONTH_OF_YEAR, 1, 2, SignStyle.NORMAL).appendLiteral('-')
+                        .appendValue(DAY_OF_MONTH, 1, 2, SignStyle.NORMAL).toFormatter().withResolverStyle(ResolverStyle.LENIENT);
+
         @Override
         void decodeValue(Object jsonValue, BlockBuilder builder)
         {
@@ -433,15 +458,44 @@ public final class OpenXJsonDeserializer
                 DATE.writeLong(builder, toIntExact(parseHiveDate(dateString).toEpochDay()));
                 return;
             }
-            catch (DateTimeParseException | ArithmeticException ignored) {
+            catch (DateTimeParseException | ArithmeticException _) {
             }
             try {
                 DATE.writeLong(builder, toIntExact(parseDecimalHexOctalLong(dateString)));
                 return;
             }
-            catch (NumberFormatException | ArithmeticException ignored) {
+            catch (NumberFormatException | ArithmeticException _) {
             }
             builder.appendNull();
+        }
+
+        /**
+         * {@link io.trino.hive.formats.HiveFormatUtils#parseHiveDate(String)} that the native OpenX reader was using only supported
+         * a space delimiter to remove any characters after 'yyyy-mm-dd'. As a result, while '2025-01-04 00:00:00.000Z'
+         * was correctly parsed as '2025-01-04', strings like '2025-01-04T00:00:00.000Z' or '2025-01-04AA00:00:00.000Z'
+         * were throwing exceptions and being parsed as null.
+         * This new parseHiveDate method removes any characters after 'yyyy-mm-dd', regardless of the delimiter.
+         * The below fix is ported from Hive 4 in https://github.com/apache/hive/blob/84b42876441ec8984f1a39367ae77627cc96a275/common/src/java/org/apache/hadoop/hive/common/type/Date.java#L179-L200
+         */
+        private static LocalDate parseHiveDate(String value)
+        {
+            String trimmedText = value.trim();
+
+            ParsePosition pos = new ParsePosition(0);
+            TemporalAccessor temporalAccessor = PARSE_FORMATTER.parse(trimmedText, pos);
+            if (pos.getErrorIndex() >= 0) {
+                throw new DateTimeParseException("Text could not be parsed to date", trimmedText, pos.getErrorIndex());
+            }
+            // Check if there is still text left after parsing
+            if (pos.getIndex() < trimmedText.length()) {
+                char lastChar = trimmedText.charAt(pos.getIndex());
+                // Check if the first character of the remaining is a digit, e.g. "2023-08-0800" if yes, then it is a parse error and must throw an exception
+                if (lastChar >= '0' && lastChar <= '9') {
+                    throw new DateTimeParseException("Text '" + trimmedText + "' could not be parsed, unparsed text found at index " + pos.getIndex(), trimmedText,
+                        pos.getIndex());
+                }
+            }
+            return LocalDate.of(temporalAccessor.get(YEAR), temporalAccessor.get(MONTH_OF_YEAR), temporalAccessor.get(DAY_OF_MONTH));
         }
     }
 
@@ -485,7 +539,7 @@ public final class OpenXJsonDeserializer
                     long epochSeconds = zonedDateTime.toEpochSecond();
                     return new DecodedTimestamp(epochSeconds, zonedDateTime.getNano());
                 }
-                catch (DateTimeParseException ignored) {
+                catch (DateTimeParseException _) {
                 }
             }
 
@@ -499,14 +553,14 @@ public final class OpenXJsonDeserializer
                         zonedDateTime = zonedDateTime.withZoneSameInstant(ZoneOffset.UTC);
                         return new DecodedTimestamp(zonedDateTime.toEpochSecond(), zonedDateTime.getNano());
                     }
-                    catch (DateTimeParseException ignored) {
+                    catch (DateTimeParseException _) {
                     }
                     try {
                         ZonedDateTime zonedDateTime = ZonedDateTime.parse(value, ZONED_DATE_TIME_PARSER_WITH_COLON);
                         zonedDateTime = zonedDateTime.withZoneSameInstant(ZoneOffset.UTC);
                         return new DecodedTimestamp(zonedDateTime.toEpochSecond(), zonedDateTime.getNano());
                     }
-                    catch (DateTimeParseException ignored) {
+                    catch (DateTimeParseException _) {
                     }
                 }
                 return parseHiveTimestamp(value);
@@ -718,7 +772,7 @@ public final class OpenXJsonDeserializer
                 int keyIndex = 0;
                 for (Object fieldName : fieldNames) {
                     if (distinctKeys[keyIndex]) {
-                        keyType.appendTo(keyBlock, keyIndex, keyBuilder);
+                        keyBuilder.append(keyBlock.getUnderlyingValueBlock(), keyBlock.getUnderlyingValuePosition(keyIndex));
                         valueDecoder.decode(jsonObject.get(fieldName), valueBuilder);
                     }
                     keyIndex++;
@@ -744,19 +798,23 @@ public final class OpenXJsonDeserializer
     private static class RowDecoder
             extends Decoder
     {
-        private final List<FieldName> fieldNames;
-        private final List<Decoder> fieldDecoders;
+        private final FieldName[] fieldNames;
+        private final Decoder[] fieldDecoders;
         private final boolean dotsInKeyNames;
+        private final IntUnaryOperator ordinalToFieldPosition;
 
-        public RowDecoder(RowType rowType, OpenXJsonOptions options, List<Decoder> fieldDecoders)
+        public RowDecoder(RowType rowType, OpenXJsonOptions options, Decoder[] fieldDecoders, IntUnaryOperator ordinalToFieldPosition)
         {
             this.fieldNames = rowType.getFields().stream()
                     .map(field -> field.getName().orElseThrow())
                     .map(fieldName -> fieldName.toLowerCase(Locale.ROOT))
                     .map(originalValue -> new FieldName(originalValue, options))
-                    .collect(toImmutableList());
-            this.fieldDecoders = fieldDecoders;
+                    .toArray(FieldName[]::new);
+            this.fieldDecoders = requireNonNull(fieldDecoders, "fieldDecoders is null");
+            checkArgument(this.fieldDecoders.length == fieldNames.length, "fieldDecoders length mismatch: %s <> %s", this.fieldDecoders.length, fieldNames.length);
+            checkArgument(Arrays.stream(this.fieldDecoders).noneMatch(Objects::isNull), "fieldDecoders contains null element");
             this.dotsInKeyNames = options.isDotsInFieldNames();
+            this.ordinalToFieldPosition = requireNonNull(ordinalToFieldPosition, "ordinalToFieldPosition is null");
         }
 
         public void decode(Object jsonValue, PageBuilder builder)
@@ -794,7 +852,7 @@ public final class OpenXJsonDeserializer
                 throw invalidJson("Primitive can not be coerced to a ROW");
             }
 
-            for (int i = 0; i < fieldDecoders.size(); i++) {
+            for (int i = 0; i < fieldDecoders.length; i++) {
                 BlockBuilder blockBuilder = fieldBuilders.apply(i);
                 blockBuilder.appendNull();
             }
@@ -802,8 +860,8 @@ public final class OpenXJsonDeserializer
 
         private void decodeValueFromMap(Map<?, ?> jsonObject, IntFunction<BlockBuilder> fieldBuilders)
         {
-            for (int i = 0; i < fieldDecoders.size(); i++) {
-                FieldName fieldName = fieldNames.get(i);
+            for (int i = 0; i < fieldDecoders.length; i++) {
+                FieldName fieldName = fieldNames[i];
                 Object fieldValue = null;
                 if (jsonObject.containsKey(fieldName)) {
                     fieldValue = jsonObject.get(fieldName);
@@ -823,21 +881,35 @@ public final class OpenXJsonDeserializer
                     blockBuilder.appendNull();
                 }
                 else {
-                    fieldDecoders.get(i).decode(fieldValue, blockBuilder);
+                    fieldDecoders[i].decode(fieldValue, blockBuilder);
                 }
             }
         }
 
         private void decodeValueFromList(List<?> jsonArray, IntFunction<BlockBuilder> fieldBuilders)
         {
-            for (int i = 0; i < fieldDecoders.size(); i++) {
-                Object fieldValue = jsonArray.size() > i ? jsonArray.get(i) : null;
-                BlockBuilder blockBuilder = fieldBuilders.apply(i);
+            boolean[] fieldWritten = new boolean[fieldDecoders.length];
+            for (int ordinal = 0; ordinal < jsonArray.size(); ordinal++) {
+                int fieldPosition = ordinalToFieldPosition.applyAsInt(ordinal);
+                if (fieldPosition < 0) {
+                    continue;
+                }
+
+                Object fieldValue = jsonArray.get(ordinal);
+                BlockBuilder blockBuilder = fieldBuilders.apply(fieldPosition);
                 if (fieldValue == null) {
                     blockBuilder.appendNull();
                 }
                 else {
-                    fieldDecoders.get(i).decode(fieldValue, blockBuilder);
+                    fieldDecoders[fieldPosition].decode(fieldValue, blockBuilder);
+                }
+                fieldWritten[fieldPosition] = true;
+            }
+
+            // write null to unset fields
+            for (int i = 0; i < fieldWritten.length; i++) {
+                if (!fieldWritten[i]) {
+                    fieldBuilders.apply(i).appendNull();
                 }
             }
         }
@@ -849,7 +921,7 @@ public final class OpenXJsonDeserializer
         try {
             return parseDecimalHexOctalLong(stringValue);
         }
-        catch (NumberFormatException ignored) {
+        catch (NumberFormatException _) {
         }
 
         BigDecimal bigDecimal = new BigDecimal(stringValue).setScale(0, RoundingMode.DOWN);

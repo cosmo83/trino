@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static com.google.common.io.MoreFiles.deleteRecursively;
+import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.trino.SystemSessionProperties.IDLE_WRITER_MIN_DATA_SIZE_THRESHOLD;
 import static io.trino.SystemSessionProperties.SCALE_WRITERS;
 import static io.trino.SystemSessionProperties.TASK_MAX_WRITER_COUNT;
@@ -40,10 +42,9 @@ public class TestCloseIdleWriters
             throws Exception
     {
         Path metastoreDirectory = Files.createTempDirectory(DELTA_CATALOG);
-        metastoreDirectory.toFile().deleteOnExit();
+        closeAfterClass(() -> deleteRecursively(metastoreDirectory, ALLOW_INSECURE));
         QueryRunner queryRunner = DeltaLakeQueryRunner.builder()
-                .setCatalogName(DELTA_CATALOG)
-                .setNodeCount(1)
+                .setWorkerCount(0)
                 // Set the target max file size to 100GB so that we don't close writers due to file size in append
                 // page.
                 .setDeltaProperties(ImmutableMap.of(
@@ -59,28 +60,36 @@ public class TestCloseIdleWriters
     @Test
     public void testCloseIdleWriters()
     {
-        String tableName = "task_close_idle_writers_" + randomNameSuffix();
+        String sourceTable = "tpch.\"sf0.1\".lineitem";
+        String targetTable = "task_close_idle_writers_" + randomNameSuffix();
         try {
+            String zeroShipModes = "'AIR', 'FOB', 'SHIP', 'TRUCK'";
+            String oneShipModes = "'MAIL', 'RAIL', 'REG AIR'";
+            String bothShipModes = zeroShipModes + ", " + oneShipModes;
+
+            long expectedCount = (long) computeScalar("SELECT count (*) FROM %s WHERE shipmode IN (%s)".formatted(sourceTable, bothShipModes));
+
             // Create a table with two partitions (0 and 1). Using the order by trick we will write the partitions in
             // this order 0, 1, and then again 0. This way we are sure that during partition 1 write there will
             // be an idle writer for partition 0. Additionally, during second partition 0 write, there will be an idle
             // writer for partition 1.
-            @Language("SQL") String createTableSql = """
+            @Language("SQL") String createTableSql =
+                    """
                     CREATE TABLE %s WITH (partitioned_by = ARRAY['shipmodeVal'])
                     AS SELECT orderkey, partkey, suppkey, linenumber, quantity, extendedprice,
                     discount, tax, returnflag, linestatus, commitdate, receiptdate, shipinstruct,
                     comment, shipdate,
                     CASE
-                        WHEN shipmode IN ('AIR', 'FOB', 'SHIP', 'TRUCK') THEN 0
-                        WHEN shipmode IN ('MAIL', 'RAIL', 'REG AIR') THEN 1
-                        ELSE 2
+                        WHEN shipmode IN (%s) THEN 0
+                        WHEN shipmode IN (%s) THEN 1
                     END AS shipmodeVal
-                    FROM tpch.tiny.lineitem
+                    FROM %s
+                    WHERE shipmode IN (%s)
                     ORDER BY shipmode
-                    LIMIT 60174
-                    """.formatted(tableName);
+                    LIMIT %s
+                    """.formatted(targetTable, zeroShipModes, oneShipModes, sourceTable, bothShipModes, expectedCount);
 
-            // Disable all kind of scaling and set idle writer threshold to 10MB
+            // Disable all kind of scaling and set low idle writer threshold
             assertUpdate(
                     Session.builder(getSession())
                             .setSystemProperty(SCALE_WRITERS, "false")
@@ -90,13 +99,13 @@ public class TestCloseIdleWriters
                             .setSystemProperty(IDLE_WRITER_MIN_DATA_SIZE_THRESHOLD, "0.1MB")
                             .build(),
                     createTableSql,
-                    60174);
-            long files = (long) computeScalar("SELECT count(DISTINCT \"$path\") FROM " + tableName);
+                    expectedCount);
+            long files = (long) computeScalar("SELECT count(DISTINCT \"$path\") FROM " + targetTable);
             // There should more than 2 files since we triggered close idle writers.
             assertThat(files).isGreaterThan(2);
         }
         finally {
-            assertUpdate("DROP TABLE IF EXISTS " + tableName);
+            assertUpdate("DROP TABLE IF EXISTS " + targetTable);
         }
     }
 }

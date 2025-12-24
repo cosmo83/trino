@@ -294,7 +294,7 @@ public final class PatternRecognitionPartition
         // compute measures
         for (MeasureComputation measureComputation : measures) {
             Block result = measureComputation.computeEmpty(matchNumber);
-            measureComputation.getType().appendTo(result, 0, pageBuilder.getBlockBuilder(channel));
+            pageBuilder.getBlockBuilder(channel).append(result.getUnderlyingValueBlock(), result.getUnderlyingValuePosition(0));
             channel++;
         }
         // window functions have empty frame
@@ -323,7 +323,7 @@ public final class PatternRecognitionPartition
         ArrayView labels = matchResult.getLabels();
         for (MeasureComputation measureComputation : measures) {
             Block result = measureComputation.compute(patternStart + labels.length() - 1, labels, partitionStart, searchStart, searchEnd, patternStart, matchNumber, measureComputationsIndex);
-            measureComputation.getType().appendTo(result, 0, pageBuilder.getBlockBuilder(channel));
+            pageBuilder.getBlockBuilder(channel).append(result.getUnderlyingValueBlock(), result.getUnderlyingValuePosition(0));
             channel++;
         }
         // window functions have frame consisting of all rows of the match
@@ -374,7 +374,7 @@ public final class PatternRecognitionPartition
         // compute measures from the current position (the position from which measures are computed matters in RUNNING semantics)
         for (MeasureComputation measureComputation : measures) {
             Block result = measureComputation.compute(position, labels, partitionStart, searchStart, searchEnd, currentPosition, matchNumber, measureComputationsIndex);
-            measureComputation.getType().appendTo(result, 0, pageBuilder.getBlockBuilder(channel));
+            pageBuilder.getBlockBuilder(channel).append(result.getUnderlyingValueBlock(), result.getUnderlyingValuePosition(0));
             channel++;
         }
     }
@@ -417,7 +417,7 @@ public final class PatternRecognitionPartition
         peerGroupStart = currentPosition;
         // find end of peer group
         peerGroupEnd = peerGroupStart + 1;
-        while ((peerGroupEnd < partitionEnd) && pagesIndex.positionNotDistinctFromPosition(peerGroupHashStrategy, peerGroupStart, peerGroupEnd)) {
+        while ((peerGroupEnd < partitionEnd) && pagesIndex.positionIdenticalToPosition(peerGroupHashStrategy, peerGroupStart, peerGroupEnd)) {
             peerGroupEnd++;
         }
     }

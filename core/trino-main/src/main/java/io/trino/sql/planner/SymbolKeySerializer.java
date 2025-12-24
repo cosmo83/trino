@@ -23,9 +23,10 @@ public class SymbolKeySerializer
         extends JsonSerializer<Symbol>
 {
     @Override
-    public void serialize(Symbol value, JsonGenerator gen, SerializerProvider serializers)
+    public void serialize(Symbol value, JsonGenerator generator, SerializerProvider serializers)
             throws IOException
     {
-        gen.writeFieldName(value.getName() + "::" + value.getType().getTypeId().getId());
+        String type = value.type().getTypeId().getId();
+        generator.writeFieldName(type.length() + "|" + type + "|" + value.name());
     }
 }

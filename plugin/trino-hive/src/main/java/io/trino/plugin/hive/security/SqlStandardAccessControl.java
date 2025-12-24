@@ -14,15 +14,18 @@
 package io.trino.plugin.hive.security;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
-import io.trino.plugin.hive.metastore.Database;
-import io.trino.plugin.hive.metastore.HivePrincipal;
-import io.trino.plugin.hive.metastore.HivePrivilegeInfo;
+import io.trino.metastore.Database;
+import io.trino.metastore.HivePrincipal;
+import io.trino.metastore.HivePrivilegeInfo;
 import io.trino.spi.TrinoException;
 import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSecurityContext;
+import io.trino.spi.connector.EntityKindAndName;
 import io.trino.spi.connector.SchemaRoutineName;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
@@ -44,14 +47,14 @@ import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.trino.plugin.hive.metastore.Database.DEFAULT_DATABASE_NAME;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.DELETE;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.INSERT;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.OWNERSHIP;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.SELECT;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.UPDATE;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.toHivePrivilege;
+import static io.trino.metastore.Database.DEFAULT_DATABASE_NAME;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege.DELETE;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege.INSERT;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege.OWNERSHIP;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege.SELECT;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege.UPDATE;
+import static io.trino.metastore.HivePrivilegeInfo.toHivePrivilege;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.isRoleApplicable;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.isRoleEnabled;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.listApplicableRoles;
@@ -79,18 +82,22 @@ import static io.trino.spi.security.AccessDeniedException.denyDropTable;
 import static io.trino.spi.security.AccessDeniedException.denyDropView;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteTableProcedure;
 import static io.trino.spi.security.AccessDeniedException.denyGrantRoles;
+import static io.trino.spi.security.AccessDeniedException.denyGrantTableBranchPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyGrantTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyInsertTable;
 import static io.trino.spi.security.AccessDeniedException.denyRefreshMaterializedView;
+import static io.trino.spi.security.AccessDeniedException.denyRefreshView;
 import static io.trino.spi.security.AccessDeniedException.denyRenameColumn;
 import static io.trino.spi.security.AccessDeniedException.denyRenameMaterializedView;
 import static io.trino.spi.security.AccessDeniedException.denyRenameSchema;
 import static io.trino.spi.security.AccessDeniedException.denyRenameTable;
 import static io.trino.spi.security.AccessDeniedException.denyRenameView;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeRoles;
+import static io.trino.spi.security.AccessDeniedException.denyRevokeTableBranchPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denySelectTable;
 import static io.trino.spi.security.AccessDeniedException.denySetCatalogSessionProperty;
+import static io.trino.spi.security.AccessDeniedException.denySetEntityAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetMaterializedViewProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetRole;
 import static io.trino.spi.security.AccessDeniedException.denySetSchemaAuthorization;
@@ -98,6 +105,7 @@ import static io.trino.spi.security.AccessDeniedException.denySetTableAuthorizat
 import static io.trino.spi.security.AccessDeniedException.denySetTableProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetViewAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denyShowColumns;
+import static io.trino.spi.security.AccessDeniedException.denyShowCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateSchema;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateTable;
 import static io.trino.spi.security.AccessDeniedException.denyShowRoles;
@@ -160,9 +168,7 @@ public class SqlStandardAccessControl
     }
 
     @Override
-    public void checkCanShowSchemas(ConnectorSecurityContext context)
-    {
-    }
+    public void checkCanShowSchemas(ConnectorSecurityContext context) {}
 
     @Override
     public Set<String> filterSchemas(ConnectorSecurityContext context, Set<String> schemaNames)
@@ -236,6 +242,14 @@ public class SqlStandardAccessControl
     }
 
     @Override
+    public void checkCanRefreshView(ConnectorSecurityContext context, SchemaTableName viewName)
+    {
+        if (!checkTablePermission(context, viewName, UPDATE, false)) {
+            denyRefreshView(viewName.toString());
+        }
+    }
+
+    @Override
     public void checkCanSetColumnComment(ConnectorSecurityContext context, SchemaTableName tableName)
     {
         if (!isTableOwner(context, tableName)) {
@@ -244,9 +258,7 @@ public class SqlStandardAccessControl
     }
 
     @Override
-    public void checkCanShowTables(ConnectorSecurityContext context, String schemaName)
-    {
-    }
+    public void checkCanShowTables(ConnectorSecurityContext context, String schemaName) {}
 
     @Override
     public Set<SchemaTableName> filterTables(ConnectorSecurityContext context, Set<SchemaTableName> tableNames)
@@ -436,6 +448,14 @@ public class SqlStandardAccessControl
     }
 
     @Override
+    public void checkCanSetMaterializedViewAuthorization(ConnectorSecurityContext context, SchemaTableName viewName, TrinoPrincipal principal)
+    {
+        if (!isAdmin(context)) {
+            denySetEntityAuthorization(new EntityKindAndName("MATERIALIZED VIEW", List.of(viewName.getSchemaName(), viewName.getTableName())), principal);
+        }
+    }
+
+    @Override
     public void checkCanSetMaterializedViewProperties(ConnectorSecurityContext context, SchemaTableName materializedViewName, Map<String, Optional<Object>> properties)
     {
         if (!isTableOwner(context, materializedViewName)) {
@@ -496,6 +516,36 @@ public class SqlStandardAccessControl
 
         if (!hasGrantOptionForPrivilege(context, privilege, tableName)) {
             denyRevokeTablePrivilege(privilege.name(), tableName.toString());
+        }
+    }
+
+    @Override
+    public void checkCanGrantTableBranchPrivilege(ConnectorSecurityContext context, Privilege privilege, SchemaTableName tableName, String branchName, TrinoPrincipal grantee, boolean grantOption)
+    {
+        if (isTableOwner(context, tableName)) {
+            return;
+        }
+
+        if (!hasGrantOptionForPrivilege(context, privilege, tableName)) {
+            denyGrantTableBranchPrivilege(privilege.name(), branchName, tableName.toString());
+        }
+    }
+
+    @Override
+    public void checkCanDenyTableBranchPrivilege(ConnectorSecurityContext context, Privilege privilege, SchemaTableName tableName, String branchName, TrinoPrincipal grantee)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support deny on branches in tables");
+    }
+
+    @Override
+    public void checkCanRevokeTableBranchPrivilege(ConnectorSecurityContext context, Privilege privilege, SchemaTableName tableName, String branchName, TrinoPrincipal revokee, boolean grantOption)
+    {
+        if (isTableOwner(context, tableName)) {
+            return;
+        }
+
+        if (!hasGrantOptionForPrivilege(context, privilege, tableName)) {
+            denyRevokeTableBranchPrivilege(privilege.name(), tableName.getTableName(), branchName, tableName.toString());
         }
     }
 
@@ -568,25 +618,19 @@ public class SqlStandardAccessControl
     }
 
     @Override
-    public void checkCanShowCurrentRoles(ConnectorSecurityContext context)
-    {
-    }
+    public void checkCanShowCurrentRoles(ConnectorSecurityContext context) {}
 
     @Override
-    public void checkCanShowRoleGrants(ConnectorSecurityContext context)
-    {
-    }
+    public void checkCanShowRoleGrants(ConnectorSecurityContext context) {}
 
     @Override
-    public void checkCanExecuteProcedure(ConnectorSecurityContext context, SchemaRoutineName procedure)
-    {
-    }
+    public void checkCanExecuteProcedure(ConnectorSecurityContext context, SchemaRoutineName procedure) {}
 
     @Override
     public void checkCanExecuteTableProcedure(ConnectorSecurityContext context, SchemaTableName tableName, String procedure)
     {
         if (!isTableOwner(context, tableName)) {
-            denyExecuteTableProcedure(tableName.toString(), tableName.toString());
+            denyExecuteTableProcedure(tableName.toString(), procedure);
         }
     }
 
@@ -603,9 +647,7 @@ public class SqlStandardAccessControl
     }
 
     @Override
-    public void checkCanShowFunctions(ConnectorSecurityContext context, String schemaName)
-    {
-    }
+    public void checkCanShowFunctions(ConnectorSecurityContext context, String schemaName) {}
 
     @Override
     public Set<SchemaFunctionName> filterFunctions(ConnectorSecurityContext context, Set<SchemaFunctionName> functionNames)
@@ -630,6 +672,38 @@ public class SqlStandardAccessControl
     }
 
     @Override
+    public void checkCanShowCreateFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        if (!isDatabaseOwner(context, function.getSchemaName())) {
+            denyShowCreateFunction(function.toString());
+        }
+    }
+
+    @Override
+    public void checkCanShowBranches(ConnectorSecurityContext context, SchemaTableName tableName)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support branches");
+    }
+
+    @Override
+    public void checkCanCreateBranch(ConnectorSecurityContext context, SchemaTableName tableName, String branchName)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support branches");
+    }
+
+    @Override
+    public void checkCanDropBranch(ConnectorSecurityContext context, SchemaTableName tableName, String branchName)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support branches");
+    }
+
+    @Override
+    public void checkCanFastForwardBranch(ConnectorSecurityContext context, SchemaTableName tableName, String sourceBranchName, String targetBranchName)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support branches");
+    }
+
+    @Override
     public List<ViewExpression> getRowFilters(ConnectorSecurityContext context, SchemaTableName tableName)
     {
         return ImmutableList.of();
@@ -639,6 +713,12 @@ public class SqlStandardAccessControl
     public Optional<ViewExpression> getColumnMask(ConnectorSecurityContext context, SchemaTableName tableName, String columnName, Type type)
     {
         return Optional.empty();
+    }
+
+    @Override
+    public Map<ColumnSchema, ViewExpression> getColumnMasks(ConnectorSecurityContext context, SchemaTableName tableName, List<ColumnSchema> columns)
+    {
+        return ImmutableMap.of();
     }
 
     private boolean isAdmin(ConnectorSecurityContext context)
@@ -717,7 +797,7 @@ public class SqlStandardAccessControl
         }
 
         // create is not supported
-        if (privilege == Privilege.CREATE) {
+        if (privilege == Privilege.CREATE || privilege == Privilege.CREATE_BRANCH) {
             return false;
         }
 

@@ -81,8 +81,12 @@ public final class ReportLeakedContainers
 
             List<Container> containers = dockerClient.listContainersCmd()
                     .withLabelFilter(Map.of(DockerClientFactory.TESTCONTAINERS_SESSION_ID_LABEL, DockerClientFactory.SESSION_ID))
+                    // ignore status "exited" - for example, failed containers after using `withStartupAttempts()`
+                    .withStatusFilter(List.of("created", "restarting", "running", "paused"))
                     .exec()
                     .stream()
+                    // testcontainers/sshd is implicitly started by testcontainers and we trust the library to stop if when no longer needed
+                    .filter(container -> !container.getImage().startsWith("testcontainers/sshd:"))
                     .filter(container -> !ignoredIds.contains(container.getId()))
                     .collect(toImmutableList());
 

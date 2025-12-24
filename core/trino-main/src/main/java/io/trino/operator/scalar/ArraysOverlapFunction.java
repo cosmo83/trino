@@ -22,13 +22,12 @@ import io.trino.spi.function.SqlNullable;
 import io.trino.spi.function.SqlType;
 import io.trino.spi.function.TypeParameter;
 import io.trino.spi.type.StandardTypes;
-import io.trino.spi.type.Type;
 import io.trino.type.BlockTypeOperators;
 
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.BLOCK_POSITION;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 
 @ScalarFunction("arrays_overlap")
 @Description("Returns true if arrays have common elements")
@@ -40,12 +39,11 @@ public final class ArraysOverlapFunction
     @TypeParameter("E")
     @SqlType(StandardTypes.BOOLEAN)
     public static Boolean arraysOverlap(
-            @TypeParameter("E") Type type,
             @OperatorDependency(
-                    operator = IS_DISTINCT_FROM,
+                    operator = IDENTICAL,
                     argumentTypes = {"E", "E"},
                     convention = @Convention(arguments = {BLOCK_POSITION,
-                            BLOCK_POSITION}, result = FAIL_ON_NULL)) BlockTypeOperators.BlockPositionIsDistinctFrom elementIsDistinctFrom,
+                            BLOCK_POSITION}, result = FAIL_ON_NULL)) BlockTypeOperators.BlockPositionIsIdentical elementIdentical,
             @OperatorDependency(
                     operator = HASH_CODE,
                     argumentTypes = "E",
@@ -67,7 +65,7 @@ public final class ArraysOverlapFunction
             return false;
         }
 
-        BlockSet smallerSet = new BlockSet(type, elementIsDistinctFrom, elementHashCode, smallerPositionCount);
+        BlockSet smallerSet = new BlockSet(elementIdentical, elementHashCode, smallerPositionCount);
         for (int position = 0; position < smallerPositionCount; position++) {
             smallerSet.add(smaller, position);
         }

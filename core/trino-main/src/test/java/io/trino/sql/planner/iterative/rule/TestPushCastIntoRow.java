@@ -18,8 +18,8 @@ import io.airlift.slice.Slices;
 import io.trino.sql.ir.Cast;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.FieldReference;
 import io.trino.sql.ir.Row;
-import io.trino.sql.ir.SubscriptExpression;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
@@ -50,23 +50,29 @@ public class TestPushCastIntoRow
                 new Row(ImmutableList.of(new Cast(new Constant(INTEGER, 1L), BIGINT))));
         test(
                 new Cast(new Row(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(VARCHAR, Slices.utf8Slice("a")))), anonymousRow(BIGINT, VARCHAR)),
-                new Row(ImmutableList.of(new Cast(new Constant(INTEGER, 1L), BIGINT), new Cast(new Constant(VARCHAR, Slices.utf8Slice("a")), VARCHAR))));
+                new Row(ImmutableList.of(new Cast(new Constant(INTEGER, 1L), BIGINT), new Constant(VARCHAR, Slices.utf8Slice("a")))));
         test(
                 new Cast(new Cast(new Row(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(VARCHAR, Slices.utf8Slice("a")))), anonymousRow(SMALLINT, VARCHAR)), anonymousRow(BIGINT, VARCHAR)),
-                new Row(ImmutableList.of(new Cast(new Cast(new Constant(INTEGER, 1L), SMALLINT), BIGINT), new Cast(new Cast(new Constant(VARCHAR, Slices.utf8Slice("a")), VARCHAR), VARCHAR))));
+                new Row(ImmutableList.of(new Cast(new Cast(new Constant(INTEGER, 1L), SMALLINT), BIGINT), new Constant(VARCHAR, Slices.utf8Slice("a")))));
 
         // named fields in top-level cast preserved
         test(
                 new Cast(new Cast(new Row(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(VARCHAR, Slices.utf8Slice("a")))), anonymousRow(SMALLINT, VARCHAR)), rowType(field("x", BIGINT), field(VARCHAR))),
-                new Cast(new Row(ImmutableList.of(new Cast(new Constant(INTEGER, 1L), SMALLINT), new Cast(new Constant(VARCHAR, Slices.utf8Slice("a")), VARCHAR))), rowType(field("x", BIGINT), field(VARCHAR))));
+                new Row(ImmutableList.of(new Cast(new Cast(new Constant(INTEGER, 1L), SMALLINT), BIGINT), new Constant(VARCHAR, Slices.utf8Slice("a"))), rowType(field("x", BIGINT), field(VARCHAR))));
         test(
                 new Cast(new Cast(new Row(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(VARCHAR, Slices.utf8Slice("a")))), rowType(field("a", SMALLINT), field("b", VARCHAR))), rowType(field("x", BIGINT), field(VARCHAR))),
-                new Cast(new Row(ImmutableList.of(new Cast(new Constant(INTEGER, 1L), SMALLINT), new Cast(new Constant(VARCHAR, Slices.utf8Slice("a")), VARCHAR))), rowType(field("x", BIGINT), field(VARCHAR))));
+                new Row(ImmutableList.of(new Cast(new Cast(new Constant(INTEGER, 1L), SMALLINT), BIGINT), new Constant(VARCHAR, Slices.utf8Slice("a"))), rowType(field("x", BIGINT), field(VARCHAR))));
+        test(
+                new Cast(new Row(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(VARCHAR, Slices.utf8Slice("a")))), rowType(field("x", SMALLINT), field(VARCHAR))),
+                new Row(ImmutableList.of(new Cast(new Constant(INTEGER, 1L), SMALLINT), new Constant(VARCHAR, Slices.utf8Slice("a"))), rowType(field("x", SMALLINT), field(VARCHAR))));
+        test(
+                new Cast(new Row(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(VARCHAR, Slices.utf8Slice("a"))), rowType(field("a", SMALLINT), field("b", VARCHAR))), rowType(field("x", SMALLINT), field(VARCHAR))),
+                new Row(ImmutableList.of(new Cast(new Constant(INTEGER, 1L), SMALLINT), new Constant(VARCHAR, Slices.utf8Slice("a"))), rowType(field("x", SMALLINT), field(VARCHAR))));
 
         // expression nested in another unrelated expression
         test(
-                new SubscriptExpression(BIGINT, new Cast(new Row(ImmutableList.of(new Constant(INTEGER, 1L))), anonymousRow(BIGINT)), new Constant(INTEGER, 1L)),
-                new SubscriptExpression(BIGINT, new Row(ImmutableList.of(new Cast(new Constant(INTEGER, 1L), BIGINT))), new Constant(INTEGER, 1L)));
+                new FieldReference(new Cast(new Row(ImmutableList.of(new Constant(INTEGER, 1L))), anonymousRow(BIGINT)), 0),
+                new FieldReference(new Row(ImmutableList.of(new Cast(new Constant(INTEGER, 1L), BIGINT))), 0));
 
         // don't insert CAST(x AS unknown)
         test(
@@ -79,7 +85,7 @@ public class TestPushCastIntoRow
         tester().assertThat(new PushCastIntoRow().projectExpressionRewrite())
                 .on(p -> p.project(
                         Assignments.builder()
-                                .put(p.symbol("output"), original)
+                                .put(p.symbol("output", original.type()), original)
                                 .build(),
                         p.values()))
                 .matches(

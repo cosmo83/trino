@@ -23,7 +23,7 @@ import io.trino.spi.connector.LocalProperty;
 import io.trino.spi.connector.WriterScalingOptions;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.ir.Constant;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Partitioning;
 import io.trino.sql.planner.PartitioningHandle;
 import io.trino.sql.planner.PartitioningScheme;
@@ -183,7 +183,7 @@ public class AddLocalExchanges
         {
             // Special handling for trivial projections. Applies to identity and renaming projections, and constants
             // It might be extended to handle other low-cost projections.
-            if (node.getAssignments().getExpressions().stream().allMatch(expression -> expression instanceof SymbolReference || expression instanceof Constant constant && constant.getValue() != null)) {
+            if (node.getAssignments().expressions().stream().allMatch(expression -> expression instanceof Reference || expression instanceof Constant constant && constant.value() != null)) {
                 if (parentPreferences.isSingleStreamPreferred()) {
                     // Do not enforce gathering exchange below project:
                     // - if project's source is single stream, no exchanges will be added around project,
@@ -353,8 +353,7 @@ public class AddLocalExchanges
                                 idAllocator.getNextId(),
                                 LOCAL,
                                 child.getNode(),
-                                groupingKeys,
-                                Optional.empty()),
+                                groupingKeys),
                         child.getProperties());
                 return rebaseAndDeriveProperties(node, ImmutableList.of(exchange));
             }
@@ -418,7 +417,6 @@ public class AddLocalExchanges
                     child.getNode(),
                     node.getSpecification(),
                     node.getWindowFunctions(),
-                    node.getHashSymbol(),
                     prePartitionedInputs,
                     preSortedOrderPrefix);
 
@@ -462,7 +460,6 @@ public class AddLocalExchanges
                     node.getId(),
                     child.getNode(),
                     node.getSpecification(),
-                    node.getHashSymbol(),
                     prePartitionedInputs,
                     preSortedOrderPrefix,
                     node.getWindowFunctions(),
@@ -499,7 +496,7 @@ public class AddLocalExchanges
                 return rebaseAndDeriveProperties(node, ImmutableList.of(child));
             }
 
-            List<Symbol> partitionBy = node.getSpecification().orElseThrow().getPartitionBy();
+            List<Symbol> partitionBy = node.getSpecification().orElseThrow().partitionBy();
             StreamPreferredProperties childRequirements;
             if (!node.isPruneWhenEmpty()) {
                 childRequirements = singleStream();
@@ -517,7 +514,7 @@ public class AddLocalExchanges
             if (!partitionBy.isEmpty()) {
                 desiredProperties.add(new GroupingProperty<>(partitionBy));
             }
-            node.getSpecification().flatMap(DataOrganizationSpecification::getOrderingScheme).ifPresent(orderingScheme -> desiredProperties.addAll(orderingScheme.toLocalProperties()));
+            node.getSpecification().flatMap(DataOrganizationSpecification::orderingScheme).ifPresent(orderingScheme -> desiredProperties.addAll(orderingScheme.toLocalProperties()));
             Iterator<Optional<LocalProperty<Symbol>>> matchIterator = LocalProperties.match(child.getProperties().getLocalProperties(), desiredProperties).iterator();
 
             Set<Symbol> prePartitionedInputs = ImmutableSet.of();
@@ -548,7 +545,6 @@ public class AddLocalExchanges
                     node.getSpecification(),
                     prePartitionedInputs,
                     preSortedOrderPrefix,
-                    node.getHashSymbol(),
                     node.getHandle());
 
             return deriveProperties(result, child.getProperties());
@@ -569,8 +565,7 @@ public class AddLocalExchanges
                     node.getId(),
                     child.getNode(),
                     node.getMarkerSymbol(),
-                    pruneMarkDistinctSymbols(node, child.getProperties().getLocalProperties()),
-                    node.getHashSymbol());
+                    pruneMarkDistinctSymbols(node, child.getProperties().getLocalProperties()));
 
             return deriveProperties(result, child.getProperties());
         }
@@ -876,8 +871,7 @@ public class AddLocalExchanges
                         LOCAL,
                         new PartitioningScheme(
                                 Partitioning.create(FIXED_HASH_DISTRIBUTION, preferredPartitionColumns.get()),
-                                node.getOutputSymbols(),
-                                Optional.empty()),
+                                node.getOutputSymbols()),
                         sources,
                         inputLayouts,
                         Optional.empty());
@@ -1043,8 +1037,7 @@ public class AddLocalExchanges
                         idAllocator.getNextId(),
                         LOCAL,
                         planWithProperties.getNode(),
-                        requiredPartitionColumns.get(),
-                        Optional.empty());
+                        requiredPartitionColumns.get());
                 return deriveProperties(exchangeNode, planWithProperties.getProperties());
             }
 

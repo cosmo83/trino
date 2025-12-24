@@ -13,14 +13,14 @@
  */
 package io.trino.cost;
 
-import io.trino.Session;
 import io.trino.cost.ComposableStatsCalculator.Rule;
 import io.trino.cost.StatsCalculator.Context;
 import io.trino.matching.Pattern;
 import io.trino.spi.block.SqlRow;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
-import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Row;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.ValuesNode;
 
@@ -35,23 +35,14 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.spi.statistics.StatsUtil.toStatsRepresentation;
 import static io.trino.spi.type.TypeUtils.readNativeValue;
-import static io.trino.sql.planner.IrExpressionInterpreter.evaluateConstantExpression;
 import static io.trino.sql.planner.plan.Patterns.values;
 import static io.trino.type.UnknownType.UNKNOWN;
-import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 
 public class ValuesStatsRule
         implements Rule<ValuesNode>
 {
     private static final Pattern<ValuesNode> PATTERN = values();
-
-    private final PlannerContext plannerContext;
-
-    public ValuesStatsRule(PlannerContext plannerContext)
-    {
-        this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
-    }
 
     @Override
     public Pattern<ValuesNode> getPattern()
@@ -71,11 +62,10 @@ public class ValuesStatsRule
                 List<Object> symbolValues = getSymbolValues(
                         node,
                         symbolId,
-                        context.session(),
                         RowType.anonymous(node.getOutputSymbols().stream()
-                                .map(Symbol::getType)
+                                .map(Symbol::type)
                                 .collect(toImmutableList())));
-                statsBuilder.addSymbolStatistics(symbol, buildSymbolStatistics(symbolValues, symbol.getType()));
+                statsBuilder.addSymbolStatistics(symbol, buildSymbolStatistics(symbolValues, symbol.type()));
             }
         }
         catch (RuntimeException e) {
@@ -86,9 +76,9 @@ public class ValuesStatsRule
         return Optional.of(statsBuilder.build());
     }
 
-    private List<Object> getSymbolValues(ValuesNode valuesNode, int symbolId, Session session, Type rowType)
+    private List<Object> getSymbolValues(ValuesNode valuesNode, int symbolId, RowType rowType)
     {
-        Type symbolType = rowType.getTypeParameters().get(symbolId);
+        Type symbolType = rowType.getFieldTypes().get(symbolId);
         if (UNKNOWN.equals(symbolType)) {
             // special casing for UNKNOWN as evaluateConstantExpression does not handle that
             return IntStream.range(0, valuesNode.getRowCount())
@@ -97,9 +87,10 @@ public class ValuesStatsRule
         }
         checkState(valuesNode.getRows().isPresent(), "rows is empty");
         return valuesNode.getRows().get().stream()
-                .map(row -> {
-                    SqlRow rowValue = (SqlRow) evaluateConstantExpression(row, plannerContext, session);
-                    return readNativeValue(symbolType, rowValue.getRawFieldBlock(symbolId), rowValue.getRawIndex());
+                .map(row -> switch (row) {
+                    case Row value -> ((Constant) value.items().get(symbolId)).value();
+                    case Constant(Type type, SqlRow value) -> readNativeValue(symbolType, value.getRawFieldBlock(symbolId), value.getRawIndex());
+                    default -> throw new IllegalArgumentException("Expected Row or Constant: " + row);
                 })
                 .collect(toList());
     }

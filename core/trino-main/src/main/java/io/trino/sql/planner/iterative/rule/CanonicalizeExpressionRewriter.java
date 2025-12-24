@@ -21,23 +21,23 @@ import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Cast;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.ir.ExpressionRewriter;
 import io.trino.sql.ir.ExpressionTreeRewriter;
-import io.trino.sql.ir.FunctionCall;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 
 import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.spi.type.DateType.DATE;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.MULTIPLY;
 
 public final class CanonicalizeExpressionRewriter
 {
+    private static final CatalogSchemaFunctionName MULTIPLY_BUILTIN_FUNCTION = builtinFunctionName(OperatorType.MULTIPLY);
+    private static final CatalogSchemaFunctionName ADD_BUILTIN_FUNCTION = builtinFunctionName(OperatorType.ADD);
+
     public static Expression canonicalizeExpression(Expression expression, PlannerContext plannerContext)
     {
         return ExpressionTreeRewriter.rewriteWith(new Visitor(plannerContext), expression);
@@ -47,7 +47,7 @@ public final class CanonicalizeExpressionRewriter
 
     public static Expression rewrite(Expression expression, PlannerContext plannerContext)
     {
-        if (expression instanceof SymbolReference) {
+        if (expression instanceof Reference) {
             return expression;
         }
 
@@ -66,50 +66,42 @@ public final class CanonicalizeExpressionRewriter
 
         @SuppressWarnings("ArgumentSelectionDefectChecker")
         @Override
-        public Expression rewriteComparisonExpression(ComparisonExpression node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
+        public Expression rewriteComparison(Comparison node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
         {
             // if we have a comparison of the form <constant> <op> <expr>, normalize it to
             // <expr> <op-flipped> <constant>
-            if (isConstant(node.getLeft()) && !isConstant(node.getRight())) {
-                node = new ComparisonExpression(node.getOperator().flip(), node.getRight(), node.getLeft());
+            if (isConstant(node.left()) && !isConstant(node.right())) {
+                node = new Comparison(node.operator().flip(), node.right(), node.left());
             }
 
             return treeRewriter.defaultRewrite(node, context);
         }
 
-        @SuppressWarnings("ArgumentSelectionDefectChecker")
         @Override
-        public Expression rewriteArithmeticBinary(ArithmeticBinaryExpression node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
+        public Expression rewriteCall(Call node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
         {
-            if (node.getOperator() == MULTIPLY || node.getOperator() == ADD) {
-                // if we have a operation of the form <constant> [+|*] <expr>, normalize it to
-                // <expr> [+|*] <constant>
-                if (isConstant(node.getLeft()) && !isConstant(node.getRight())) {
-                    node = new ArithmeticBinaryExpression(
+            CatalogSchemaFunctionName functionName = node.function().name();
+
+            if (functionName.equals(MULTIPLY_BUILTIN_FUNCTION) ||
+                    functionName.equals(ADD_BUILTIN_FUNCTION)) {
+                // normalize <constant> [*/+] <expr>, normalize it to <expr> [*/+] <constant>
+                Expression left = treeRewriter.rewrite(node.arguments().get(0), context);
+                Expression right = treeRewriter.rewrite(node.arguments().get(1), context);
+                if (isConstant(left) && !isConstant(right)) {
+                    return new Call(
                             plannerContext.getMetadata().resolveOperator(
-                                    switch (node.getOperator()) {
-                                        case ADD -> OperatorType.ADD;
-                                        case MULTIPLY -> OperatorType.MULTIPLY;
-                                        default -> throw new IllegalStateException("Unexpected value: " + node.getOperator());
-                                    },
+                                    getOperator(functionName),
                                     ImmutableList.of(
-                                            node.getFunction().getSignature().getArgumentType(1),
-                                            node.getFunction().getSignature().getArgumentType(0))),
-                            node.getOperator(),
-                            node.getRight(),
-                            node.getLeft());
+                                            node.function().signature().getArgumentType(1),
+                                            node.function().signature().getArgumentType(0))),
+                            ImmutableList.of(right, left));
+                }
+                else {
+                    return new Call(node.function(), ImmutableList.of(left, right));
                 }
             }
-
-            return treeRewriter.defaultRewrite(node, context);
-        }
-
-        @Override
-        public Expression rewriteFunctionCall(FunctionCall node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
-        {
-            CatalogSchemaFunctionName functionName = node.getFunction().getName();
-            if (functionName.equals(builtinFunctionName("date")) && node.getArguments().size() == 1) {
-                Expression argument = node.getArguments().get(0);
+            else if (functionName.equals(builtinFunctionName("date")) && node.arguments().size() == 1) {
+                Expression argument = node.arguments().get(0);
                 Type argumentType = argument.type();
                 if (argumentType instanceof TimestampType
                         || argumentType instanceof TimestampWithTimeZoneType
@@ -126,5 +118,14 @@ public final class CanonicalizeExpressionRewriter
         {
             return expression instanceof Constant;
         }
+    }
+
+    private static OperatorType getOperator(CatalogSchemaFunctionName function)
+    {
+        return switch (function) {
+            case CatalogSchemaFunctionName name when name.equals(ADD_BUILTIN_FUNCTION) -> OperatorType.ADD;
+            case CatalogSchemaFunctionName name when name.equals(MULTIPLY_BUILTIN_FUNCTION) -> OperatorType.MULTIPLY;
+            default -> throw new IllegalArgumentException("Unexpected operator: " + function);
+        };
     }
 }

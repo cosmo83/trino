@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.trino.RowPageBuilder;
 import io.trino.metadata.TestingFunctionResolution;
+import io.trino.operator.AggregationMetrics;
 import io.trino.operator.aggregation.Aggregator;
 import io.trino.operator.aggregation.TestingAggregationFunction;
 import io.trino.plugin.ml.type.ClassifierParametricType;
@@ -36,8 +37,8 @@ import java.util.Random;
 import static io.trino.metadata.InternalFunctionBundle.extractFunctions;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DoubleType.DOUBLE;
+import static io.trino.spi.type.TypeParameter.typeParameter;
 import static io.trino.spi.type.TypeSignature.mapType;
-import static io.trino.spi.type.TypeSignatureParameter.typeParameter;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypeSignatures;
 import static io.trino.sql.planner.TestingPlannerContext.plannerContextBuilder;
@@ -69,7 +70,7 @@ public class TestLearnAggregations
         TestingAggregationFunction aggregationFunction = FUNCTION_RESOLUTION.getAggregateFunction(
                 "learn_classifier",
                 fromTypeSignatures(BIGINT.getTypeSignature(), mapType(BIGINT.getTypeSignature(), DOUBLE.getTypeSignature())));
-        assertLearnClassifier(aggregationFunction.createAggregatorFactory(SINGLE, ImmutableList.of(0, 1), OptionalInt.empty()).createAggregator());
+        assertLearnClassifier(aggregationFunction.createAggregatorFactory(SINGLE, ImmutableList.of(0, 1), OptionalInt.empty()).createAggregator(new AggregationMetrics()));
     }
 
     @Test
@@ -78,7 +79,7 @@ public class TestLearnAggregations
         TestingAggregationFunction aggregationFunction = FUNCTION_RESOLUTION.getAggregateFunction(
                 "learn_libsvm_classifier",
                 fromTypeSignatures(BIGINT.getTypeSignature(), mapType(BIGINT.getTypeSignature(), DOUBLE.getTypeSignature()), VARCHAR.getTypeSignature()));
-        assertLearnClassifier(aggregationFunction.createAggregatorFactory(SINGLE, ImmutableList.of(0, 1, 2), OptionalInt.empty()).createAggregator());
+        assertLearnClassifier(aggregationFunction.createAggregatorFactory(SINGLE, ImmutableList.of(0, 1, 2), OptionalInt.empty()).createAggregator(new AggregationMetrics()));
     }
 
     private static void assertLearnClassifier(Aggregator aggregator)

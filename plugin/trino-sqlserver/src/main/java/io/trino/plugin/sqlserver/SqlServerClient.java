@@ -39,6 +39,7 @@ import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
 import io.trino.plugin.jdbc.JdbcJoinCondition;
+import io.trino.plugin.jdbc.JdbcMetadata;
 import io.trino.plugin.jdbc.JdbcOutputTableHandle;
 import io.trino.plugin.jdbc.JdbcProcedureHandle;
 import io.trino.plugin.jdbc.JdbcProcedureHandle.ProcedureQuery;
@@ -65,6 +66,8 @@ import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.plugin.jdbc.expression.RewriteCaseSensitiveComparison;
 import io.trino.plugin.jdbc.expression.RewriteIn;
+import io.trino.plugin.jdbc.expression.RewriteLikeEscapeWithCaseSensitivity;
+import io.trino.plugin.jdbc.expression.RewriteLikeWithCaseSensitivity;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
@@ -74,6 +77,9 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinCondition;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
+import io.trino.spi.connector.RelationColumnsMetadata;
+import io.trino.spi.connector.RelationCommentMetadata;
+import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.predicate.Domain;
@@ -115,7 +121,9 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -302,6 +310,8 @@ public class SqlServerClient
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
                 .addStandardRules(this::quoted)
                 .add(new RewriteIn())
+                .add(new RewriteLikeWithCaseSensitivity())
+                .add(new RewriteLikeEscapeWithCaseSensitivity())
                 .withTypeClass("integer_type", ImmutableSet.of("tinyint", "smallint", "integer", "bigint"))
                 .withTypeClass("numeric_type", ImmutableSet.of("tinyint", "smallint", "integer", "bigint", "decimal", "real", "double"))
                 .map("$equal(left: numeric_type, right: numeric_type)").to("left = right")
@@ -317,8 +327,6 @@ public class SqlServerClient
                 .map("$divide(left: integer_type, right: integer_type)").to("left / right")
                 .map("$modulus(left: integer_type, right: integer_type)").to("left % right")
                 .map("$negate(value: integer_type)").to("-value")
-                .map("$like(value: varchar, pattern: varchar): boolean").to("value LIKE pattern")
-                .map("$like(value: varchar, pattern: varchar, escape: varchar(1)): boolean").to("value LIKE pattern ESCAPE escape")
                 .map("$not($is_null(value))").to("value IS NOT NULL")
                 .map("$not(value: boolean)").to("NOT value")
                 .map("$is_null(value)").to("value IS NULL")
@@ -370,6 +378,29 @@ public class SqlServerClient
         return table;
     }
 
+    @Override
+    public Collection<String> listSchemas(Connection connection)
+    {
+        // Avoid using DatabaseMetaData.getSchemas method because
+        // https://github.com/microsoft/mssql-jdbc/commit/351c2bec2ed88249cf9d68804224b717015d1625 introduced a filtering
+        // of internal (predefined) schemas.
+        try (PreparedStatement statement = connection.prepareStatement("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA");
+                ResultSet resultSet = statement.executeQuery()) {
+            ImmutableSet.Builder<String> schemaNames = ImmutableSet.builder();
+            while (resultSet.next()) {
+                String schemaName = resultSet.getString("SCHEMA_NAME");
+                // skip internal schemas
+                if (filterSchema(schemaName)) {
+                    schemaNames.add(schemaName);
+                }
+            }
+            return schemaNames.build();
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
     protected void enableTableLockOnBulkLoadTableOption(ConnectorSession session, JdbcOutputTableHandle table)
     {
         if (!isTableLockNeeded(session)) {
@@ -379,7 +410,10 @@ public class SqlServerClient
             // 'table lock on bulk load' table option causes the bulk load processes on user-defined tables to obtain a bulk update lock
             // note: this is not a request to lock a table immediately
             String sql = format("EXEC sp_tableoption '%s', 'table lock on bulk load', '1'",
-                    quoted(table.getCatalogName(), table.getSchemaName(), table.getTemporaryTableName().orElseGet(table::getTableName)));
+                    quoted(
+                            table.getRemoteTableName().getCatalogName().orElse(null),
+                            table.getRemoteTableName().getSchemaName().orElse(null),
+                            table.getTemporaryTableName().orElseGet(() -> table.getRemoteTableName().getTableName())));
             execute(session, connection, sql);
         }
         catch (SQLException e) {
@@ -395,6 +429,30 @@ public class SqlServerClient
     protected boolean isTableLockNeeded(ConnectorSession session)
     {
         return isBulkCopyForWrite(session) && isBulkCopyForWriteLockDestinationTable(session);
+    }
+
+    @Override
+    public List<RelationCommentMetadata> getAllTableComments(ConnectorSession session, Optional<String> schema)
+    {
+        return retryOnDeadlock(() -> super.getAllTableComments(session, schema), "error when getting all table comments for '%s'".formatted(schema));
+    }
+
+    @Override
+    public Iterator<RelationColumnsMetadata> getAllTableColumns(ConnectorSession session, Optional<String> schema)
+    {
+        return retryOnDeadlock(() -> super.getAllTableColumns(session, schema), "error when getting all table columns for '%s'".formatted(schema));
+    }
+
+    @Override
+    public Optional<JdbcTableHandle> getTableHandle(ConnectorSession session, SchemaTableName schemaTableName)
+    {
+        return retryOnDeadlock(() -> super.getTableHandle(session, schemaTableName), "error when getting table handle for '%s'".formatted(schemaTableName));
+    }
+
+    @Override
+    public List<JdbcColumnHandle> getColumns(ConnectorSession session, SchemaTableName schemaTableName, RemoteTableName remoteTableName)
+    {
+        return retryOnDeadlock(() -> super.getColumns(session, schemaTableName, remoteTableName), "error when getting columns for table '%s'".formatted(remoteTableName));
     }
 
     @Override
@@ -501,12 +559,9 @@ public class SqlServerClient
     }
 
     @Override
-    protected Map<String, CaseSensitivity> getCaseSensitivityForColumns(ConnectorSession session, Connection connection, JdbcTableHandle tableHandle)
+    protected Map<String, CaseSensitivity> getCaseSensitivityForColumns(ConnectorSession session, Connection connection, SchemaTableName schemaTableName, RemoteTableName remoteTableName)
     {
-        if (tableHandle.isSynthetic()) {
-            return ImmutableMap.of();
-        }
-        PreparedQuery preparedQuery = new PreparedQuery(format("SELECT * FROM %s", quoted(tableHandle.asPlainTable().getRemoteTableName())), ImmutableList.of());
+        PreparedQuery preparedQuery = new PreparedQuery(format("SELECT * FROM %s", quoted(remoteTableName)), ImmutableList.of());
 
         try (PreparedStatement preparedStatement = queryBuilder.prepareStatement(this, session, connection, preparedQuery, Optional.empty())) {
             ResultSetMetaData metadata = preparedStatement.getMetaData();
@@ -523,7 +578,7 @@ public class SqlServerClient
                 // Throw TableNotFoundException because users shouldn't see such tables if they don't have the permission.
                 // TableNotFoundException will be suppressed when listing information_schema.
                 // https://learn.microsoft.com/sql/relational-databases/errors-events/mssqlserver-208-database-engine-error
-                throw new TableNotFoundException(tableHandle.asPlainTable().getSchemaTableName());
+                throw new TableNotFoundException(schemaTableName);
             }
             throw new TrinoException(JDBC_ERROR, "Failed to get case sensitivity for columns. " + firstNonNull(e.getMessage(), e), e);
         }
@@ -537,17 +592,17 @@ public class SqlServerClient
             return mapping;
         }
 
-        String jdbcTypeName = typeHandle.getJdbcTypeName()
+        String jdbcTypeName = typeHandle.jdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
 
         switch (jdbcTypeName) {
             case "varbinary":
                 return Optional.of(varbinaryColumnMapping());
             case "datetimeoffset":
-                return Optional.of(timestampWithTimeZoneColumnMapping(typeHandle.getRequiredDecimalDigits()));
+                return Optional.of(timestampWithTimeZoneColumnMapping(typeHandle.requiredDecimalDigits()));
         }
 
-        switch (typeHandle.getJdbcType()) {
+        switch (typeHandle.jdbcType()) {
             case Types.BIT:
                 return Optional.of(booleanColumnMapping());
 
@@ -574,8 +629,8 @@ public class SqlServerClient
 
             case Types.NUMERIC:
             case Types.DECIMAL: {
-                int columnSize = typeHandle.getRequiredColumnSize();
-                int decimalDigits = typeHandle.getRequiredDecimalDigits();
+                int columnSize = typeHandle.requiredColumnSize();
+                int decimalDigits = typeHandle.requiredDecimalDigits();
                 // TODO does sql server support negative scale?
                 int precision = columnSize + max(-decimalDigits, 0); // Map decimal(p, -s) (negative scale) to decimal(p+s, 0).
                 if (precision > Decimals.MAX_PRECISION) {
@@ -586,15 +641,15 @@ public class SqlServerClient
 
             case Types.CHAR:
             case Types.NCHAR:
-                return Optional.of(charColumnMapping(typeHandle.getRequiredColumnSize(), typeHandle.getCaseSensitivity().orElse(CASE_INSENSITIVE) == CASE_SENSITIVE));
+                return Optional.of(charColumnMapping(typeHandle.requiredColumnSize(), typeHandle.caseSensitivity().orElse(CASE_INSENSITIVE) == CASE_SENSITIVE));
 
             case Types.VARCHAR:
             case Types.NVARCHAR:
-                return Optional.of(varcharColumnMapping(typeHandle.getRequiredColumnSize(), typeHandle.getCaseSensitivity().orElse(CASE_INSENSITIVE) == CASE_SENSITIVE));
+                return Optional.of(varcharColumnMapping(typeHandle.requiredColumnSize(), typeHandle.caseSensitivity().orElse(CASE_INSENSITIVE) == CASE_SENSITIVE));
 
             case Types.LONGVARCHAR:
             case Types.LONGNVARCHAR:
-                return Optional.of(longVarcharColumnMapping(typeHandle.getRequiredColumnSize()));
+                return Optional.of(longVarcharColumnMapping(typeHandle.requiredColumnSize()));
 
             case Types.BINARY:
             case Types.VARBINARY:
@@ -608,14 +663,14 @@ public class SqlServerClient
                         sqlServerDateWriteFunction()));
 
             case Types.TIME:
-                TimeType timeType = createTimeType(typeHandle.getRequiredDecimalDigits());
+                TimeType timeType = createTimeType(typeHandle.requiredDecimalDigits());
                 return Optional.of(ColumnMapping.longMapping(
                         timeType,
                         timeReadFunction(timeType),
                         sqlServerTimeWriteFunction(timeType.getPrecision())));
 
             case Types.TIMESTAMP:
-                int precision = typeHandle.getRequiredDecimalDigits();
+                int precision = typeHandle.requiredDecimalDigits();
                 return Optional.of(timestampColumnMapping(createTimestampType(precision)));
         }
 
@@ -782,7 +837,7 @@ public class SqlServerClient
 
             Map<String, String> columnNameToStatisticsName = getColumnNameToStatisticsName(table, statisticsDao, tableObjectId);
 
-            for (JdbcColumnHandle column : this.getColumns(session, table)) {
+            for (JdbcColumnHandle column : JdbcMetadata.getColumns(session, this, table)) {
                 String statisticName = columnNameToStatisticsName.get(column.getColumnName());
                 if (statisticName == null) {
                     // No statistic for column
@@ -1075,7 +1130,7 @@ public class SqlServerClient
     public boolean supportsTopN(ConnectorSession session, JdbcTableHandle handle, List<JdbcSortItem> sortOrder)
     {
         for (JdbcSortItem sortItem : sortOrder) {
-            Type sortItemType = sortItem.getColumn().getColumnType();
+            Type sortItemType = sortItem.column().getColumnType();
             if (sortItemType instanceof CharType || sortItemType instanceof VarcharType) {
                 // Remote database can be case insensitive.
                 return false;
@@ -1090,26 +1145,15 @@ public class SqlServerClient
         return Optional.of((query, sortItems, limit) -> {
             String orderBy = sortItems.stream()
                     .flatMap(sortItem -> {
-                        String ordering = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
-                        String columnSorting = format("%s %s", quoted(sortItem.getColumn().getColumnName()), ordering);
+                        String ordering = sortItem.sortOrder().isAscending() ? "ASC" : "DESC";
+                        String columnSorting = format("%s %s", quoted(sortItem.column().getColumnName()), ordering);
 
-                        switch (sortItem.getSortOrder()) {
-                            case ASC_NULLS_FIRST:
-                                // In SQL Server ASC implies NULLS FIRST
-                            case DESC_NULLS_LAST:
-                                // In SQL Server DESC implies NULLS LAST
-                                return Stream.of(columnSorting);
-
-                            case ASC_NULLS_LAST:
-                                return Stream.of(
-                                        format("(CASE WHEN %s IS NULL THEN 1 ELSE 0 END) ASC", quoted(sortItem.getColumn().getColumnName())),
-                                        columnSorting);
-                            case DESC_NULLS_FIRST:
-                                return Stream.of(
-                                        format("(CASE WHEN %s IS NULL THEN 1 ELSE 0 END) DESC", quoted(sortItem.getColumn().getColumnName())),
-                                        columnSorting);
-                        }
-                        throw new UnsupportedOperationException("Unsupported sort order: " + sortItem.getSortOrder());
+                        return switch (sortItem.sortOrder()) {
+                            // In SQL Server ASC implies NULLS FIRST, DESC implies NULLS LAST
+                            case ASC_NULLS_FIRST, DESC_NULLS_LAST -> Stream.of(columnSorting);
+                            case ASC_NULLS_LAST -> Stream.of(format("(CASE WHEN %s IS NULL THEN 1 ELSE 0 END) ASC", quoted(sortItem.column().getColumnName())), columnSorting);
+                            case DESC_NULLS_FIRST -> Stream.of(format("(CASE WHEN %s IS NULL THEN 1 ELSE 0 END) DESC", quoted(sortItem.column().getColumnName())), columnSorting);
+                        };
                     })
                     .collect(joining(", "));
             return format("%s ORDER BY %s OFFSET 0 ROWS FETCH NEXT %s ROWS ONLY", query, orderBy, limit);
@@ -1125,7 +1169,7 @@ public class SqlServerClient
     @Override
     protected boolean isSupportedJoinCondition(ConnectorSession session, JdbcJoinCondition joinCondition)
     {
-        if (joinCondition.getOperator() == JoinCondition.Operator.IS_DISTINCT_FROM) {
+        if (joinCondition.getOperator() == JoinCondition.Operator.IDENTICAL) {
             // Not supported in SQL Server
             return false;
         }
@@ -1147,7 +1191,7 @@ public class SqlServerClient
 
     private boolean isCaseSensitiveVarchar(JdbcColumnHandle columnHandle)
     {
-        return columnHandle.getJdbcTypeHandle().getCaseSensitivity().orElse(CASE_INSENSITIVE) == CASE_SENSITIVE;
+        return columnHandle.getJdbcTypeHandle().caseSensitivity().orElse(CASE_INSENSITIVE) == CASE_SENSITIVE;
     }
 
     @Override
@@ -1322,8 +1366,8 @@ public class SqlServerClient
                 .handleIf(throwable ->
                 {
                     Throwable rootCause = Throwables.getRootCause(throwable);
-                    return rootCause instanceof SQLServerException &&
-                            ((SQLServerException) rootCause).getSQLServerError().getErrorNumber() == SQL_SERVER_DEADLOCK_ERROR_CODE;
+                    return rootCause instanceof SQLServerException sqlServerException &&
+                            sqlServerException.getSQLServerError().getErrorNumber() == SQL_SERVER_DEADLOCK_ERROR_CODE;
                 })
                 .onFailedAttempt(event -> log.warn(event.getLastException(), "Attempt %d of %d: %s", event.getAttemptCount(), maxAttemptCount, attemptLogMessage))
                 .build();

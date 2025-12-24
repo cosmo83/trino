@@ -25,7 +25,6 @@ You need to perform the following steps:
 - Detail the events to send in the {ref}`http-event-listener-configuration` section.
 
 (http-event-listener-configuration)=
-
 ## Configuration
 
 To configure the HTTP event listener plugin, create an event listener properties
@@ -63,10 +62,6 @@ event-listener.config-files=etc/http-event-listener.properties,...
   - Enable the plugin to log `QueryCompletedEvent` events
   - `false`
 
-* - http-event-listener.log-split
-  - Enable the plugin to log `SplitCompletedEvent` events
-  - `false`
-
 * - http-event-listener.connect-ingest-uri
   - The URI that the plugin will POST events to
   - None. See the [requirements](http-event-listener-requirements) section.
@@ -75,6 +70,11 @@ event-listener.config-files=etc/http-event-listener.properties,...
   - List of custom HTTP headers to be sent along with the events. See
     [](http-event-listener-custom-headers) for more details
   - Empty
+
+* - http-event-listener.connect-http-method
+  - Specifies the HTTP method to use for the request. Supported values
+    are POST and PUT.
+  - `POST`
 
 * - http-event-listener.connect-retry-count
   - The number of retries on server error. A server is considered to be
@@ -104,7 +104,6 @@ event-listener.config-files=etc/http-event-listener.properties,...
 :::
 
 (http-event-listener-custom-headers)=
-
 ### Custom HTTP headers
 
 Providing custom HTTP headers is a useful mechanism for sending metadata along with

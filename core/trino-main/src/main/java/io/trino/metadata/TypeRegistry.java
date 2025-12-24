@@ -30,9 +30,8 @@ import io.trino.spi.type.TypeId;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeNotFoundException;
 import io.trino.spi.type.TypeOperators;
-import io.trino.spi.type.TypeParameter;
 import io.trino.spi.type.TypeSignature;
-import io.trino.spi.type.TypeSignatureParameter;
+import io.trino.sql.parser.ParsingException;
 import io.trino.sql.parser.SqlParser;
 import io.trino.type.CharParametricType;
 import io.trino.type.DecimalParametricType;
@@ -47,6 +46,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -62,8 +62,8 @@ import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_FIRST;
 import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_LAST;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.XX_HASH_64;
@@ -114,6 +114,7 @@ public final class TypeRegistry
     private final ConcurrentMap<String, ParametricType> parametricTypes = new ConcurrentHashMap<>();
 
     private final NonEvictableCache<TypeSignature, Type> parametricTypeCache;
+    private final NonEvictableCache<String, Type> sqlTypeCache;
     private final TypeManager typeManager;
     private final TypeOperators typeOperators;
 
@@ -167,6 +168,7 @@ public final class TypeRegistry
         addParametricType(TIME_WITH_TIME_ZONE);
 
         parametricTypeCache = buildNonEvictableCache(CacheBuilder.newBuilder().maximumSize(1000));
+        sqlTypeCache = buildNonEvictableCache(CacheBuilder.newBuilder().maximumSize(1000));
 
         typeManager = new InternalTypeManager(this, typeOperators);
 
@@ -196,18 +198,22 @@ public final class TypeRegistry
 
     public Type fromSqlType(String sqlType)
     {
-        return getType(toTypeSignature(SQL_PARSER.createType(sqlType)));
+        try {
+            return sqlTypeCache.get(sqlType, () -> getType(toTypeSignature(SQL_PARSER.createType(sqlType))));
+        }
+        catch (ParsingException e) {
+            throw new TypeNotFoundException(sqlType, e);
+        }
+        catch (ExecutionException e) {
+            if (e.getCause() instanceof ParsingException parsingException) {
+                throw new TypeNotFoundException(sqlType, parsingException);
+            }
+            throw new RuntimeException("Could not get type from cache", e);
+        }
     }
 
     private Type instantiateParametricType(TypeSignature signature)
     {
-        List<TypeParameter> parameters = new ArrayList<>();
-
-        for (TypeSignatureParameter parameter : signature.getParameters()) {
-            TypeParameter typeParameter = TypeParameter.of(parameter, typeManager);
-            parameters.add(typeParameter);
-        }
-
         ParametricType parametricType = parametricTypes.get(signature.getBase().toLowerCase(Locale.ENGLISH));
         if (parametricType == null) {
             throw new TypeNotFoundException(signature);
@@ -215,7 +221,7 @@ public final class TypeRegistry
 
         Type instantiatedType;
         try {
-            instantiatedType = parametricType.createType(typeManager, parameters);
+            instantiatedType = parametricType.createType(typeManager, signature.getParameters());
         }
         catch (IllegalArgumentException e) {
             throw new TypeNotFoundException(signature, e);
@@ -283,8 +289,8 @@ public final class TypeRegistry
                 if (!hasXxHash64Method(type)) {
                     missingOperators.put(type, XX_HASH_64);
                 }
-                if (!hasDistinctFromMethod(type)) {
-                    missingOperators.put(type, IS_DISTINCT_FROM);
+                if (!hasIdenticalMethod(type)) {
+                    missingOperators.put(type, IDENTICAL);
                 }
                 if (!hasIndeterminateMethod(type)) {
                     missingOperators.put(type, INDETERMINATE);
@@ -351,10 +357,10 @@ public final class TypeRegistry
         }
     }
 
-    private boolean hasDistinctFromMethod(Type type)
+    private boolean hasIdenticalMethod(Type type)
     {
         try {
-            typeOperators.getDistinctFromOperator(type, simpleConvention(FAIL_ON_NULL, BOXED_NULLABLE, BOXED_NULLABLE));
+            typeOperators.getIdenticalOperator(type, simpleConvention(FAIL_ON_NULL, BOXED_NULLABLE, BOXED_NULLABLE));
             return true;
         }
         catch (RuntimeException e) {

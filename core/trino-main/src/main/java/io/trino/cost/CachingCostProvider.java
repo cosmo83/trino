@@ -38,7 +38,7 @@ public class CachingCostProvider
     private final Optional<Memo> memo;
     private final Session session;
 
-    private final Map<PlanNode, PlanCostEstimate> cache = new IdentityHashMap<>();
+    private final Map<PlanNode, PlanCostEstimate> cache = new IdentityHashMap<>(0);
 
     public CachingCostProvider(CostCalculator costCalculator, StatsProvider statsProvider, Session session)
     {
@@ -63,8 +63,8 @@ public class CachingCostProvider
         requireNonNull(node, "node is null");
 
         try {
-            if (node instanceof GroupReference) {
-                return getGroupCost((GroupReference) node);
+            if (node instanceof GroupReference group) {
+                return getGroupCost(group);
             }
 
             PlanCostEstimate cost = cache.get(node);

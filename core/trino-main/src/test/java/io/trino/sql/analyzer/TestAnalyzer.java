@@ -18,11 +18,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Closer;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.opentelemetry.api.OpenTelemetry;
 import io.trino.FeaturesConfig;
 import io.trino.Session;
 import io.trino.SystemSessionProperties;
 import io.trino.client.NodeVersion;
+import io.trino.connector.CatalogHandle;
 import io.trino.connector.CatalogServiceProvider;
 import io.trino.connector.MockConnectorFactory;
 import io.trino.connector.StaticConnectorFactory;
@@ -60,13 +62,14 @@ import io.trino.metadata.TableProceduresRegistry;
 import io.trino.metadata.TablePropertyManager;
 import io.trino.metadata.ViewColumn;
 import io.trino.metadata.ViewDefinition;
+import io.trino.metadata.ViewPropertyManager;
 import io.trino.plugin.base.security.AllowAllSystemAccessControl;
 import io.trino.plugin.base.security.DefaultSystemAccessControl;
 import io.trino.security.AccessControl;
 import io.trino.security.AccessControlConfig;
 import io.trino.security.AccessControlManager;
 import io.trino.security.AllowAllAccessControl;
-import io.trino.spi.connector.CatalogHandle;
+import io.trino.server.protocol.spooling.SpoolingEnabledConfig;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.Connector;
@@ -75,6 +78,8 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.eventlistener.ColumnDetail;
+import io.trino.spi.eventlistener.ColumnLineageInfo;
 import io.trino.spi.security.Identity;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.transaction.IsolationLevel;
@@ -82,6 +87,7 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.SqlEnvironmentConfig;
 import io.trino.sql.parser.ParsingException;
 import io.trino.sql.parser.SqlParser;
 import io.trino.sql.planner.OptimizerConfig;
@@ -135,6 +141,7 @@ import static io.trino.spi.StandardErrorCode.INVALID_ARGUMENTS;
 import static io.trino.spi.StandardErrorCode.INVALID_COLUMN_REFERENCE;
 import static io.trino.spi.StandardErrorCode.INVALID_COPARTITIONING;
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
+import static io.trino.spi.StandardErrorCode.INVALID_GRACE_PERIOD;
 import static io.trino.spi.StandardErrorCode.INVALID_LABEL;
 import static io.trino.spi.StandardErrorCode.INVALID_LIMIT_CLAUSE;
 import static io.trino.spi.StandardErrorCode.INVALID_LITERAL;
@@ -201,6 +208,7 @@ import static io.trino.spi.type.VarcharType.createVarcharType;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.SELECT_COLUMN;
 import static io.trino.testing.TestingAccessControlManager.privilege;
 import static io.trino.testing.TestingEventListenerManager.emptyEventListenerManager;
+import static io.trino.testing.TestingMetadata.STALE_MV_STALENESS;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static io.trino.testing.TransactionBuilder.transaction;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
@@ -379,6 +387,14 @@ public class TestAnalyzer
         assertFails("SELECT sum(a) x FROM t1 HAVING x > 5")
                 .hasErrorCode(COLUMN_NOT_FOUND)
                 .hasMessage("line 1:32: Column 'x' cannot be resolved");
+    }
+
+    @Test
+    public void testRowReferencesUnknownField()
+    {
+        assertFails("SELECT row('a', 'b', 'c').field")
+                .hasErrorCode(INVALID_COLUMN_REFERENCE)
+                .hasMessage("line 1:8: Column reference 'field' is invalid");
     }
 
     @Test
@@ -942,11 +958,11 @@ public class TestAnalyzer
                 .hasErrorCode(TABLE_NOT_FOUND)
                 .hasMessage("line 1:15: Table 'tpch.s1.foo' does not exist");
         assertFails("SELECT * FROM foo FOR TIMESTAMP AS OF TIMESTAMP '2021-03-01 00:00:01'")
-                .hasErrorCode(TABLE_NOT_FOUND)
-                .hasMessage("line 1:15: Table 'tpch.s1.foo' does not exist");
+                .hasErrorCode(NOT_SUPPORTED)
+                .hasMessage("This connector does not support versioned tables");
         assertFails("SELECT * FROM foo FOR VERSION AS OF 'version1'")
-                .hasErrorCode(TABLE_NOT_FOUND)
-                .hasMessage("line 1:15: Table 'tpch.s1.foo' does not exist");
+                .hasErrorCode(NOT_SUPPORTED)
+                .hasMessage("This connector does not support versioned tables");
         // table name containing dots
         assertFails("SELECT * FROM \"table.not.existing\"")
                 .hasErrorCode(TABLE_NOT_FOUND)
@@ -1129,6 +1145,7 @@ public class TestAnalyzer
     {
         Session session = testSessionBuilder(new SessionPropertyManager(new SystemSessionProperties(
                 new QueryManagerConfig(),
+                new SpoolingEnabledConfig(),
                 new TaskManagerConfig(),
                 new MemoryManagerConfig(),
                 new FeaturesConfig().setMaxGroupingSets(2048),
@@ -1631,12 +1648,43 @@ public class TestAnalyzer
     }
 
     @Test
-    public void testWindowAttributesForLagLeadFunctions()
+    public void testWindowAttributes()
     {
         assertFails("SELECT lag(x, 2) OVER() FROM (VALUES 1, 2, 3, 4, 5) t(x) ")
                 .hasErrorCode(MISSING_ORDER_BY);
         assertFails("SELECT lag(x, 2) OVER(ORDER BY x ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM (VALUES 1, 2, 3, 4, 5) t(x) ")
-                .hasErrorCode(INVALID_WINDOW_FRAME);
+                .hasErrorCode(INVALID_WINDOW_FRAME)
+                .hasMessage("line 1:34: Cannot specify window frame for lag function");
+
+        assertFails("SELECT lead(x, 2) OVER() FROM (VALUES 1, 2, 3, 4, 5) t(x) ")
+                .hasErrorCode(MISSING_ORDER_BY);
+        assertFails("SELECT lead(x, 2) OVER(ORDER BY x ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM (VALUES 1, 2, 3, 4, 5) t(x) ")
+                .hasErrorCode(INVALID_WINDOW_FRAME)
+                .hasMessage("line 1:35: Cannot specify window frame for lead function");
+
+        assertFails("SELECT row_number() OVER(ORDER BY x ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM (VALUES 1, 2, 3, 4, 5) t(x) ")
+                .hasErrorCode(INVALID_WINDOW_FRAME)
+                .hasMessage("line 1:37: Cannot specify window frame for row_number function");
+
+        assertFails("SELECT rank() OVER(ORDER BY x ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM (VALUES 1, 2, 3, 4, 5) t(x) ")
+                .hasErrorCode(INVALID_WINDOW_FRAME)
+                .hasMessage("line 1:31: Cannot specify window frame for rank function");
+
+        assertFails("SELECT percent_rank() OVER(ORDER BY x ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM (VALUES 1, 2, 3, 4, 5) t(x) ")
+                .hasErrorCode(INVALID_WINDOW_FRAME)
+                .hasMessage("line 1:39: Cannot specify window frame for percent_rank function");
+
+        assertFails("SELECT dense_rank() OVER(ORDER BY x ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM (VALUES 1, 2, 3, 4, 5) t(x) ")
+                .hasErrorCode(INVALID_WINDOW_FRAME)
+                .hasMessage("line 1:37: Cannot specify window frame for dense_rank function");
+
+        assertFails("SELECT cume_dist() OVER(ORDER BY x ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM (VALUES 1, 2, 3, 4, 5) t(x) ")
+                .hasErrorCode(INVALID_WINDOW_FRAME)
+                .hasMessage("line 1:36: Cannot specify window frame for cume_dist function");
+
+        assertFails("SELECT ntile(4) OVER(ORDER BY x ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM (VALUES 1, 2, 3, 4, 5) t(x) ")
+                .hasErrorCode(INVALID_WINDOW_FRAME)
+                .hasMessage("line 1:33: Cannot specify window frame for ntile function");
     }
 
     @Test
@@ -1649,38 +1697,56 @@ public class TestAnalyzer
     }
 
     @Test
+    public void testOrderByOnlySupportedForAggregateWindowFunctions()
+    {
+        analyze("SELECT array_agg(a ORDER BY b) OVER () FROM t1");
+        assertFails("SELECT first_value(a ORDER  BY b) OVER () FROM t1")
+                .hasErrorCode(NOT_SUPPORTED)
+                .hasMessage("line 1:8: Only aggregation window functions with ORDER BY are supported");
+    }
+
+    @Test
+    public void testDistinctOnlySupportedForAggregateWindowFunctions()
+    {
+        analyze("SELECT array_agg(DISTINCT a) OVER () FROM t1");
+        assertFails("SELECT first_value(DISTINCT a) OVER () FROM t1")
+                .hasErrorCode(NOT_SUPPORTED)
+                .hasMessageStartingWith("line 1:1: Only aggregation window functions with DISTINCT are supported");
+    }
+
+    @Test
     public void testWindowFrameTypeRows()
     {
-        assertFails("SELECT rank() OVER (ROWS UNBOUNDED FOLLOWING)")
+        assertFails("SELECT array_agg(x) OVER (ROWS UNBOUNDED FOLLOWING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ROWS 2 FOLLOWING)")
+        assertFails("SELECT array_agg(x) OVER (ROWS 2 FOLLOWING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ROWS BETWEEN UNBOUNDED FOLLOWING AND CURRENT ROW)")
+        assertFails("SELECT array_agg(x) OVER (ROWS BETWEEN UNBOUNDED FOLLOWING AND CURRENT ROW) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ROWS BETWEEN CURRENT ROW AND UNBOUNDED PRECEDING)")
+        assertFails("SELECT array_agg(x) OVER (ROWS BETWEEN CURRENT ROW AND UNBOUNDED PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ROWS BETWEEN CURRENT ROW AND 5 PRECEDING)")
+        assertFails("SELECT array_agg(x) OVER (ROWS BETWEEN CURRENT ROW AND 5 PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ROWS BETWEEN 2 FOLLOWING AND 5 PRECEDING)")
+        assertFails("SELECT array_agg(x) OVER (ROWS BETWEEN 2 FOLLOWING AND 5 PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ROWS BETWEEN 2 FOLLOWING AND CURRENT ROW)")
+        assertFails("SELECT array_agg(x) OVER (ROWS BETWEEN 2 FOLLOWING AND CURRENT ROW) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
 
-        assertFails("SELECT rank() OVER (ROWS 5e-1 PRECEDING)")
+        assertFails("SELECT array_agg(x) OVER (ROWS 5e-1 PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(TYPE_MISMATCH);
-        assertFails("SELECT rank() OVER (ROWS 'foo' PRECEDING)")
+        assertFails("SELECT array_agg(x) OVER (ROWS 'foo' PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(TYPE_MISMATCH);
-        assertFails("SELECT rank() OVER (ROWS BETWEEN CURRENT ROW AND 5e-1 FOLLOWING)")
+        assertFails("SELECT array_agg(x) OVER (ROWS BETWEEN CURRENT ROW AND 5e-1 FOLLOWING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(TYPE_MISMATCH);
-        assertFails("SELECT rank() OVER (ROWS BETWEEN CURRENT ROW AND 'foo' FOLLOWING)")
+        assertFails("SELECT array_agg(x) OVER (ROWS BETWEEN CURRENT ROW AND 'foo' FOLLOWING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(TYPE_MISMATCH);
 
-        analyze("SELECT rank() OVER (ROWS BETWEEN SMALLINT '1' PRECEDING AND SMALLINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
-        analyze("SELECT rank() OVER (ROWS BETWEEN TINYINT '1' PRECEDING AND TINYINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
-        analyze("SELECT rank() OVER (ROWS BETWEEN INTEGER '1' PRECEDING AND INTEGER '2' FOLLOWING) FROM (VALUES 1) t(x)");
-        analyze("SELECT rank() OVER (ROWS BETWEEN BIGINT '1' PRECEDING AND BIGINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
-        analyze("SELECT rank() OVER (ROWS BETWEEN DECIMAL '1' PRECEDING AND DECIMAL '2' FOLLOWING) FROM (VALUES 1) t(x)");
-        analyze("SELECT rank() OVER (ROWS BETWEEN CAST(1 AS decimal(38, 0)) PRECEDING AND CAST(2 AS decimal(38, 0)) FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ROWS BETWEEN SMALLINT '1' PRECEDING AND SMALLINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ROWS BETWEEN TINYINT '1' PRECEDING AND TINYINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ROWS BETWEEN INTEGER '1' PRECEDING AND INTEGER '2' FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ROWS BETWEEN BIGINT '1' PRECEDING AND BIGINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ROWS BETWEEN DECIMAL '1' PRECEDING AND DECIMAL '2' FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ROWS BETWEEN CAST(1 AS decimal(38, 0)) PRECEDING AND CAST(2 AS decimal(38, 0)) FOLLOWING) FROM (VALUES 1) t(x)");
     }
 
     @Test
@@ -1766,46 +1832,46 @@ public class TestAnalyzer
     @Test
     public void testWindowFrameTypeGroups()
     {
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS UNBOUNDED FOLLOWING) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS UNBOUNDED FOLLOWING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS 2 FOLLOWING) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS 2 FOLLOWING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN UNBOUNDED FOLLOWING AND CURRENT ROW) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN UNBOUNDED FOLLOWING AND CURRENT ROW) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN CURRENT ROW AND UNBOUNDED PRECEDING) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN CURRENT ROW AND UNBOUNDED PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN CURRENT ROW AND 5 PRECEDING) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN CURRENT ROW AND 5 PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN 2 FOLLOWING AND 5 PRECEDING) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN 2 FOLLOWING AND 5 PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN 2 FOLLOWING AND CURRENT ROW) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN 2 FOLLOWING AND CURRENT ROW) FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_WINDOW_FRAME);
 
-        assertFails("SELECT rank() OVER (GROUPS 2 PRECEDING) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (GROUPS 2 PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(MISSING_ORDER_BY);
 
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS 5e-1 PRECEDING) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS 5e-1 PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(TYPE_MISMATCH);
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS 'foo' PRECEDING) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS 'foo' PRECEDING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(TYPE_MISMATCH);
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN CURRENT ROW AND 5e-1 FOLLOWING) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN CURRENT ROW AND 5e-1 FOLLOWING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(TYPE_MISMATCH);
-        assertFails("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN CURRENT ROW AND 'foo' FOLLOWING) FROM (VALUES 1) t(x)")
+        assertFails("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN CURRENT ROW AND 'foo' FOLLOWING) FROM (VALUES 1) t(x)")
                 .hasErrorCode(TYPE_MISMATCH);
 
-        analyze("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN SMALLINT '1' PRECEDING AND SMALLINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
-        analyze("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN TINYINT '1' PRECEDING AND TINYINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
-        analyze("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN INTEGER '1' PRECEDING AND INTEGER '2' FOLLOWING) FROM (VALUES 1) t(x)");
-        analyze("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN BIGINT '1' PRECEDING AND BIGINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
-        analyze("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN DECIMAL '1' PRECEDING AND DECIMAL '2' FOLLOWING) FROM (VALUES 1) t(x)");
-        analyze("SELECT rank() OVER (ORDER BY x GROUPS BETWEEN CAST(1 AS decimal(38, 0)) PRECEDING AND CAST(2 AS decimal(38, 0)) FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN SMALLINT '1' PRECEDING AND SMALLINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN TINYINT '1' PRECEDING AND TINYINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN INTEGER '1' PRECEDING AND INTEGER '2' FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN BIGINT '1' PRECEDING AND BIGINT '2' FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN DECIMAL '1' PRECEDING AND DECIMAL '2' FOLLOWING) FROM (VALUES 1) t(x)");
+        analyze("SELECT array_agg(x) OVER (ORDER BY x GROUPS BETWEEN CAST(1 AS decimal(38, 0)) PRECEDING AND CAST(2 AS decimal(38, 0)) FOLLOWING) FROM (VALUES 1) t(x)");
     }
 
     @Test
     public void testWindowFrameWithPatternRecognition()
     {
         // in-line window specification
-        analyze("SELECT rank() OVER (" +
+        analyze("SELECT array_agg(x) OVER (" +
                 "                           PARTITION BY x " +
                 "                           ORDER BY y " +
                 "                           MEASURES A.z AS last_z " +
@@ -1821,7 +1887,7 @@ public class TestAnalyzer
                 "           FROM (VALUES (1, 2, 3)) t(x, y, z)");
 
         // window clause
-        analyze("SELECT rank() OVER w FROM (VALUES (1, 2, 3)) t(x, y, z) " +
+        analyze("SELECT array_agg(x) OVER w FROM (VALUES (1, 2, 3)) t(x, y, z) " +
                 "                       WINDOW w AS (" +
                 "                           PARTITION BY x " +
                 "                           ORDER BY y " +
@@ -1840,7 +1906,7 @@ public class TestAnalyzer
     @Test
     public void testInvalidWindowFrameWithPatternRecognition()
     {
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                           PARTITION BY x " +
                 "                           ORDER BY y " +
                 "                           MEASURES A.z AS last_z " +
@@ -1852,9 +1918,9 @@ public class TestAnalyzer
                 "                         ) " +
                 "           FROM (VALUES (1, 2, 3)) t(x, y, z)")
                 .hasErrorCode(MISSING_VARIABLE_DEFINITIONS)
-                .hasMessage("line 1:128: Pattern recognition requires DEFINE clause");
+                .hasMessage("line 1:134: Pattern recognition requires DEFINE clause");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                           PARTITION BY x " +
                 "                           ORDER BY y " +
                 "                           MEASURES A.z AS last_z " +
@@ -1869,9 +1935,9 @@ public class TestAnalyzer
                 "                         ) " +
                 "           FROM (VALUES (1, 2, 3)) t(x, y, z)")
                 .hasErrorCode(INVALID_WINDOW_FRAME)
-                .hasMessage("line 1:128: Pattern recognition requires ROWS frame type");
+                .hasMessage("line 1:134: Pattern recognition requires ROWS frame type");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                           PARTITION BY x " +
                 "                           ORDER BY y " +
                 "                           MEASURES A.z AS last_z " +
@@ -1886,57 +1952,57 @@ public class TestAnalyzer
                 "                         ) " +
                 "           FROM (VALUES (1, 2, 3)) t(x, y, z)")
                 .hasErrorCode(INVALID_WINDOW_FRAME)
-                .hasMessage("line 1:128: Pattern recognition requires frame specified as BETWEEN CURRENT ROW AND ...");
+                .hasMessage("line 1:134: Pattern recognition requires frame specified as BETWEEN CURRENT ROW AND ...");
 
-        assertFails("SELECT rank() OVER ( " +
+        assertFails("SELECT array_agg(x) OVER ( " +
                 "                               MEASURES A.z AS last_z " +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING) " +
                 "           FROM (VALUES (1, 2, 3)) t(x, y, z)")
                 .hasErrorCode(MISSING_ROW_PATTERN)
-                .hasMessage("line 1:53: Row pattern measures require PATTERN clause");
+                .hasMessage("line 1:59: Row pattern measures require PATTERN clause");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               AFTER MATCH SKIP TO NEXT ROW) " +
                 "           FROM (VALUES (1, 2, 3)) t(x, y, z)")
                 .hasErrorCode(MISSING_ROW_PATTERN)
-                .hasMessage("line 1:136: AFTER MATCH SKIP clause requires PATTERN clause");
+                .hasMessage("line 1:142: AFTER MATCH SKIP clause requires PATTERN clause");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               SEEK) " +
                 "           FROM (VALUES (1, 2, 3)) t(x, y, z)")
                 .hasErrorCode(MISSING_ROW_PATTERN)
-                .hasMessage("line 1:124: SEEK modifier requires PATTERN clause");
+                .hasMessage("line 1:130: SEEK modifier requires PATTERN clause");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               SUBSET U = (A, B)) " +
                 "           FROM (VALUES (1, 2, 3)) t(x, y, z)")
                 .hasErrorCode(MISSING_ROW_PATTERN)
-                .hasMessage("line 1:131: Union variable definitions require PATTERN clause");
+                .hasMessage("line 1:137: Union variable definitions require PATTERN clause");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               DEFINE B AS false) " +
                 "           FROM (VALUES (1, 2, 3)) t(x, y, z)")
                 .hasErrorCode(MISSING_ROW_PATTERN)
-                .hasMessage("line 1:131: Primary pattern variable definitions require PATTERN clause");
+                .hasMessage("line 1:137: Primary pattern variable definitions require PATTERN clause");
     }
 
     @Test
     public void testSubsetClauseInWindow()
     {
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A B) " +
                 "                               SUBSET A = (C) " +
                 "                               DEFINE B AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_LABEL)
-                .hasMessage("line 1:176: union pattern variable name: A is a duplicate of primary pattern variable name");
+                .hasMessage("line 1:182: union pattern variable name: A is a duplicate of primary pattern variable name");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A B) " +
                 "                               SUBSET " +
@@ -1945,30 +2011,30 @@ public class TestAnalyzer
                 "                               DEFINE B AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_LABEL)
-                .hasMessage("line 1:255: union pattern variable name: U is declared twice");
+                .hasMessage("line 1:261: union pattern variable name: U is declared twice");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A B) " +
                 "                               SUBSET U = (A, C) " +
                 "                               DEFINE B AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_LABEL)
-                .hasMessage("line 1:184: subset element: C is not a primary pattern variable");
+                .hasMessage("line 1:190: subset element: C is not a primary pattern variable");
     }
 
     @Test
     public void testDefineClauseInWindow()
     {
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A B) " +
                 "                               DEFINE C AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_LABEL)
-                .hasMessage("line 1:176: defined variable: C is not a primary pattern variable");
+                .hasMessage("line 1:182: defined variable: C is not a primary pattern variable");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A B) " +
                 "                               DEFINE " +
@@ -1976,56 +2042,56 @@ public class TestAnalyzer
                 "                                       A AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_LABEL)
-                .hasMessage("line 1:265: pattern variable with name: A is defined twice");
+                .hasMessage("line 1:271: pattern variable with name: A is defined twice");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A B) " +
                 "                               DEFINE A AS FINAL LAST(A.x) > 0) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_PROCESSING_MODE)
-                .hasMessage("line 1:181: FINAL semantics is not supported in DEFINE clause");
+                .hasMessage("line 1:187: FINAL semantics is not supported in DEFINE clause");
     }
 
     @Test
     public void testRangeQuantifiersInWindow()
     {
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A{,0}) " +
                 "                               DEFINE A AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(NUMERIC_VALUE_OUT_OF_RANGE)
-                .hasMessage("line 1:134: Pattern quantifier upper bound must be greater than or equal to 1");
+                .hasMessage("line 1:140: Pattern quantifier upper bound must be greater than or equal to 1");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A{,3000000000}) " +
                 "                               DEFINE A AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(NUMERIC_VALUE_OUT_OF_RANGE)
-                .hasMessage("line 1:134: Pattern quantifier upper bound must not exceed 2147483647");
+                .hasMessage("line 1:140: Pattern quantifier upper bound must not exceed 2147483647");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A{100,1}) " +
                 "                               DEFINE A AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_RANGE)
-                .hasMessage("line 1:134: Pattern quantifier lower bound must not exceed upper bound");
+                .hasMessage("line 1:140: Pattern quantifier lower bound must not exceed upper bound");
     }
 
     @Test
     public void testAfterMatchSkipInWindow()
     {
-        analyze("SELECT rank() OVER (" +
+        analyze("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               AFTER MATCH SKIP TO FIRST B " +
                 "                               PATTERN (A B) " +
                 "                               DEFINE A AS false) " +
                 "           FROM (VALUES 1) t(x)");
 
-        analyze("SELECT rank() OVER (" +
+        analyze("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               AFTER MATCH SKIP TO FIRST U " +
                 "                               PATTERN (A B) " +
@@ -2033,27 +2099,27 @@ public class TestAnalyzer
                 "                               DEFINE A AS false) " +
                 "           FROM (VALUES 1) t(x)");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               AFTER MATCH SKIP TO FIRST C " +
                 "                               PATTERN (A B) " +
                 "                               DEFINE A AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_LABEL)
-                .hasMessage("line 1:150: C is not a primary or union pattern variable");
+                .hasMessage("line 1:156: C is not a primary or union pattern variable");
     }
 
     @Test
     public void testPatternSearchModeInWindow()
     {
-        analyze("SELECT rank() OVER (" +
+        analyze("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               INITIAL " +
                 "                               PATTERN (A B) " +
                 "                               DEFINE A AS false) " +
                 "           FROM (VALUES 1) t(x)");
 
-        analyze("SELECT rank() OVER (" +
+        analyze("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               SEEK " +
                 "                               PATTERN (A B) " +
@@ -2064,27 +2130,27 @@ public class TestAnalyzer
     @Test
     public void testAnchorPatternInWindow()
     {
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (^ A B) " +
                 "                               DEFINE B AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_ROW_PATTERN)
-                .hasMessage("line 1:133: Anchor pattern syntax is not allowed in window");
+                .hasMessage("line 1:139: Anchor pattern syntax is not allowed in window");
 
-        assertFails("SELECT rank() OVER (" +
+        assertFails("SELECT array_agg(x) OVER (" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A B $) " +
                 "                               DEFINE B AS false) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_ROW_PATTERN)
-                .hasMessage("line 1:137: Anchor pattern syntax is not allowed in window");
+                .hasMessage("line 1:143: Anchor pattern syntax is not allowed in window");
     }
 
     @Test
     public void testMatchNumberFunctionInWindow()
     {
-        assertFails("SELECT rank() OVER ( " +
+        assertFails("SELECT array_agg(x) OVER ( " +
                 "                               MEASURES 1 + MATCH_NUMBER() AS m" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A B) " +
@@ -2092,9 +2158,9 @@ public class TestAnalyzer
                 "                              ) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_PATTERN_RECOGNITION_FUNCTION)
-                .hasMessage("line 1:66: MATCH_NUMBER function is not supported in window");
+                .hasMessage("line 1:72: MATCH_NUMBER function is not supported in window");
 
-        assertFails("SELECT rank() OVER ( " +
+        assertFails("SELECT array_agg(x) OVER ( " +
                 "                               MEASURES B.x AS m" +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A B) " +
@@ -2102,14 +2168,14 @@ public class TestAnalyzer
                 "                              ) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(INVALID_PATTERN_RECOGNITION_FUNCTION)
-                .hasMessage("line 1:230: MATCH_NUMBER function is not supported in window");
+                .hasMessage("line 1:236: MATCH_NUMBER function is not supported in window");
     }
 
     @Test
     public void testLabelNamesInWindow()
     {
         // SQL identifier semantics
-        analyze("SELECT rank() OVER ( " +
+        analyze("SELECT array_agg(x) OVER ( " +
                 "                               MEASURES " +
                 "                                       \"B\".x AS m1, " +
                 "                                       B.x AS m2 " +
@@ -2119,14 +2185,14 @@ public class TestAnalyzer
                 "                              ) " +
                 "           FROM (VALUES 1) t(x)");
 
-        assertFails("SELECT rank() OVER ( " +
+        assertFails("SELECT array_agg(x) OVER ( " +
                 "                               ROWS BETWEEN CURRENT ROW AND 5 FOLLOWING " +
                 "                               PATTERN (A B) " +
                 "                               DEFINE B AS \"b\".x > 0" +
                 "                              ) " +
                 "           FROM (VALUES 1) t(x)")
                 .hasErrorCode(COLUMN_NOT_FOUND)
-                .hasMessage("line 1:182: Column 'b.x' cannot be resolved");
+                .hasMessage("line 1:188: Column 'b.x' cannot be resolved");
     }
 
     @Test
@@ -2215,13 +2281,6 @@ public class TestAnalyzer
                 "                           )")
                 .hasErrorCode(INVALID_WINDOW_MEASURE)
                 .hasMessage("line 1:8: Measure last_z is not defined in the corresponding window");
-    }
-
-    @Test
-    public void testDistinctInWindowFunctionParameter()
-    {
-        assertFails("SELECT a, count(DISTINCT b) OVER () FROM t1")
-                .hasErrorCode(NOT_SUPPORTED);
     }
 
     @Test
@@ -2453,7 +2512,8 @@ public class TestAnalyzer
                 "   c(z) AS (SELECT y * 10 FROM b)" +
                 "SELECT * FROM a, b, c");
 
-        analyze("""
+        analyze(
+                """
                 WITH
                     a(x) AS (SELECT ARRAY[1, 2, 3]),
                     b AS (SELECT * FROM (VALUES 4), UNNEST ((SELECT x FROM a)))
@@ -2900,7 +2960,7 @@ public class TestAnalyzer
                 "          )" +
                 "          SELECT * from t")
                 .hasErrorCode(TYPE_MISMATCH)
-                .hasMessage("line 1:82: recursion step relation output type (decimal(2,1)) is not coercible to recursion base relation output type (decimal(1,0)) at column 1");
+                .hasMessage("line 1:82: recursion step relation output type (decimal(3,1)) is not coercible to recursion base relation output type (decimal(1,0)) at column 1");
 
         assertFails("WITH RECURSIVE t(n) AS (" +
                 "          SELECT * FROM (VALUES('a'), ('b')) AS t(n)" +
@@ -3120,6 +3180,10 @@ public class TestAnalyzer
     {
         // TODO: validate output
         analyze("SELECT a, SUM(b) FROM t1 GROUP BY a");
+        analyze("SELECT a, SUM(b) FROM t1 GROUP BY AUTO");
+        analyze("SELECT a as x, SUM(b) FROM t1 GROUP BY AUTO");
+        analyze("SELECT a, SUM(b) FROM t1 GROUP BY ALL AUTO");
+        analyze("SELECT a as x, SUM(b) FROM t1 GROUP BY DISTINCT AUTO");
     }
 
     @Test
@@ -3531,12 +3595,12 @@ public class TestAnalyzer
         // Materialized view redirects to "t1"
         Analysis analysis = analyze("SELECT * FROM table_view_and_materialized_view");
         TableHandle handle = getOnlyElement(analysis.getTables());
-        assertThat(((TestingTableHandle) handle.getConnectorHandle()).getTableName().getTableName()).isEqualTo("t1");
+        assertThat(((TestingTableHandle) handle.connectorHandle()).getTableName().getTableName()).isEqualTo("t1");
 
         // View redirects to "t2"
         analysis = analyze("SELECT * FROM table_and_view");
         handle = getOnlyElement(analysis.getTables());
-        assertThat(((TestingTableHandle) handle.getConnectorHandle()).getTableName().getTableName()).isEqualTo("t2");
+        assertThat(((TestingTableHandle) handle.connectorHandle()).getTableName().getTableName()).isEqualTo("t2");
     }
 
     @Test
@@ -3956,7 +4020,8 @@ public class TestAnalyzer
                 .hasErrorCode(NOT_SUPPORTED)
                 .hasMessage("line 1:33: Security mode not supported for inline functions");
 
-        assertFails("""
+        assertFails(
+                """
                 CREATE VIEW test AS
                 WITH FUNCTION abc() RETURNS int RETURN 42
                 SELECT 123 x
@@ -5733,6 +5798,22 @@ public class TestAnalyzer
     public void testAnalyzeFreshMaterializedView()
     {
         analyze("SELECT * FROM fresh_materialized_view");
+        analyze("SELECT * FROM fresh_materialized_view_non_existent_table");
+        assertFails("REFRESH MATERIALIZED VIEW fresh_materialized_view_non_existent_table")
+                .hasErrorCode(TABLE_NOT_FOUND)
+                .hasMessage("line 1:18: Table 'tpch.s1.non_existent_table' does not exist");
+    }
+
+    @Test
+    public void testAnalyzeStaleMaterializedView()
+    {
+        analyze("SELECT * FROM stale_materialized_view");
+        assertFails("SELECT * FROM stale_materialized_view_non_existent_table")
+                .hasErrorCode(INVALID_VIEW)
+                .hasMessage("line 1:15: Failed analyzing stored view 'tpch.s1.stale_materialized_view_non_existent_table': line 1:18: Table 'tpch.s1.non_existent_table' does not exist");
+        assertFails("REFRESH MATERIALIZED VIEW stale_materialized_view_non_existent_table")
+                .hasErrorCode(TABLE_NOT_FOUND)
+                .hasMessage("line 1:18: Table 'tpch.s1.non_existent_table' does not exist");
     }
 
     @Test
@@ -5752,14 +5833,14 @@ public class TestAnalyzer
     @Test
     public void testAnalyzeMaterializedViewWithAccessControl()
     {
-        TestingAccessControlManager accessControlManager = new TestingAccessControlManager(transactionManager, emptyEventListenerManager());
+        TestingAccessControlManager accessControlManager = new TestingAccessControlManager(transactionManager, emptyEventListenerManager(), new SecretsResolver(ImmutableMap.of()));
         accessControlManager.setSystemAccessControls(List.of(AllowAllSystemAccessControl.INSTANCE));
 
-        analyze("SELECT * FROM fresh_materialized_view");
+        analyze(CLIENT_SESSION, "SELECT * FROM fresh_materialized_view", accessControlManager);
 
         // materialized view analysis should succeed even if access to storage table is denied when querying the table directly
         accessControlManager.deny(privilege("t2.a", SELECT_COLUMN));
-        analyze("SELECT * FROM fresh_materialized_view");
+        analyze(CLIENT_SESSION, "SELECT * FROM fresh_materialized_view", accessControlManager);
 
         accessControlManager.deny(privilege("fresh_materialized_view.a", SELECT_COLUMN));
         assertFails(
@@ -5768,6 +5849,32 @@ public class TestAnalyzer
                 accessControlManager)
                 .hasErrorCode(PERMISSION_DENIED)
                 .hasMessage("Access Denied: Cannot select from columns [a, b] in table or view tpch.s1.fresh_materialized_view");
+        accessControlManager.reset();
+
+        // Deny access to the table referenced by the underlying query
+        accessControlManager.denyIdentityTable((_, table) -> !"t1".equals(table));
+        // When an MV is fresh or within the grace period, analysis of the underlying query is not performed,
+        // so access control checks on the tables referenced by the query are not executed.
+        analyze(CLIENT_SESSION, "SELECT * FROM fresh_materialized_view", accessControlManager);
+        assertFails(CLIENT_SESSION, "REFRESH MATERIALIZED VIEW fresh_materialized_view", accessControlManager)
+                .hasErrorCode(PERMISSION_DENIED)
+                .hasMessage("Access Denied: Cannot select from columns [a, b] in table or view tpch.s1.t1");
+        // Now we check that when the MV is stale, access to the underlying tables is checked.
+        assertFails(CLIENT_SESSION, "SELECT * FROM stale_materialized_view", accessControlManager)
+                .hasErrorCode(PERMISSION_DENIED)
+                .hasMessage("Access Denied: View owner does not have sufficient privileges: View owner 'some user' cannot create view that selects from tpch.s1.t1");
+        assertFails(CLIENT_SESSION, "REFRESH MATERIALIZED VIEW stale_materialized_view", accessControlManager)
+                .hasErrorCode(PERMISSION_DENIED)
+                .hasMessage("Access Denied: Cannot select from columns [a, b] in table or view tpch.s1.t1");
+    }
+
+    @Test
+    public void testCreateMaterializedViewWithNegativeGracePeriod()
+    {
+        assertFails("CREATE MATERIALIZED VIEW mv_negative_grace_period GRACE PERIOD INTERVAL -'1' HOUR AS SELECT * FROM nation")
+                .hasErrorCode(INVALID_GRACE_PERIOD)
+                .hasMessage("line 1:64: Grace period cannot be negative")
+                .hasLocation(1, 64);
     }
 
     @Test
@@ -6343,7 +6450,8 @@ public class TestAnalyzer
                 .hasMessageContaining("line 1:61: mismatched input 'SELECT'.");
 
         // query passed as the argument is correlated
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM
                 t1
@@ -6363,13 +6471,28 @@ public class TestAnalyzer
     @Test
     public void testTableArgumentProperties()
     {
-        analyze("""
+        analyze(
+                """
                 SELECT * FROM TABLE(system.table_argument_function(
                     input => TABLE(t1)
                                       PARTITION BY a
                                       KEEP WHEN EMPTY
                                       ORDER BY b))
                 """);
+
+        analyze("SELECT * FROM TABLE(system.table_argument_function(input => TABLE(t1) PARTITION BY \"a\"))");
+
+        analyze("SELECT * FROM TABLE(system.table_argument_function(input => TABLE(t1) ORDER BY \"a\"))");
+
+        // table function arguments can only be partitioned by their top-level fields
+        assertFails("SELECT * FROM TABLE(system.table_argument_function(input => TABLE(SELECT CAST(ROW(1) AS ROW(x BIGINT)) a) PARTITION BY a.x))")
+                .hasErrorCode(COLUMN_NOT_FOUND)
+                .hasMessage("line 1:120: Column a.x is not present in the input relation");
+
+        // table function arguments can only be partitioned by their top-level fields
+        assertFails("SELECT * FROM TABLE(system.table_argument_function(input => TABLE(SELECT CAST(ROW(1) AS ROW(x BIGINT)) a) ORDER BY a.x))")
+                .hasErrorCode(COLUMN_NOT_FOUND)
+                .hasMessage("line 1:116: Column a.x is not present in the input relation");
 
         assertFails("SELECT * FROM TABLE(system.table_argument_row_semantics_function(input => TABLE(t1) PARTITION BY a))")
                 .hasErrorCode(INVALID_FUNCTION_ARGUMENT)
@@ -6461,7 +6584,8 @@ public class TestAnalyzer
     {
         // TABLE(t1) is matched by fully qualified name: tpch.s1.t1. It matches the second copartition item s1.t1.
         // Aliased relation TABLE(SELECT 1, 2) t1(x, y) is matched by unqualified name. It matches the first copartition item t1.
-        analyze("""
+        analyze(
+                """
                 SELECT * FROM TABLE(system.two_table_arguments_function(
                     input1 => TABLE(t1) PARTITION BY (a, b),
                     input2 => TABLE(SELECT 1, 2) t1(x, y) PARTITION BY (x, y)
@@ -6471,14 +6595,16 @@ public class TestAnalyzer
         // Copartition items t1, t2 are first matched to arguments by unqualified names, and when no match is found, by fully qualified names.
         // TABLE(tpch.s1.t1) is matched by fully qualified name. It matches the first copartition item t1.
         // TABLE(s1.t2) is matched by unqualified name: tpch.s1.t2. It matches the second copartition item t2.
-        analyze("""
+        analyze(
+                """
                 SELECT * FROM TABLE(system.two_table_arguments_function(
                     input1 => TABLE(tpch.s1.t1) PARTITION BY (a, b),
                     input2 => TABLE(s1.t2) PARTITION BY (a, b)
                     COPARTITION (t1, t2)))
                 """);
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT * FROM TABLE(system.two_table_arguments_function(
                     input1 => TABLE(t1) PARTITION BY (a, b),
                     input2 => TABLE(t2) PARTITION BY (a, b)
@@ -6488,7 +6614,8 @@ public class TestAnalyzer
                 .hasMessage("line 4:22: No table argument found for name: s1.foo");
 
         // Both table arguments are matched by fully qualified name: tpch.s1.t1
-        assertFails("""
+        assertFails(
+                """
                 SELECT * FROM TABLE(system.two_table_arguments_function(
                     input1 => TABLE(t1) PARTITION BY (a, b),
                     input2 => TABLE(t1) PARTITION BY (a, b)
@@ -6498,7 +6625,8 @@ public class TestAnalyzer
                 .hasMessage("line 4:18: Ambiguous reference: multiple table arguments found for name: t1");
 
         // Both table arguments are matched by unqualified name: t1
-        assertFails("""
+        assertFails(
+                """
                 SELECT * FROM TABLE(system.two_table_arguments_function(
                     input1 => TABLE(SELECT 1, 2) t1(a, b) PARTITION BY (a, b),
                     input2 => TABLE(SELECT 3, 4) t1(c, d) PARTITION BY (c, d)
@@ -6507,7 +6635,8 @@ public class TestAnalyzer
                 .hasErrorCode(INVALID_COPARTITIONING)
                 .hasMessage("line 4:18: Ambiguous reference: multiple table arguments found for name: t1");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT * FROM TABLE(system.two_table_arguments_function(
                     input1 => TABLE(t1) PARTITION BY (a, b),
                     input2 => TABLE(t2) PARTITION BY (a, b)
@@ -6520,7 +6649,8 @@ public class TestAnalyzer
     @Test
     public void testCopartitionColumns()
     {
-        assertFails("""
+        assertFails(
+                """
                 SELECT * FROM TABLE(system.two_table_arguments_function(
                     input1 => TABLE(t1),
                     input2 => TABLE(t2) PARTITION BY (a, b)
@@ -6529,7 +6659,8 @@ public class TestAnalyzer
                 .hasErrorCode(INVALID_COPARTITIONING)
                 .hasMessage("line 2:15: Table tpch.s1.t1 referenced in COPARTITION clause is not partitioned");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT * FROM TABLE(system.two_table_arguments_function(
                     input1 => TABLE(t1) PARTITION BY (),
                     input2 => TABLE(t2) PARTITION BY ()
@@ -6538,7 +6669,8 @@ public class TestAnalyzer
                 .hasErrorCode(INVALID_COPARTITIONING)
                 .hasMessage("line 2:15: No partitioning columns specified for table tpch.s1.t1 referenced in COPARTITION clause");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT * FROM TABLE(system.two_table_arguments_function(
                     input1 => TABLE(t1) PARTITION BY (a, b),
                     input2 => TABLE(t2) PARTITION BY (a)
@@ -6547,7 +6679,8 @@ public class TestAnalyzer
                 .hasErrorCode(INVALID_COPARTITIONING)
                 .hasMessage("line 4:18: Numbers of partitioning columns in copartitioned tables do not match");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT * FROM TABLE(system.two_table_arguments_function(
                     input1 => TABLE(SELECT 1) t1(a) PARTITION BY (a),
                     input2 => TABLE(SELECT 'x') t2(b) PARTITION BY (b)
@@ -6607,7 +6740,8 @@ public class TestAnalyzer
                 .hasMessage("line 1:21: Cannot apply sample to polymorphic table function invocation");
 
         // row pattern matching
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM TABLE(system.only_pass_through_function(TABLE(t1)))
                 MATCH_RECOGNIZE(
@@ -6623,7 +6757,8 @@ public class TestAnalyzer
                 .hasMessage("line 1:15: Cannot apply sample to polymorphic table function invocation");
 
         // aliased + row pattern matching
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM TABLE(system.two_arguments_function('a', 1)) f(x)
                 MATCH_RECOGNIZE(
@@ -6635,7 +6770,8 @@ public class TestAnalyzer
                 .hasMessage("line 2:6: Cannot apply row pattern matching to polymorphic table function invocation");
 
         // row pattern matching + sampled
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM TABLE(system.only_pass_through_function(TABLE(t1)))
                 MATCH_RECOGNIZE(
@@ -6647,7 +6783,8 @@ public class TestAnalyzer
                 .hasMessage("line 2:12: Cannot apply row pattern matching to polymorphic table function invocation");
 
         // aliased + row pattern matching + sampled
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM TABLE(system.two_arguments_function('a', 1)) f(x)
                 MATCH_RECOGNIZE(
@@ -6721,17 +6858,20 @@ public class TestAnalyzer
     public void testTableFunctionRequiredColumns()
     {
         // the function required_column_function specifies columns 0 and 1 from table argument "INPUT" as required.
-        analyze("""
+        analyze(
+                """
                 SELECT * FROM TABLE(system.required_columns_function(
                     input => TABLE(t1)))
                 """);
 
-        analyze("""
+        analyze(
+                """
                 SELECT * FROM TABLE(system.required_columns_function(
                     input => TABLE(SELECT 1, 2, 3)))
                 """);
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT * FROM TABLE(system.required_columns_function(
                     input => TABLE(SELECT 1)))
                 """)
@@ -6739,7 +6879,8 @@ public class TestAnalyzer
                 .hasMessage("Invalid index: 1 of required column from table argument INPUT");
 
         // table s1.t5 has two columns. The second column is hidden. Table function cannot require a hidden column.
-        assertFails("""
+        assertFails(
+                """
                 SELECT * FROM TABLE(system.required_columns_function(
                     input => TABLE(s1.t5)))
                 """)
@@ -6751,7 +6892,8 @@ public class TestAnalyzer
     public void testJsonTableColumnTypes()
     {
         // ordinality column
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6761,7 +6903,8 @@ public class TestAnalyzer
                 """);
 
         // regular column
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6774,7 +6917,8 @@ public class TestAnalyzer
                 """);
 
         // formatted column
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6790,7 +6934,8 @@ public class TestAnalyzer
                 """);
 
         // nested columns
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6806,7 +6951,8 @@ public class TestAnalyzer
     public void testJsonTableColumnAndPathNameUniqueness()
     {
         // root path is named
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6816,7 +6962,8 @@ public class TestAnalyzer
                 """);
 
         // nested path is named
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6827,7 +6974,8 @@ public class TestAnalyzer
                 """);
 
         // root and nested paths are named
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6838,7 +6986,8 @@ public class TestAnalyzer
                 """);
 
         // duplicate path name
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6851,7 +7000,8 @@ public class TestAnalyzer
                 .hasMessage("line 6:35: All column and path names in JSON_TABLE invocation must be unique");
 
         // duplicate column name
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6864,7 +7014,8 @@ public class TestAnalyzer
                 .hasMessage("line 7:9: All column and path names in JSON_TABLE invocation must be unique");
 
         // column and path names are the same
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6875,7 +7026,8 @@ public class TestAnalyzer
                 .hasErrorCode(DUPLICATE_COLUMN_OR_PATH_NAME)
                 .hasMessage("line 6:9: All column and path names in JSON_TABLE invocation must be unique");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6888,7 +7040,8 @@ public class TestAnalyzer
                 .hasMessage("line 7:13: All column and path names in JSON_TABLE invocation must be unique");
 
         // duplicate name is deeply nested
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6906,7 +7059,8 @@ public class TestAnalyzer
     @Test
     public void testJsonTableColumnAndPathNameIdentifierSemantics()
     {
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6917,7 +7071,8 @@ public class TestAnalyzer
                 .hasErrorCode(DUPLICATE_COLUMN_OR_PATH_NAME)
                 .hasMessage("line 6:9: All column and path names in JSON_TABLE invocation must be unique");
 
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6930,7 +7085,8 @@ public class TestAnalyzer
     @Test
     public void testJsonTableOutputColumns()
     {
-        analyze("""
+        analyze(
+                """
                 SELECT a, b, c, d, e
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6952,7 +7108,8 @@ public class TestAnalyzer
         // canonical name: AB
         // implicit path: lax $."AB"
         // resolved member accessor: $.AB
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6964,7 +7121,8 @@ public class TestAnalyzer
         // canonical name: Ab
         // implicit path: lax $."Ab"
         // resolved member accessor: $.Ab
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6976,7 +7134,8 @@ public class TestAnalyzer
         // canonical name: ?
         // implicit path: lax $."?"
         // resolved member accessor: $.?
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -6988,7 +7147,8 @@ public class TestAnalyzer
         // canonical name: "
         // implicit path: lax $.""""
         // resolved member accessor $."
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7000,7 +7160,8 @@ public class TestAnalyzer
     @Test
     public void testJsonTableSpecificPlan()
     {
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7011,7 +7172,8 @@ public class TestAnalyzer
                 .hasErrorCode(MISSING_PATH_NAME)
                 .hasMessage("line 3:5: All JSON paths must be named when specific plan is given");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7022,7 +7184,8 @@ public class TestAnalyzer
                 .hasErrorCode(INVALID_PLAN)
                 .hasMessage("line 6:11: JSON_TABLE plan must either be a single path name or it must be rooted in parent-child relationship (OUTER or INNER)");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7033,7 +7196,8 @@ public class TestAnalyzer
                 .hasErrorCode(INVALID_PLAN)
                 .hasMessage("line 6:11: JSON_TABLE plan should contain all JSON paths available at each level of nesting. Paths not included: ROOT_PATH");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7045,7 +7209,8 @@ public class TestAnalyzer
                 .hasErrorCode(MISSING_PATH_NAME)
                 .hasMessage("line 6:21: All JSON paths must be named when specific plan is given");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7058,7 +7223,8 @@ public class TestAnalyzer
                 .hasErrorCode(INVALID_PLAN)
                 .hasMessage("line 8:11: JSON_TABLE plan should contain all JSON paths available at each level of nesting. Paths not included: NESTED_PATH_2");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7071,7 +7237,8 @@ public class TestAnalyzer
                 .hasErrorCode(INVALID_PLAN)
                 .hasMessage("line 8:11: JSON_TABLE plan includes unavailable JSON path names: ANOTHER_PATH");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7086,7 +7253,8 @@ public class TestAnalyzer
                 .hasErrorCode(INVALID_PLAN)
                 .hasMessage("line 10:11: JSON_TABLE plan includes unavailable JSON path names: NESTED_PATH_3"); // nested_path_3 is on another nesting level
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7099,7 +7267,8 @@ public class TestAnalyzer
                 .hasErrorCode(INVALID_PLAN)
                 .hasMessage("line 8:69: Duplicate reference to JSON path name in sibling plan: NESTED_PATH_1");
 
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7116,7 +7285,8 @@ public class TestAnalyzer
     @Test
     public void testJsonTableDefaultPlan()
     {
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7125,7 +7295,8 @@ public class TestAnalyzer
                     PLAN DEFAULT(CROSS, INNER))
                 """);
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7139,15 +7310,17 @@ public class TestAnalyzer
     }
 
     @Test
-    public void tstJsonTableInJoin()
+    public void testJsonTableInJoin()
     {
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM t1, t2, JSON_TABLE('[1, 2, 3]', 'lax $[2]' COLUMNS(o FOR ORDINALITY))
                 """);
 
         // join condition
-        analyze("""
+        analyze(
+                """
                 SELECT *
                     FROM t1
                     LEFT JOIN
@@ -7155,7 +7328,8 @@ public class TestAnalyzer
                     ON TRUE
                 """);
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                     FROM t1
                     RIGHT JOIN
@@ -7166,7 +7340,8 @@ public class TestAnalyzer
                 .hasMessage("line 5:12: RIGHT JOIN involving JSON_TABLE is only supported with condition ON TRUE");
 
         // correlation in context item
-        analyze("""
+        analyze(
+                """
                 SELECT *
                     FROM t6
                     LEFT JOIN
@@ -7175,7 +7350,8 @@ public class TestAnalyzer
                 """);
 
         // correlation in default value
-        analyze("""
+        analyze(
+                """
                 SELECT *
                     FROM t6
                     LEFT JOIN
@@ -7184,7 +7360,8 @@ public class TestAnalyzer
                 """);
 
         // correlation in path parameter
-        analyze("""
+        analyze(
+                """
                 SELECT *
                     FROM t6
                     LEFT JOIN
@@ -7193,7 +7370,8 @@ public class TestAnalyzer
                 """);
 
         // invalid correlation in right join
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                     FROM t6
                     RIGHT JOIN
@@ -7207,7 +7385,8 @@ public class TestAnalyzer
     @Test
     public void testSubqueryInJsonTable()
     {
-        analyze("""
+        analyze(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     (SELECT '[1, 2, 3]'),
@@ -7220,7 +7399,8 @@ public class TestAnalyzer
     @Test
     public void testAggregationInJsonTable()
     {
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     CAST(sum(1) AS varchar),
@@ -7231,7 +7411,8 @@ public class TestAnalyzer
                 .hasErrorCode(EXPRESSION_NOT_SCALAR)
                 .hasMessage("line 3:5: JSON_TABLE input expression cannot contain aggregations, window functions or grouping operations: [sum(1)]");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '1',
@@ -7242,7 +7423,8 @@ public class TestAnalyzer
                 .hasErrorCode(EXPRESSION_NOT_SCALAR)
                 .hasMessage("line 4:21: JSON_TABLE path parameter cannot contain aggregations, window functions or grouping operations: [avg(2)]");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '1',
@@ -7253,7 +7435,8 @@ public class TestAnalyzer
                 .hasErrorCode(EXPRESSION_NOT_SCALAR)
                 .hasMessage("line 6:26: default expression for JSON_TABLE column cannot contain aggregations, window functions or grouping operations: [min(3)]");
 
-        assertFails("""
+        assertFails(
+                """
                 SELECT *
                 FROM JSON_TABLE(
                     '1',
@@ -7268,7 +7451,8 @@ public class TestAnalyzer
     @Test
     public void testAliasJsonTable()
     {
-        analyze("""
+        analyze(
+                """
                 SELECT t.y
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7276,7 +7460,8 @@ public class TestAnalyzer
                     COLUMNS(x BIGINT)) t(y)
                 """);
 
-        analyze("""
+        analyze(
+                """
                 SELECT t.x
                 FROM JSON_TABLE(
                     '[1, 2, 3]',
@@ -7293,6 +7478,369 @@ public class TestAnalyzer
                 .hasMessage("line 1:46: UNNEST cannot contain aggregations, window functions or grouping operations: [COUNT(t.a)]");
     }
 
+    @Test
+    public void testSelectColumnsLineageInfo()
+    {
+        String sql = "SELECT a, b + 1 AS b1, 'C' as literal, a + b FROM (VALUES (1, 2)) t(a, b)";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo.size()).isEqualTo(4);
+
+        // Check first column lineage
+        ColumnLineageInfo colA = lineageInfo.getFirst();
+        assertThat(colA.name()).isEqualTo("a");
+        assertThat(colA.sourceColumns()).isEmpty(); // 'a' is a direct value from the VALUES clause
+
+        // Check second column lineage
+        ColumnLineageInfo colB1 = lineageInfo.get(1);
+        assertThat(colB1.name()).isEqualTo("b1");
+        assertThat(colB1.sourceColumns()).isEmpty(); // 'b1' is derived from 'b + 1', which is a direct value from the VALUES clause
+
+        // Check third column lineage
+        ColumnLineageInfo colLiteral = lineageInfo.get(2);
+        assertThat(colLiteral.name()).isEqualTo("literal");
+        assertThat(colLiteral.sourceColumns()).isEmpty(); // 'literal' is a literal value
+
+        // Check fourth column lineage
+        ColumnLineageInfo colAB = lineageInfo.get(3);
+        assertThat(colAB.name()).isEmpty(); // anonymous
+        assertThat(colAB.sourceColumns()).isEmpty(); // 'a + b' is derived from the values in the VALUES clause
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoAggregateFunction() {
+        String sql = "SELECT SUM(a) FROM t1 WHERE b > 1";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo.size()).isEqualTo(1);
+
+        // Check the column lineage
+        ColumnLineageInfo colCount = lineageInfo.getFirst();
+        assertThat(colCount.name()).isEmpty(); // anonymous
+        assertThat(colCount.sourceColumns()).containsExactlyInAnyOrder(
+                new ColumnDetail("tpch", "s1", "t1", "a"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithUnion()
+    {
+        String sql = "SELECT c AS unionized FROM t1 UNION SELECT b FROM t2 UNION SELECT a FROM t3";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo.size()).isEqualTo(1);
+
+        // Check the column lineage
+        ColumnLineageInfo colA = lineageInfo.getFirst();
+        assertThat(colA.name()).isEqualTo("unionized");
+        assertThat(colA.sourceColumns()).containsExactlyInAnyOrder(
+                new ColumnDetail("tpch","s1","t1", "c"),
+                new ColumnDetail("tpch","s1","t2", "b"),
+                new ColumnDetail("tpch","s1","t3", "a"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithClause()
+    {
+        String sql = "WITH cte AS (SELECT a FROM t1)\n" + "SELECT a FROM cte UNION SELECT b FROM t2";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo.size()).isEqualTo(1);
+
+        // Check the column lineage
+        ColumnLineageInfo colA = lineageInfo.getFirst();
+        assertThat(colA.name()).isEqualTo("a");
+        // The source columns should include both 'a' from t1 and 'b' from t2
+        assertThat(colA.sourceColumns()).containsExactlyInAnyOrder(
+                new ColumnDetail("tpch","s1","t1", "a"),
+                new ColumnDetail("tpch","s1","t2", "b"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithSubquery()
+    {
+    String sql = "SELECT (SELECT max(a)+min(b) FROM t2) AS min_max FROM t1 UNION SELECT max(a) FROM t3";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo.size()).isEqualTo(1);
+
+        // Check the column lineage
+        ColumnLineageInfo colA = lineageInfo.getFirst();
+        assertThat(colA.name()).isEqualTo("min_max");
+        // The source columns should include both 'a' and 'b' from t2 in the subquery and t3.a from the union
+        assertThat(colA.sourceColumns()).containsExactlyInAnyOrder(
+                new ColumnDetail("tpch","s1","t2", "a"),
+                new ColumnDetail("tpch","s1","t2", "b"),
+                new ColumnDetail("tpch","s1","t3", "a"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoNestedSet()
+    {
+        String sql = "SELECT a FROM t1 UNION (SELECT b FROM t2 INTERSECT SELECT b FROM t3)";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo.size()).isEqualTo(1);
+
+        // Check the column lineage
+        ColumnLineageInfo colA = lineageInfo.getFirst();
+        assertThat(colA.name()).isEqualTo("a");
+        // The source columns should include both 'a' from the subquery and 'b' from t2
+        assertThat(colA.sourceColumns()).containsExactlyInAnyOrder(
+                new ColumnDetail("tpch","s1","t1", "a"),
+                new ColumnDetail("tpch","s1","t2", "b"),
+                new ColumnDetail("tpch","s1","t3", "b"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoRecursive()
+    {
+        String sql = "WITH RECURSIVE a(x) AS (SELECT a FROM t1) SELECT * FROM a";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo.size()).isEqualTo(1);
+
+        // Check the column lineage
+        ColumnLineageInfo colA = lineageInfo.getFirst();
+        assertThat(colA.name()).isEqualTo("x");
+        // The source column should include 'a' from t1
+        assertThat(colA.sourceColumns()).containsExactlyInAnyOrder(
+                new ColumnDetail("tpch", "s1", "t1", "a"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoRowFromJoin()
+    {
+        String sql = "SELECT ROW(t1.a, t2.b) AS row_field FROM t1 JOIN t2 ON t1.a = t2.a";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo.size()).isEqualTo(1);
+
+        // Check the column lineage for the ROW field
+        ColumnLineageInfo colRow = lineageInfo.getFirst();
+        assertThat(colRow.name()).isEqualTo("row_field");
+        // The ROW constructor should track lineage from both tables in the JOIN
+        assertThat(colRow.sourceColumns()).containsExactlyInAnyOrder(
+                new ColumnDetail("tpch", "s1", "t1", "a"),
+                new ColumnDetail("tpch", "s1", "t2", "b"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithExplain()
+    {
+        String sql = "EXPLAIN SELECT a FROM t1";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isEmpty();
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithInsert()
+    {
+        String sql = "INSERT INTO t1 SELECT a, b, a, b FROM t2";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isEmpty();
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithAlterTable()
+    {
+        String sql = "ALTER TABLE t1 ADD COLUMN c bigint";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isEmpty();
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithSetColumnType()
+    {
+        String sql = "ALTER TABLE t1 ALTER COLUMN a SET DATA TYPE varchar";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isEmpty();
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithSession()
+    {
+        String sql = "WITH SESSION a = 1 SELECT a FROM t1";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo).hasSize(1);
+        assertThat(lineageInfo.get(0).sourceColumns()).containsExactly(
+                new ColumnDetail("tpch", "s1", "t1", "a"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithFunction()
+    {
+        String sql = "WITH FUNCTION my_abs(x bigint) RETURNS bigint RETURN abs(x) SELECT my_abs(a) FROM t1";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo).hasSize(1);
+        assertThat(lineageInfo.get(0).sourceColumns()).containsExactly(
+                new ColumnDetail("tpch", "s1", "t1", "a"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithNamedQuery()
+    {
+        String sql = "WITH cte AS (SELECT a FROM t1) SELECT a FROM cte";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo).hasSize(1);
+        assertThat(lineageInfo.get(0).sourceColumns()).containsExactly(
+                new ColumnDetail("tpch", "s1", "t1", "a"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithTable()
+    {
+        String sql = "TABLE t1";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo).hasSize(4);
+        assertThat(lineageInfo.get(0).sourceColumns()).containsExactly(
+                new ColumnDetail("tpch", "s1", "t1", "a"));
+        assertThat(lineageInfo.get(1).sourceColumns()).containsExactly(
+                new ColumnDetail("tpch", "s1", "t1", "b"));
+        assertThat(lineageInfo.get(2).sourceColumns()).containsExactly(
+                new ColumnDetail("tpch", "s1", "t1", "c"));
+        assertThat(lineageInfo.get(3).sourceColumns()).containsExactly(
+                new ColumnDetail("tpch", "s1", "t1", "d"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithValues()
+    {
+        String sql = "VALUES (1, 2)";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo).hasSize(2);
+        // VALUES have no source columns
+        assertThat(lineageInfo.get(0).sourceColumns()).isEmpty();
+        assertThat(lineageInfo.get(1).sourceColumns()).isEmpty();
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithParentheses()
+    {
+        String sql = "(SELECT a FROM t1)";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo).hasSize(1);
+        assertThat(lineageInfo.get(0).sourceColumns()).containsExactly(
+                new ColumnDetail("tpch", "s1", "t1", "a"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithIntersect()
+    {
+        String sql = "SELECT a FROM t1 INTERSECT SELECT a FROM t2";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo).hasSize(1);
+        assertThat(lineageInfo.get(0).sourceColumns()).containsExactlyInAnyOrder(
+                new ColumnDetail("tpch", "s1", "t1", "a"),
+                new ColumnDetail("tpch", "s1", "t2", "a"));
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithExplainAnalyze()
+    {
+        String sql = "EXPLAIN ANALYZE SELECT a FROM t1";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isEmpty();
+    }
+
+    @Test
+    public void testSelectColumnsLineageInfoWithShow()
+    {
+        String sql = "SHOW SCHEMAS";
+
+        Analysis analysis = analyze(sql);
+
+        Optional<List<ColumnLineageInfo>> optionalLineageInfo = analysis.getSelectColumnsLineageInfo();
+        assertThat(optionalLineageInfo).isPresent();
+        List<ColumnLineageInfo> lineageInfo = optionalLineageInfo.get();
+        assertThat(lineageInfo).hasSize(1);
+        assertThat(lineageInfo.get(0).name()).isEqualTo("Schema");
+        assertThat(lineageInfo.get(0).sourceColumns()).hasSize(1);
+        assertThat(lineageInfo.get(0).sourceColumns()).contains(
+                new ColumnDetail("tpch", "information_schema", "schemata", "schema_name"));
+    }
+
     @BeforeAll
     public void setup()
     {
@@ -7307,6 +7855,7 @@ public class TestAnalyzer
                 emptyEventListenerManager(),
                 new AccessControlConfig(),
                 OpenTelemetry.noop(),
+                new SecretsResolver(ImmutableMap.of()),
                 DefaultSystemAccessControl.NAME);
         accessControlManager.setSystemAccessControls(List.of(AllowAllSystemAccessControl.INSTANCE));
         this.accessControl = accessControlManager;
@@ -7384,6 +7933,7 @@ public class TestAnalyzer
                 Optional.of("s1"),
                 ImmutableList.of(new ViewColumn("a", BIGINT.getTypeId(), Optional.empty())),
                 Optional.of(Duration.ZERO),
+                Optional.empty(),
                 Optional.of("comment"),
                 Identity.ofUser("user"),
                 ImmutableList.of(),
@@ -7405,7 +7955,7 @@ public class TestAnalyzer
                 Optional.of("comment"),
                 Optional.of(Identity.ofUser("user")),
                 ImmutableList.of());
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v1"), viewData1, false));
+        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v1"), viewData1, ImmutableMap.of(), false));
 
         // stale view (different column type)
         ViewDefinition viewData2 = new ViewDefinition(
@@ -7416,7 +7966,7 @@ public class TestAnalyzer
                 Optional.of("comment"),
                 Optional.of(Identity.ofUser("user")),
                 ImmutableList.of());
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v2"), viewData2, false));
+        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v2"), viewData2, ImmutableMap.of(), false));
 
         // valid view with uppercase column name
         ViewDefinition viewData4 = new ViewDefinition(
@@ -7427,7 +7977,7 @@ public class TestAnalyzer
                 Optional.of("comment"),
                 Optional.of(Identity.ofUser("user")),
                 ImmutableList.of());
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName("tpch", "s1", "v4"), viewData4, false));
+        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName("tpch", "s1", "v4"), viewData4, ImmutableMap.of(), false));
 
         // recursive view referencing to itself
         ViewDefinition viewData5 = new ViewDefinition(
@@ -7438,7 +7988,7 @@ public class TestAnalyzer
                 Optional.of("comment"),
                 Optional.of(Identity.ofUser("user")),
                 ImmutableList.of());
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v5"), viewData5, false));
+        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v5"), viewData5, ImmutableMap.of(), false));
 
         // type analysis for INSERT
         SchemaTableName table8 = new SchemaTableName("s1", "t8");
@@ -7514,6 +8064,7 @@ public class TestAnalyzer
                         ImmutableList.of(new ViewColumn("a", BIGINT.getTypeId(), Optional.empty())),
                         Optional.of(Duration.ZERO),
                         Optional.empty(),
+                        Optional.empty(),
                         Identity.ofUser("some user"),
                         ImmutableList.of(),
                         Optional.of(new CatalogSchemaTableName(TPCH_CATALOG, "s1", "t1"))),
@@ -7532,6 +8083,7 @@ public class TestAnalyzer
                 session,
                 tableViewAndMaterializedView,
                 viewDefinition,
+                ImmutableMap.of(),
                 false));
         inSetupTransaction(session -> metadata.createTable(
                 session,
@@ -7546,6 +8098,7 @@ public class TestAnalyzer
                 session,
                 tableAndView,
                 viewDefinition,
+                ImmutableMap.of(),
                 false));
         inSetupTransaction(session -> metadata.createTable(
                 session,
@@ -7555,25 +8108,69 @@ public class TestAnalyzer
                         ImmutableList.of(new ColumnMetadata("a", BIGINT))),
                 FAIL));
 
+        MaterializedViewDefinition materializedView = new MaterializedViewDefinition(
+                "SELECT a, b FROM t1",
+                Optional.of(TPCH_CATALOG),
+                Optional.of("s1"),
+                ImmutableList.of(new ViewColumn("a", BIGINT.getTypeId(), Optional.empty()), new ViewColumn("b", BIGINT.getTypeId(), Optional.empty())),
+                Optional.of(STALE_MV_STALENESS.minusHours(1)), // Minus 1 hour to make MVs not marked as fresh become stale immediately. This doesn’t affect those marked as fresh.
+                Optional.empty(),
+                Optional.empty(),
+                Identity.ofUser("some user"),
+                ImmutableList.of(),
+                // t3 has a, b column and hidden column x
+                Optional.of(new CatalogSchemaTableName(TPCH_CATALOG, "s1", "t3")));
+
         QualifiedObjectName freshMaterializedView = new QualifiedObjectName(TPCH_CATALOG, "s1", "fresh_materialized_view");
         inSetupTransaction(session -> metadata.createMaterializedView(
                 session,
                 freshMaterializedView,
-                new MaterializedViewDefinition(
-                        "SELECT a, b FROM t1",
-                        Optional.of(TPCH_CATALOG),
-                        Optional.of("s1"),
-                        ImmutableList.of(new ViewColumn("a", BIGINT.getTypeId(), Optional.empty()), new ViewColumn("b", BIGINT.getTypeId(), Optional.empty())),
-                        Optional.empty(),
-                        Optional.empty(),
-                        Identity.ofUser("some user"),
-                        ImmutableList.of(),
-                        // t3 has a, b column and hidden column x
-                        Optional.of(new CatalogSchemaTableName(TPCH_CATALOG, "s1", "t3"))),
+                materializedView,
                 ImmutableMap.of(),
                 false,
                 false));
         testingConnectorMetadata.markMaterializedViewIsFresh(freshMaterializedView.asSchemaTableName());
+
+        QualifiedObjectName staleMaterializedView = new QualifiedObjectName(TPCH_CATALOG, "s1", "stale_materialized_view");
+        inSetupTransaction(session -> metadata.createMaterializedView(
+                session,
+                staleMaterializedView,
+                materializedView,
+                ImmutableMap.of(),
+                false,
+                false));
+
+        MaterializedViewDefinition materializedViewNonExistentTable = new MaterializedViewDefinition(
+                "SELECT a, b FROM non_existent_table",
+                Optional.of(TPCH_CATALOG),
+                Optional.of("s1"),
+                ImmutableList.of(new ViewColumn("a", BIGINT.getTypeId(), Optional.empty()), new ViewColumn("b", BIGINT.getTypeId(), Optional.empty())),
+                Optional.of(STALE_MV_STALENESS.minusHours(1)), // Minus 1 hour to make MVs not marked as fresh become stale immediately. This doesn’t affect those marked as fresh.
+                Optional.empty(),
+                Optional.empty(),
+                Identity.ofUser("some user"),
+                ImmutableList.of(),
+                // t3 has a, b column and hidden column x
+                Optional.of(new CatalogSchemaTableName(TPCH_CATALOG, "s1", "t3")));
+
+        QualifiedObjectName freshMaterializedViewNonExistentTable = new QualifiedObjectName(TPCH_CATALOG, "s1", "fresh_materialized_view_non_existent_table");
+        inSetupTransaction(session -> metadata.createMaterializedView(
+                session,
+                freshMaterializedViewNonExistentTable,
+                materializedViewNonExistentTable,
+                ImmutableMap.of(),
+                false,
+                false));
+        testingConnectorMetadata.markMaterializedViewIsFresh(freshMaterializedViewNonExistentTable.asSchemaTableName());
+
+        QualifiedObjectName staleMaterializedViewNonExistentTable = new QualifiedObjectName(TPCH_CATALOG, "s1", "stale_materialized_view_non_existent_table");
+        inSetupTransaction(session -> metadata.createMaterializedView(
+                session,
+                staleMaterializedViewNonExistentTable,
+                materializedViewNonExistentTable,
+                ImmutableMap.of(),
+                false,
+                false));
 
         QualifiedObjectName freshMaterializedViewMismatchedColumnCount = new QualifiedObjectName(TPCH_CATALOG, "s1", "fresh_materialized_view_mismatched_column_count");
         inSetupTransaction(session -> metadata.createMaterializedView(
@@ -7584,6 +8181,7 @@ public class TestAnalyzer
                         Optional.of(TPCH_CATALOG),
                         Optional.of("s1"),
                         ImmutableList.of(new ViewColumn("a", BIGINT.getTypeId(), Optional.empty())),
+                        Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
                         Identity.ofUser("some user"),
@@ -7605,6 +8203,7 @@ public class TestAnalyzer
                         ImmutableList.of(new ViewColumn("a", BIGINT.getTypeId(), Optional.empty()), new ViewColumn("c", BIGINT.getTypeId(), Optional.empty())),
                         Optional.empty(),
                         Optional.empty(),
+                        Optional.empty(),
                         Identity.ofUser("some user"),
                         ImmutableList.of(),
                         Optional.of(new CatalogSchemaTableName(TPCH_CATALOG, "s1", "t2"))),
@@ -7622,6 +8221,7 @@ public class TestAnalyzer
                         Optional.of(TPCH_CATALOG),
                         Optional.of("s1"),
                         ImmutableList.of(new ViewColumn("a", BIGINT.getTypeId(), Optional.empty()), new ViewColumn("b", RowType.anonymousRow(TINYINT).getTypeId(), Optional.empty())),
+                        Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
                         Identity.ofUser("some user"),
@@ -7673,6 +8273,7 @@ public class TestAnalyzer
     private Analyzer createAnalyzer(Session session, AccessControl accessControl)
     {
         StatementRewrite statementRewrite = new StatementRewrite(ImmutableSet.of(new ShowQueriesRewrite(
+                new SqlEnvironmentConfig(),
                 plannerContext.getMetadata(),
                 SQL_PARSER,
                 accessControl,
@@ -7680,6 +8281,7 @@ public class TestAnalyzer
                 new SchemaPropertyManager(CatalogServiceProvider.fail()),
                 new ColumnPropertyManager(CatalogServiceProvider.fail()),
                 tablePropertyManager,
+                new ViewPropertyManager(catalogName -> ImmutableMap.of()),
                 new MaterializedViewPropertyManager(catalogName -> ImmutableMap.of()))));
         StatementAnalyzerFactory statementAnalyzerFactory = new StatementAnalyzerFactory(
                 plannerContext,
@@ -7786,5 +8388,8 @@ public class TestAnalyzer
                     stringProperty("p1", "test string property", "", false),
                     integerProperty("p2", "test integer property", 0, false));
         }
+
+        @Override
+        public void shutdown() {}
     }
 }

@@ -264,7 +264,7 @@ public class TimeSharingTaskExecutor
         try {
             executor.execute(versionEmbedder.embedVersion(new TaskRunner()));
         }
-        catch (RejectedExecutionException ignored) {
+        catch (RejectedExecutionException _) {
         }
     }
 
@@ -293,7 +293,7 @@ public class TimeSharingTaskExecutor
     public void removeTask(TaskHandle taskHandle)
     {
         TimeSharingTaskHandle handle = (TimeSharingTaskHandle) taskHandle;
-        try (SetThreadName ignored = new SetThreadName("Task-%s", handle.getTaskId())) {
+        try (SetThreadName _ = new SetThreadName("Task-" + handle.getTaskId())) {
             // Skip additional scheduling if the task was already destroyed
             if (!doRemoveTask(handle)) {
                 return;
@@ -358,10 +358,10 @@ public class TimeSharingTaskExecutor
 
                 Span splitSpan = tracer.spanBuilder(intermediate ? "split (intermediate)" : "split (leaf)")
                         .setParent(Context.current().with(taskSplit.getPipelineSpan()))
-                        .setAttribute(TrinoAttributes.QUERY_ID, taskId.getQueryId().toString())
-                        .setAttribute(TrinoAttributes.STAGE_ID, taskId.getStageId().toString())
+                        .setAttribute(TrinoAttributes.QUERY_ID, taskId.queryId().toString())
+                        .setAttribute(TrinoAttributes.STAGE_ID, taskId.stageId().toString())
                         .setAttribute(TrinoAttributes.TASK_ID, taskId.toString())
-                        .setAttribute(TrinoAttributes.PIPELINE_ID, taskId.getStageId() + "-" + taskSplit.getPipelineId())
+                        .setAttribute(TrinoAttributes.PIPELINE_ID, taskId.stageId() + "-" + taskSplit.getPipelineId())
                         .setAttribute(TrinoAttributes.SPLIT_ID, taskId + "-" + splitId)
                         .startSpan();
 
@@ -542,7 +542,7 @@ public class TimeSharingTaskExecutor
         @Override
         public void run()
         {
-            try (SetThreadName runnerName = new SetThreadName("SplitRunner-%s", runnerId)) {
+            try (SetThreadName runnerName = new SetThreadName("SplitRunner-" + runnerId)) {
                 while (!closed && !Thread.currentThread().isInterrupted()) {
                     // select next worker
                     PrioritizedSplitRunner split;
@@ -555,7 +555,7 @@ public class TimeSharingTaskExecutor
                     }
 
                     String threadId = split.getTaskHandle().getTaskId() + "-" + split.getSplitId();
-                    try (SetThreadName splitName = new SetThreadName(threadId)) {
+                    try (SetThreadName _ = new SetThreadName(threadId)) {
                         RunningSplitInfo splitInfo = new RunningSplitInfo(ticker.read(), threadId, Thread.currentThread(), split.getTaskHandle().getTaskId(), split::getInfo);
                         runningSplitInfos.add(splitInfo);
                         runningSplits.add(split);
@@ -594,12 +594,13 @@ public class TimeSharingTaskExecutor
                         // ignore random errors due to driver thread interruption
                         if (!split.isDestroyed()) {
                             if (t instanceof TrinoException trinoException) {
-                                log.error(t, "Error processing %s: %s: %s", split.getInfo(), trinoException.getErrorCode().getName(), trinoException.getMessage());
+                                log.debug(t, "Error processing %s: %s: %s", split.getInfo(), trinoException.getErrorCode().getName(), trinoException.getMessage());
                             }
                             else {
-                                log.error(t, "Error processing %s", split.getInfo());
+                                log.debug(t, "Error processing %s", split.getInfo());
                             }
                         }
+                        split.markFailed(t);
                         splitFinished(split);
                     }
                     finally {

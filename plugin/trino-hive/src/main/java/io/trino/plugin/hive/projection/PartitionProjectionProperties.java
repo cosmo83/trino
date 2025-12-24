@@ -17,15 +17,14 @@ import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.Table;
+import io.trino.metastore.Column;
+import io.trino.metastore.Table;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 
 import java.time.temporal.ChronoUnit;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -37,6 +36,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.plugin.hive.HiveTableProperties.getPartitionedBy;
 import static io.trino.plugin.hive.HiveTimestampPrecision.DEFAULT_PRECISION;
+import static io.trino.plugin.hive.util.HiveTypeUtil.getType;
 import static java.lang.Boolean.parseBoolean;
 import static java.lang.String.format;
 import static java.util.Locale.ROOT;
@@ -198,7 +198,7 @@ public final class PartitionProjectionProperties
                         .filter(partitionColumnNames::contains)
                         .collect(toImmutableList()),
                 table.getPartitionColumns().stream()
-                        .collect(toImmutableMap(Column::getName, column -> column.getType().getType(typeManager, DEFAULT_PRECISION))),
+                        .collect(toImmutableMap(Column::getName, column -> getType(column.getType(), typeManager, DEFAULT_PRECISION))),
                 tableProperties);
     }
 
@@ -222,7 +222,7 @@ public final class PartitionProjectionProperties
             }
         }
 
-        Map<String, Projection> columnProjections = new HashMap<>();
+        ImmutableMap.Builder<String, Projection> columnProjections = ImmutableMap.builder();
         partitionColumns.forEach((columnName, type) -> {
             Map<String, Object> columnProperties = rewriteColumnProjectionProperties(tableProperties, columnName);
             if (enabled) {
@@ -242,7 +242,7 @@ public final class PartitionProjectionProperties
         if (!enabled) {
             return Optional.empty();
         }
-        return Optional.of(new PartitionProjection(storageLocationTemplate, columnProjections));
+        return Optional.of(new PartitionProjection(storageLocationTemplate, columnProjections.buildOrThrow()));
     }
 
     private static Map<String, Object> rewriteColumnProjectionProperties(Map<String, String> metastoreTableProperties, String columnName)

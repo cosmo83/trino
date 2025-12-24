@@ -21,12 +21,6 @@ public enum BlackHoleSplit
     INSTANCE;
 
     @Override
-    public Object getInfo()
-    {
-        return this;
-    }
-
-    @Override
     public long getRetainedSizeInBytes()
     {
         return 0;

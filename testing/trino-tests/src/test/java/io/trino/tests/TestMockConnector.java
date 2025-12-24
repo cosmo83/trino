@@ -30,6 +30,7 @@ import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
 import io.trino.spi.connector.ConnectorMaterializedViewDefinition.Column;
 import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.ConnectorViewDefinition.ViewColumn;
+import io.trino.spi.connector.MaterializedViewFreshness;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableProcedureMetadata;
 import io.trino.spi.metrics.Metrics;
@@ -44,6 +45,7 @@ import java.util.Optional;
 import static io.trino.connector.MockConnectorEntities.TPCH_NATION_DATA;
 import static io.trino.connector.MockConnectorEntities.TPCH_NATION_SCHEMA;
 import static io.trino.plugin.base.session.PropertyMetadataUtil.durationProperty;
+import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.FRESH;
 import static io.trino.spi.connector.TableProcedureExecutionMode.coordinatorOnly;
 import static io.trino.spi.session.PropertyMetadata.booleanProperty;
 import static io.trino.spi.session.PropertyMetadata.integerProperty;
@@ -105,8 +107,15 @@ public class TestMockConnector
                                                 ImmutableList.of(new Column("nationkey", BIGINT.getTypeId(), Optional.empty())),
                                                 Optional.of(Duration.ZERO),
                                                 Optional.empty(),
+                                                Optional.empty(),
                                                 Optional.of("alice"),
                                                 ImmutableList.of())))
+                                .withGetMaterializedViewsFreshness((session, materializedViewName) -> {
+                                    if (materializedViewName.equals(new SchemaTableName("default", "test_materialized_view"))) {
+                                        return new MaterializedViewFreshness(FRESH, Optional.empty());
+                                    }
+                                    throw new UnsupportedOperationException("getMaterializedViewsFreshness not supported for " + materializedViewName);
+                                })
                                 .withData(schemaTableName -> {
                                     if (schemaTableName.equals(new SchemaTableName("default", "nation"))) {
                                         return TPCH_NATION_DATA;
@@ -248,7 +257,7 @@ public class TestMockConnector
     {
         assertUpdate("CREATE SCHEMA mock.test_schema WITH (boolean_schema_property = true)");
         assertThatThrownBy(() -> assertUpdate("CREATE SCHEMA mock.test_schema WITH (unknown_property = true)"))
-                .hasMessage("Catalog 'mock' schema property 'unknown_property' does not exist");
+                .hasMessage("line 1:38: Catalog 'mock' schema property 'unknown_property' does not exist");
     }
 
     @Test
@@ -266,6 +275,6 @@ public class TestMockConnector
     {
         assertUpdate("CREATE TABLE mock.default.new_table (c int) WITH (integer_table_property = 1)");
         assertThatThrownBy(() -> assertUpdate("CREATE TABLE mock.default.new_table (c int) WITH (unknown_property = 1)"))
-                .hasMessage("Catalog 'mock' table property 'unknown_property' does not exist");
+                .hasMessage("line 1:51: Catalog 'mock' table property 'unknown_property' does not exist");
     }
 }

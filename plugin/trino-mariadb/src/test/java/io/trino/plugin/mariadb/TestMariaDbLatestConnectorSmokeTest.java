@@ -13,12 +13,10 @@
  */
 package io.trino.plugin.mariadb;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.jdbc.BaseJdbcConnectorSmokeTest;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 
-import static io.trino.plugin.mariadb.MariaDbQueryRunner.createMariaDbQueryRunner;
 import static io.trino.plugin.mariadb.TestingMariaDbServer.LATEST_VERSION;
 
 public class TestMariaDbLatestConnectorSmokeTest
@@ -28,7 +26,9 @@ public class TestMariaDbLatestConnectorSmokeTest
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
         return switch (connectorBehavior) {
-            case SUPPORTS_RENAME_SCHEMA -> false;
+            case SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_MERGE,
+                 SUPPORTS_ROW_LEVEL_UPDATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -38,6 +38,8 @@ public class TestMariaDbLatestConnectorSmokeTest
             throws Exception
     {
         TestingMariaDbServer server = closeAfterClass(new TestingMariaDbServer(LATEST_VERSION));
-        return createMariaDbQueryRunner(server, ImmutableMap.of(), ImmutableMap.of(), REQUIRED_TPCH_TABLES);
+        return MariaDbQueryRunner.builder(server)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 }

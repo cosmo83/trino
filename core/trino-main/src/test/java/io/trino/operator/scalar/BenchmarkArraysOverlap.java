@@ -22,6 +22,7 @@ import io.trino.operator.project.PageProcessor;
 import io.trino.spi.Page;
 import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.Block;
+import io.trino.spi.connector.SourcePage;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.Type;
 import io.trino.sql.gen.ExpressionCompiler;
@@ -72,7 +73,7 @@ public class BenchmarkArraysOverlap
                 SESSION,
                 new DriverYieldSignal(),
                 newSimpleAggregatedMemoryContext().newLocalMemoryContext(PageProcessor.class.getSimpleName()),
-                data.getPage()));
+                SourcePage.create(data.getPage())));
     }
 
     @SuppressWarnings("FieldMayBeFinal")
@@ -101,7 +102,7 @@ public class BenchmarkArraysOverlap
 
             TestingFunctionResolution functionResolution = new TestingFunctionResolution();
             ArrayType arrayType = new ArrayType(elementType);
-            ImmutableList<RowExpression> projections = ImmutableList.of(new CallExpression(
+            List<RowExpression> projections = ImmutableList.of(new CallExpression(
                     functionResolution.resolveFunction(name, fromTypes(arrayType, arrayType)),
                     ImmutableList.of(field(0, arrayType), field(1, arrayType))));
 
@@ -153,7 +154,7 @@ public class BenchmarkArraysOverlap
         new BenchmarkArraysOverlap().benchmark(data);
     }
 
-    public static void main(String[] args)
+    static void main()
             throws Exception
     {
         // assure the benchmarks are valid before running

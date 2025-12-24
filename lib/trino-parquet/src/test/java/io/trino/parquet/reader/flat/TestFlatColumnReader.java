@@ -19,6 +19,7 @@ import io.trino.parquet.DataPage;
 import io.trino.parquet.DataPageV1;
 import io.trino.parquet.ParquetDataSourceId;
 import io.trino.parquet.ParquetEncoding;
+import io.trino.parquet.ParquetReaderOptions;
 import io.trino.parquet.PrimitiveField;
 import io.trino.parquet.reader.AbstractColumnReaderTest;
 import io.trino.parquet.reader.ColumnReader;
@@ -63,7 +64,7 @@ public class TestFlatColumnReader
     @Override
     protected ColumnReader createColumnReader(PrimitiveField field)
     {
-        ColumnReaderFactory columnReaderFactory = new ColumnReaderFactory(UTC);
+        ColumnReaderFactory columnReaderFactory = new ColumnReaderFactory(UTC, ParquetReaderOptions.defaultOptions());
         ColumnReader columnReader = columnReaderFactory.create(field, newSimpleAggregatedMemoryContext());
         assertThat(columnReader).isInstanceOf(FlatColumnReader.class);
         return columnReader;
@@ -136,8 +137,9 @@ public class TestFlatColumnReader
                 OptionalLong.empty(),
                 encoding,
                 encoding,
-                PLAIN));
-        return new PageReader(new ParquetDataSourceId("test"), UNCOMPRESSED, pages.iterator(), false, false);
+                PLAIN,
+                0));
+        return new PageReader(new ParquetDataSourceId("test"), UNCOMPRESSED, pages.iterator(), false, false, Optional.empty(), -1, -1);
     }
 
     private static PageReader getNullOnlyPageReaderMock()
@@ -153,7 +155,8 @@ public class TestFlatColumnReader
                 OptionalLong.empty(),
                 RLE,
                 RLE,
-                PLAIN));
-        return new PageReader(new ParquetDataSourceId("test"), UNCOMPRESSED, pages.iterator(), false, false);
+                PLAIN,
+                0));
+        return new PageReader(new ParquetDataSourceId("test"), UNCOMPRESSED, pages.iterator(), false, false, Optional.empty(), -1, -1);
     }
 }

@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.hive;
 
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.configuration.Config;
@@ -33,12 +32,15 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import org.joda.time.DateTimeZone;
 
+import java.nio.file.Path;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.concurrent.TimeUnit;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.KILOBYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
@@ -63,13 +65,10 @@ import static java.util.concurrent.TimeUnit.MINUTES;
         "hive.s3select-pushdown.enabled",
         "hive.s3select-pushdown.experimental-textfile-pushdown-enabled",
         "hive.s3select-pushdown.max-connections",
+        "hive.write-validation-threads",
 })
 public class HiveConfig
 {
-    public static final String CONFIGURATION_HIVE_PARTITION_PROJECTION_ENABLED = "hive.partition-projection-enabled";
-
-    private static final Splitter SPLITTER = Splitter.on(',').trimResults().omitEmptyStrings();
-
     private boolean singleStatementWritesOnly;
 
     private DataSize maxSplitSize = DataSize.of(64, MEGABYTE);
@@ -107,7 +106,6 @@ public class HiveConfig
     // to avoid deleting those files if Trino is unable to check.
     private boolean deleteSchemaLocationsFallback;
     private int maxPartitionsPerWriter = 100;
-    private int writeValidationThreads = 16;
     private boolean validateBucketing = true;
     private boolean parallelPartitionedBucketedWrites = true;
 
@@ -128,7 +126,7 @@ public class HiveConfig
     private boolean sortedWritingEnabled = true;
     private boolean propagateTableScanSortingProperties;
 
-    private boolean optimizeMismatchedBucketCount;
+    private boolean optimizeMismatchedBucketCount = true;
     private boolean writesToNonManagedTablesEnabled;
     private boolean createsOfNonManagedTablesEnabled = true;
 
@@ -144,6 +142,7 @@ public class HiveConfig
     private Duration fileStatusCacheExpireAfterWrite = new Duration(1, MINUTES);
     private DataSize fileStatusCacheMaxRetainedSize = DataSize.of(1, GIGABYTE);
     private List<String> fileStatusCacheTables = ImmutableList.of();
+    private List<String> fileStatusCacheExcludedTables = ImmutableList.of();
     private DataSize perTransactionFileStatusCacheMaxRetainedSize = DataSize.of(100, MEGABYTE);
 
     private boolean translateHiveViews;
@@ -174,7 +173,15 @@ public class HiveConfig
     private double minimumAssignedSplitWeight = 0.05;
     private boolean autoPurge;
 
-    private boolean partitionProjectionEnabled;
+    private boolean partitionProjectionEnabled = true;
+
+    private S3GlacierFilter s3GlacierFilter = S3GlacierFilter.READ_ALL;
+
+    private int metadataParallelism = 8;
+
+    private Path protobufDescriptorsLocation;
+    private Duration protobufDescriptorsCacheRefreshInterval = new Duration(1, TimeUnit.DAYS);
+    private long protobufDescriptorsCacheMaxSize = 64;
 
     public boolean isSingleStatementWritesOnly()
     {
@@ -605,19 +612,6 @@ public class HiveConfig
         return this;
     }
 
-    public int getWriteValidationThreads()
-    {
-        return writeValidationThreads;
-    }
-
-    @Config("hive.write-validation-threads")
-    @ConfigDescription("Number of threads used for verifying data after a write")
-    public HiveConfig setWriteValidationThreads(int writeValidationThreads)
-    {
-        this.writeValidationThreads = writeValidationThreads;
-        return this;
-    }
-
     public boolean isValidateBucketing()
     {
         return validateBucketing;
@@ -765,9 +759,22 @@ public class HiveConfig
     }
 
     @Config("hive.file-status-cache-tables")
-    public HiveConfig setFileStatusCacheTables(String fileStatusCacheTables)
+    public HiveConfig setFileStatusCacheTables(List<String> fileStatusCacheTables)
     {
-        this.fileStatusCacheTables = SPLITTER.splitToList(fileStatusCacheTables);
+        this.fileStatusCacheTables = ImmutableList.copyOf(fileStatusCacheTables);
+        return this;
+    }
+
+    public List<String> getFileStatusCacheExcludedTables()
+    {
+        return fileStatusCacheExcludedTables;
+    }
+
+    @Config("hive.file-status-cache.excluded-tables")
+    @ConfigDescription("List of tables that should be excluded from file status caching")
+    public HiveConfig setFileStatusCacheExcludedTables(List<String> fileStatusCacheExcludedTables)
+    {
+        this.fileStatusCacheExcludedTables = ImmutableList.copyOf(fileStatusCacheExcludedTables);
         return this;
     }
 
@@ -904,7 +911,7 @@ public class HiveConfig
     }
 
     @Config("hive.bucket-execution")
-    @ConfigDescription("Enable bucket-aware execution: only use a single worker per bucket")
+    @ConfigDescription("Enable bucket-aware execution: use physical bucketing information to optimize queries")
     public HiveConfig setBucketExecutionEnabled(boolean bucketExecutionEnabled)
     {
         this.bucketExecutionEnabled = bucketExecutionEnabled;
@@ -1115,9 +1122,11 @@ public class HiveConfig
 
     @Config("hive.query-partition-filter-required-schemas")
     @ConfigDescription("List of schemas for which filter on partition column is enforced")
-    public HiveConfig setQueryPartitionFilterRequiredSchemas(String queryPartitionFilterRequiredSchemas)
+    public HiveConfig setQueryPartitionFilterRequiredSchemas(List<String> queryPartitionFilterRequiredSchemas)
     {
-        this.queryPartitionFilterRequiredSchemas = ImmutableSet.copyOf(SPLITTER.splitToList(queryPartitionFilterRequiredSchemas.toLowerCase(ENGLISH)));
+        this.queryPartitionFilterRequiredSchemas = queryPartitionFilterRequiredSchemas.stream()
+                .map(value -> value.toLowerCase(ENGLISH))
+                .collect(toImmutableSet());
         return this;
     }
 
@@ -1245,11 +1254,78 @@ public class HiveConfig
         return partitionProjectionEnabled;
     }
 
-    @Config(CONFIGURATION_HIVE_PARTITION_PROJECTION_ENABLED)
+    @Config("hive.partition-projection-enabled")
     @ConfigDescription("Enables AWS Athena partition projection")
     public HiveConfig setPartitionProjectionEnabled(boolean enabledAthenaPartitionProjection)
     {
         this.partitionProjectionEnabled = enabledAthenaPartitionProjection;
+        return this;
+    }
+
+    public S3GlacierFilter getS3GlacierFilter()
+    {
+        return s3GlacierFilter;
+    }
+
+    @LegacyConfig("hive.s3.storage-class-filter")
+    @Config("hive.s3-glacier-filter")
+    @ConfigDescription("Filter based on storage class of S3 object")
+    public HiveConfig setS3GlacierFilter(S3GlacierFilter s3GlacierFilter)
+    {
+        this.s3GlacierFilter = s3GlacierFilter;
+        return this;
+    }
+
+    @Min(1)
+    public int getMetadataParallelism()
+    {
+        return metadataParallelism;
+    }
+
+    @ConfigDescription("Limits metadata enumeration calls parallelism")
+    @Config("hive.metadata.parallelism")
+    public HiveConfig setMetadataParallelism(int metadataParallelism)
+    {
+        this.metadataParallelism = metadataParallelism;
+        return this;
+    }
+
+    public Path getProtobufDescriptorsLocation()
+    {
+        return protobufDescriptorsLocation;
+    }
+
+    @ConfigDescription("Directory where binary protobuf descriptors are stored to use for deserializing protobufs")
+    @Config("hive.protobuf.descriptors.location")
+    public HiveConfig setProtobufDescriptorsLocation(Path protobufDescriptorsLocation)
+    {
+        this.protobufDescriptorsLocation = protobufDescriptorsLocation;
+        return this;
+    }
+
+    public long getProtobufDescriptorsCacheMaxSize()
+    {
+        return protobufDescriptorsCacheMaxSize;
+    }
+
+    @ConfigDescription("The maximum amount of protobuf descriptors to keep in memory")
+    @Config("hive.protobuf.descriptors.cache.max-size")
+    public HiveConfig setProtobufDescriptorsCacheMaxSize(long size)
+    {
+        this.protobufDescriptorsCacheMaxSize = size;
+        return this;
+    }
+
+    public Duration getProtobufDescriptorsCacheRefreshInterval()
+    {
+        return protobufDescriptorsCacheRefreshInterval;
+    }
+
+    @ConfigDescription("Interval on when loaded descriptors should be refreshed")
+    @Config("hive.protobuf.descriptors.cache.refresh-interval")
+    public HiveConfig setProtobufDescriptorsCacheRefreshInterval(Duration refreshInterval)
+    {
+        this.protobufDescriptorsCacheRefreshInterval = refreshInterval;
         return this;
     }
 }

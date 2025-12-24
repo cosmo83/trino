@@ -16,7 +16,7 @@ package io.trino.filesystem.cache;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
 import io.trino.client.NodeVersion;
-import io.trino.metadata.InternalNode;
+import io.trino.node.InternalNode;
 import io.trino.spi.Node;
 import io.trino.testing.TestingNodeManager;
 import org.junit.jupiter.api.Test;
@@ -36,13 +36,14 @@ public class TestConsistentHashingCacheHostAddressProvider
     @Test
     public void testConsistentHashing()
     {
-        TestingNodeManager nodeManager = new TestingNodeManager(true);
-        nodeManager.addNode(node("test-1"));
-        nodeManager.addNode(node("test-2"));
-        nodeManager.addNode(node("test-3"));
+        TestingNodeManager nodeManager = TestingNodeManager.builder()
+                .addNode(node("test-1"))
+                .addNode(node("test-2"))
+                .addNode(node("test-3"))
+                .build();
         ConsistentHashingHostAddressProvider provider = new ConsistentHashingHostAddressProvider(
                 nodeManager,
-                new ConsistentHashingHostAddressProviderConfiguration().setPreferredHostsCount(1));
+                new ConsistentHashingHostAddressProviderConfig().setPreferredHostsCount(1));
         provider.refreshHashRing();
         assertFairDistribution(provider, nodeManager.getWorkerNodes());
         nodeManager.removeNode(node("test-2"));
@@ -57,13 +58,14 @@ public class TestConsistentHashingCacheHostAddressProvider
     @Test
     public void testConsistentHashingFairRedistribution()
     {
-        TestingNodeManager nodeManager = new TestingNodeManager(true);
-        nodeManager.addNode(node("test-1"));
-        nodeManager.addNode(node("test-2"));
-        nodeManager.addNode(node("test-3"));
+        TestingNodeManager nodeManager = TestingNodeManager.builder()
+                .addNode(node("test-1"))
+                .addNode(node("test-2"))
+                .addNode(node("test-3"))
+                .build();
         ConsistentHashingHostAddressProvider provider = new ConsistentHashingHostAddressProvider(
                 nodeManager,
-                new ConsistentHashingHostAddressProviderConfiguration().setPreferredHostsCount(1));
+                new ConsistentHashingHostAddressProviderConfig().setPreferredHostsCount(1));
         provider.refreshHashRing();
         Map<String, Set<Integer>> distribution = getDistribution(provider);
         nodeManager.removeNode(node("test-1"));

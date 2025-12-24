@@ -15,54 +15,40 @@ package io.trino.cli;
 
 import io.trino.client.ClientSession;
 import io.trino.client.StatementClient;
+import io.trino.client.uri.HttpClientFactory;
 import io.trino.client.uri.TrinoUri;
-import okhttp3.Call;
 import okhttp3.OkHttpClient;
-import okhttp3.logging.HttpLoggingInterceptor;
 
 import java.io.Closeable;
-import java.sql.SQLException;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
 
 import static io.trino.client.ClientSession.stripTransactionId;
-import static io.trino.client.OkHttpUtil.setupTimeouts;
 import static io.trino.client.StatementClientFactory.newStatementClient;
+import static io.trino.client.UserAgentBuilder.createUserAgent;
 import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class QueryRunner
         implements Closeable
 {
+    private static final String USER_AGENT = createUserAgent("trino-cli");
+
     private final AtomicReference<ClientSession> session;
     private final boolean debug;
     private final OkHttpClient httpClient;
-    private final Consumer<OkHttpClient.Builder> sslSetup;
+    private final OkHttpClient segmentHttpClient;
+    private final int maxQueuedRows;
+    private final int maxBufferedRows;
 
-    public QueryRunner(
-            TrinoUri uri,
-            ClientSession session,
-            boolean debug,
-            HttpLoggingInterceptor.Level networkLogging)
+    public QueryRunner(TrinoUri uri, ClientSession session, boolean debug, int maxQueuedRows, int maxBufferedRows)
     {
         this.session = new AtomicReference<>(requireNonNull(session, "session is null"));
+        this.httpClient = HttpClientFactory.toHttpClientBuilder(uri, USER_AGENT).build();
+        this.segmentHttpClient = HttpClientFactory
+                .unauthenticatedClientBuilder(uri, USER_AGENT)
+                .build();
         this.debug = debug;
-
-        OkHttpClient.Builder builder = new OkHttpClient.Builder();
-        try {
-            sslSetup = uri.getSetupSsl();
-            uri.setupClient(builder);
-        }
-        catch (SQLException e) {
-            throw new IllegalArgumentException(e);
-        }
-
-        setupTimeouts(builder, 30, SECONDS);
-        builder.addNetworkInterceptor(
-                new HttpLoggingInterceptor(System.err::println)
-                        .setLevel(networkLogging));
-
-        this.httpClient = builder.build();
+        this.maxQueuedRows = maxQueuedRows;
+        this.maxBufferedRows = maxBufferedRows;
     }
 
     public ClientSession getSession()
@@ -82,7 +68,7 @@ public class QueryRunner
 
     public Query startQuery(String query)
     {
-        return new Query(startInternalQuery(session.get(), query), debug);
+        return new Query(startInternalQuery(session.get(), query), debug, maxQueuedRows, maxBufferedRows);
     }
 
     public StatementClient startInternalQuery(String query)
@@ -92,11 +78,7 @@ public class QueryRunner
 
     private StatementClient startInternalQuery(ClientSession session, String query)
     {
-        OkHttpClient.Builder builder = httpClient.newBuilder();
-        sslSetup.accept(builder);
-        OkHttpClient client = builder.build();
-
-        return newStatementClient((Call.Factory) client, session, query);
+        return newStatementClient(httpClient, segmentHttpClient, session, query);
     }
 
     @Override

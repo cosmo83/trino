@@ -15,7 +15,7 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import org.junit.jupiter.api.Test;
@@ -48,7 +48,7 @@ public class TestPruneTableExecuteSourceColumns
                                 ImmutableList.of("a"),
                                 ImmutableList.of("column_a"),
                                 strictProject(
-                                        ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a"))),
+                                        ImmutableMap.of("a", expression(new Reference(BIGINT, "a"))),
                                         values("a", "b"))));
     }
 
@@ -74,15 +74,13 @@ public class TestPruneTableExecuteSourceColumns
                 .on(p -> {
                     Symbol a = p.symbol("a");
                     Symbol partition = p.symbol("partition");
-                    Symbol hash = p.symbol("hash");
                     return p.tableExecute(
                             ImmutableList.of(a),
                             ImmutableList.of("column_a"),
                             Optional.of(p.partitioningScheme(
-                                    ImmutableList.of(partition, hash),
                                     ImmutableList.of(partition),
-                                    hash)),
-                            p.values(a, partition, hash));
+                                    ImmutableList.of(partition))),
+                            p.values(a, partition));
                 })
                 .doesNotFire();
     }

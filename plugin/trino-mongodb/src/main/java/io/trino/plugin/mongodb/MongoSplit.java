@@ -21,9 +21,11 @@ import io.trino.spi.connector.ConnectorSplit;
 
 import java.util.List;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
 import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
 public class MongoSplit
         implements ConnectorSplit
@@ -46,9 +48,11 @@ public class MongoSplit
     }
 
     @Override
-    public Object getInfo()
+    public String toString()
     {
-        return this;
+        return toStringHelper(this)
+                .add("addresses", addresses.stream().map(HostAddress::toString).collect(joining(",")))
+                .toString();
     }
 
     @Override

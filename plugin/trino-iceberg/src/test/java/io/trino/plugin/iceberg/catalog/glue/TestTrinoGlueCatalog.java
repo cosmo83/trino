@@ -13,17 +13,11 @@
  */
 package io.trino.plugin.iceberg.catalog.glue;
 
-import com.amazonaws.services.glue.AWSGlueAsync;
-import com.amazonaws.services.glue.AWSGlueAsyncClientBuilder;
-import com.amazonaws.services.glue.model.CreateDatabaseRequest;
-import com.amazonaws.services.glue.model.DatabaseInput;
-import com.amazonaws.services.glue.model.DeleteDatabaseRequest;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.log.Logger;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.plugin.hive.NodeVersion;
-import io.trino.plugin.hive.metastore.TableInfo;
+import io.trino.metastore.TableInfo;
 import io.trino.plugin.hive.metastore.glue.GlueMetastoreStats;
 import io.trino.plugin.iceberg.CommitTaskData;
 import io.trino.plugin.iceberg.IcebergConfig;
@@ -31,16 +25,17 @@ import io.trino.plugin.iceberg.IcebergMetadata;
 import io.trino.plugin.iceberg.TableStatisticsWriter;
 import io.trino.plugin.iceberg.catalog.BaseTrinoCatalogTest;
 import io.trino.plugin.iceberg.catalog.TrinoCatalog;
+import io.trino.spi.NodeVersion;
 import io.trino.spi.catalog.CatalogName;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
 import io.trino.spi.connector.ConnectorMetadata;
+import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.MaterializedViewNotFoundException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.security.PrincipalType;
 import io.trino.spi.security.TrinoPrincipal;
-import io.trino.spi.type.TestingTypeManager;
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.services.glue.GlueClient;
 
 import java.io.File;
 import java.io.IOException;
@@ -50,15 +45,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
 import static io.airlift.json.JsonCodec.jsonCodec;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
 import static io.trino.plugin.iceberg.IcebergFileFormat.PARQUET;
 import static io.trino.plugin.iceberg.IcebergSchemaProperties.LOCATION_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.FILE_FORMAT_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.FORMAT_VERSION_PROPERTY;
+import static io.trino.plugin.iceberg.IcebergTestUtils.FILE_IO_FACTORY;
+import static io.trino.plugin.iceberg.IcebergTestUtils.TABLE_STATISTICS_READER;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
-import static io.trino.testing.TestingConnectorSession.SESSION;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static java.util.Locale.ENGLISH;
@@ -75,19 +73,30 @@ public class TestTrinoGlueCatalog
         return createGlueTrinoCatalog(useUniqueTableLocations, false);
     }
 
+    @Override
+    protected void createNamespaceWithProperties(TrinoCatalog catalog, String namespace, Map<String, String> properties)
+    {
+        try (GlueClient glueClient = GlueClient.create()) {
+            glueClient.createDatabase(database -> database
+                    .databaseInput(input -> input.name(namespace).parameters(properties)));
+        }
+    }
+
     private TrinoCatalog createGlueTrinoCatalog(boolean useUniqueTableLocations, boolean useSystemSecurity)
     {
-        AWSGlueAsync glueClient = AWSGlueAsyncClientBuilder.defaultClient();
+        GlueClient glueClient = GlueClient.create();
         IcebergGlueCatalogConfig catalogConfig = new IcebergGlueCatalogConfig();
         return new TrinoGlueCatalog(
                 new CatalogName("catalog_name"),
                 HDFS_FILE_SYSTEM_FACTORY,
-                new TestingTypeManager(),
+                FILE_IO_FACTORY,
+                TESTING_TYPE_MANAGER,
                 catalogConfig.isCacheTableMetadata(),
                 new GlueIcebergTableOperationsProvider(
+                        HDFS_FILE_SYSTEM_FACTORY,
+                        FILE_IO_FACTORY,
                         TESTING_TYPE_MANAGER,
                         catalogConfig,
-                        HDFS_FILE_SYSTEM_FACTORY,
                         new GlueMetastoreStats(),
                         glueClient),
                 "test",
@@ -96,7 +105,8 @@ public class TestTrinoGlueCatalog
                 useSystemSecurity,
                 Optional.empty(),
                 useUniqueTableLocations,
-                new IcebergConfig().isHideMaterializedViewStorageTable());
+                new IcebergConfig().isHideMaterializedViewStorageTable(),
+                directExecutor());
     }
 
     /**
@@ -109,11 +119,11 @@ public class TestTrinoGlueCatalog
         // Trino schema names are always lowercase (until https://github.com/trinodb/trino/issues/17)
         String trinoSchemaName = databaseName.toLowerCase(ENGLISH);
 
-        AWSGlueAsync glueClient = AWSGlueAsyncClientBuilder.defaultClient();
-        glueClient.createDatabase(new CreateDatabaseRequest()
-                .withDatabaseInput(new DatabaseInput()
+        GlueClient glueClient = GlueClient.create();
+        glueClient.createDatabase(database -> database
+                .databaseInput(input -> input
                         // Currently this is actually stored in lowercase
-                        .withName(databaseName)));
+                        .name(databaseName)));
         try {
             TrinoCatalog catalog = createTrinoCatalog(false);
             assertThat(catalog.namespaceExists(SESSION, databaseName)).as("catalog.namespaceExists(databaseName)")
@@ -128,13 +138,20 @@ public class TestTrinoGlueCatalog
             // Test with IcebergMetadata, should the ConnectorMetadata implementation behavior depend on that class
             ConnectorMetadata icebergMetadata = new IcebergMetadata(
                     PLANNER_CONTEXT.getTypeManager(),
-                    CatalogHandle.fromId("iceberg:NORMAL:v12345"),
                     jsonCodec(CommitTaskData.class),
                     catalog,
                     (connectorIdentity, fileIoProperties) -> {
                         throw new UnsupportedOperationException();
                     },
-                    new TableStatisticsWriter(new NodeVersion("test-version")));
+                    TABLE_STATISTICS_READER,
+                    new TableStatisticsWriter(new NodeVersion("test-version")),
+                    Optional.empty(),
+                    false,
+                    _ -> false,
+                    newDirectExecutorService(),
+                    directExecutor(),
+                    newDirectExecutorService(),
+                    newDirectExecutorService());
             assertThat(icebergMetadata.schemaExists(SESSION, databaseName)).as("icebergMetadata.schemaExists(databaseName)")
                     .isFalse();
             assertThat(icebergMetadata.schemaExists(SESSION, trinoSchemaName)).as("icebergMetadata.schemaExists(trinoSchemaName)")
@@ -144,8 +161,7 @@ public class TestTrinoGlueCatalog
                     .contains(trinoSchemaName);
         }
         finally {
-            glueClient.deleteDatabase(new DeleteDatabaseRequest()
-                    .withName(databaseName));
+            glueClient.deleteDatabase(delete -> delete.name(databaseName));
         }
     }
 
@@ -170,6 +186,7 @@ public class TestTrinoGlueCatalog
                             ImmutableList.of(new ConnectorMaterializedViewDefinition.Column("col1", INTEGER.getTypeId(), Optional.empty())),
                             Optional.empty(),
                             Optional.empty(),
+                            Optional.empty(),
                             Optional.of("test_owner"),
                             ImmutableList.of()),
                     ImmutableMap.of(FILE_FORMAT_PROPERTY, PARQUET, FORMAT_VERSION_PROPERTY, 1),
@@ -179,7 +196,7 @@ public class TestTrinoGlueCatalog
                     .filter(info -> info.extendedRelationType() == TableInfo.ExtendedRelationType.TRINO_MATERIALIZED_VIEW)
                     .map(TableInfo::tableName)
                     .toList();
-            assertThat(materializedViews.size()).isEqualTo(1);
+            assertThat(materializedViews).hasSize(1);
             assertThat(materializedViews.get(0).getTableName()).isEqualTo(table);
             Optional<ConnectorMaterializedViewDefinition> returned = glueTrinoCatalog.getMaterializedView(SESSION, materializedViews.get(0));
             assertThat(returned).isPresent();
@@ -209,17 +226,19 @@ public class TestTrinoGlueCatalog
         tmpDirectory.toFile().deleteOnExit();
 
         TrinoFileSystemFactory fileSystemFactory = HDFS_FILE_SYSTEM_FACTORY;
-        AWSGlueAsync glueClient = AWSGlueAsyncClientBuilder.defaultClient();
+        GlueClient glueClient = GlueClient.create();
         IcebergGlueCatalogConfig catalogConfig = new IcebergGlueCatalogConfig();
         TrinoCatalog catalogWithDefaultLocation = new TrinoGlueCatalog(
                 new CatalogName("catalog_name"),
                 fileSystemFactory,
-                new TestingTypeManager(),
+                FILE_IO_FACTORY,
+                TESTING_TYPE_MANAGER,
                 catalogConfig.isCacheTableMetadata(),
                 new GlueIcebergTableOperationsProvider(
+                        fileSystemFactory,
+                        FILE_IO_FACTORY,
                         TESTING_TYPE_MANAGER,
                         catalogConfig,
-                        fileSystemFactory,
                         new GlueMetastoreStats(),
                         glueClient),
                 "test",
@@ -228,7 +247,8 @@ public class TestTrinoGlueCatalog
                 false,
                 Optional.of(tmpDirectory.toAbsolutePath().toString()),
                 false,
-                new IcebergConfig().isHideMaterializedViewStorageTable());
+                new IcebergConfig().isHideMaterializedViewStorageTable(),
+                directExecutor());
 
         String namespace = "test_default_location_" + randomNameSuffix();
         String table = "tableName";
@@ -247,5 +267,27 @@ public class TestTrinoGlueCatalog
                 LOG.warn("Failed to clean up namespace: %s", namespace);
             }
         }
+    }
+
+    @Override
+    protected void createMaterializedView(
+            ConnectorSession session,
+            TrinoCatalog catalog,
+            SchemaTableName materializedView,
+            ConnectorMaterializedViewDefinition materializedViewDefinition,
+            Map<String, Object> properties,
+            boolean replace,
+            boolean ignoreExisting)
+    {
+        catalog.createMaterializedView(
+                session,
+                materializedView,
+                materializedViewDefinition,
+                ImmutableMap.<String, Object>builder()
+                        .putAll(properties)
+                        .put(LOCATION_PROPERTY, "file:///tmp/a/path/" + materializedView.getTableName())
+                        .buildOrThrow(),
+                replace,
+                ignoreExisting);
     }
 }

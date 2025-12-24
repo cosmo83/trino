@@ -20,8 +20,10 @@ import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import io.trino.Session;
+import io.trino.connector.ConnectorServicesProvider;
 import io.trino.cost.StatsCalculator;
 import io.trino.execution.FailureInjector.InjectedFailureType;
+import io.trino.execution.QueryManagerConfig;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.FunctionBundle;
 import io.trino.metadata.MetadataUtil;
@@ -63,7 +65,7 @@ public final class StandaloneQueryRunner
 {
     private final Session defaultSession;
     private final TestingTrinoServer server;
-    private final DirectTrinoClient trinoClient;
+    private final TestingDirectTrinoClient trinoClient;
     private final InMemorySpanExporter spanExporter = InMemorySpanExporter.create();
 
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
@@ -87,10 +89,12 @@ public final class StandaloneQueryRunner
                         .buildOrThrow());
         serverProcessor.accept(builder);
         this.server = builder.build();
+        server.getInstance(Key.get(ConnectorServicesProvider.class)).loadInitialCatalogs();
 
-        this.trinoClient = new DirectTrinoClient(
+        this.trinoClient = new TestingDirectTrinoClient(
                 server.getDispatchManager(),
                 server.getQueryManager(),
+                server.getInstance(Key.get(QueryManagerConfig.class)),
                 server.getInstance(Key.get(DirectExchangeClientSupplier.class)),
                 server.getInstance(Key.get(BlockEncodingSerde.class)));
     }
@@ -105,17 +109,23 @@ public final class StandaloneQueryRunner
     @Override
     public MaterializedResult execute(Session session, @Language("SQL") String sql)
     {
-        return executeInternal(session, sql).result();
+        return executeInternal(session, sql).result().get();
     }
 
     @Override
     public MaterializedResultWithPlan executeWithPlan(Session session, String sql)
     {
-        DirectTrinoClient.Result result = executeInternal(session, sql);
-        return new MaterializedResultWithPlan(result.queryId(), server.getQueryPlan(result.queryId()), result.result());
+        TestingDirectTrinoClient.Result result = executeInternal(session, sql);
+        MaterializedResult materializedRows = result.result().get();
+        return new MaterializedResultWithPlan(result.queryId(), server.getQueryPlan(result.queryId()), materializedRows);
     }
 
-    private DirectTrinoClient.Result executeInternal(Session session, @Language("SQL") String sql)
+    public TestingDirectTrinoClient.Result executeWithoutResults(Session session, String sql)
+    {
+        return executeInternal(session, sql);
+    }
+
+    private TestingDirectTrinoClient.Result executeInternal(Session session, @Language("SQL") String sql)
     {
         lock.readLock().lock();
         try {
@@ -315,5 +325,11 @@ public final class StandaloneQueryRunner
     public void loadExchangeManager(String name, Map<String, String> properties)
     {
         server.loadExchangeManager(name, properties);
+    }
+
+    @Override
+    public void loadSpoolingManager(String name, Map<String, String> properties)
+    {
+        server.loadSpoolingManager(name, properties);
     }
 }

@@ -14,8 +14,8 @@
 package io.trino.plugin.opensearch;
 
 import io.trino.plugin.opensearch.client.OpenSearchClient;
-import io.trino.spi.Page;
 import io.trino.spi.connector.ConnectorPageSource;
+import io.trino.spi.connector.SourcePage;
 
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
@@ -40,13 +40,13 @@ class CountQueryPageSource
 
         long start = System.nanoTime();
         long count = client.count(
-                split.getIndex(),
-                split.getShard(),
-                OpenSearchQueryBuilder.buildSearchQuery(table.getConstraint().transformKeys(OpenSearchColumnHandle.class::cast), table.getQuery(), table.getRegexes()));
+                split.index(),
+                split.shard(),
+                OpenSearchQueryBuilder.buildSearchQuery(table.constraint().transformKeys(OpenSearchColumnHandle.class::cast), table.query(), table.regexes()));
         readTimeNanos = System.nanoTime() - start;
 
-        if (table.getLimit().isPresent()) {
-            count = Math.min(table.getLimit().getAsLong(), count);
+        if (table.limit().isPresent()) {
+            count = Math.min(table.limit().getAsLong(), count);
         }
 
         remaining = count;
@@ -59,12 +59,12 @@ class CountQueryPageSource
     }
 
     @Override
-    public Page getNextPage()
+    public SourcePage getNextSourcePage()
     {
         int batch = toIntExact(Math.min(BATCH_SIZE, remaining));
         remaining -= batch;
 
-        return new Page(batch);
+        return SourcePage.create(batch);
     }
 
     @Override
@@ -86,7 +86,5 @@ class CountQueryPageSource
     }
 
     @Override
-    public void close()
-    {
-    }
+    public void close() {}
 }

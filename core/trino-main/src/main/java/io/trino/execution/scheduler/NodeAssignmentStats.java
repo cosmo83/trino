@@ -16,7 +16,7 @@ package io.trino.execution.scheduler;
 import io.trino.execution.NodeTaskMap;
 import io.trino.execution.PartitionedSplitsInfo;
 import io.trino.execution.RemoteTask;
-import io.trino.metadata.InternalNode;
+import io.trino.node.InternalNode;
 import io.trino.spi.SplitWeight;
 
 import java.util.HashMap;
@@ -47,7 +47,7 @@ public final class NodeAssignmentStats
 
         // pre-populate the assignment counts with zeros
         if (existingTasks.size() < nodeMapSize) {
-            Function<String, PendingSplitInfo> createEmptySplitInfo = ignored -> new PendingSplitInfo(PartitionedSplitsInfo.forZeroSplits(), 0);
+            Function<String, PendingSplitInfo> createEmptySplitInfo = _ -> new PendingSplitInfo(PartitionedSplitsInfo.forZeroSplits(), 0);
             for (InternalNode node : nodeMap.getNodesByHostAndPort().values()) {
                 stageQueuedSplitInfo.computeIfAbsent(node.getNodeIdentifier(), createEmptySplitInfo);
             }

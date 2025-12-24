@@ -42,8 +42,8 @@ import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.RuleTester;
 import io.trino.sql.planner.plan.Assignments;
@@ -60,7 +60,6 @@ import java.util.stream.Stream;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.spi.type.BigintType.BIGINT;
-import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.ConnectorExpressionTranslator.translate;
@@ -70,7 +69,6 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static io.trino.testing.TestingSession.testSessionBuilder;
-import static io.trino.type.UnknownType.UNKNOWN;
 import static java.util.Arrays.asList;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -101,7 +99,7 @@ public class TestPushProjectionIntoTableScan
                     .on(p -> {
                         Symbol symbol = p.symbol(columnName, columnType);
                         return p.project(
-                                Assignments.of(p.symbol("symbol_dereference", BIGINT), new SubscriptExpression(BIGINT, symbol.toSymbolReference(), new Constant(INTEGER, 1L))),
+                                Assignments.of(p.symbol("symbol_dereference", BIGINT), new FieldReference(symbol.toSymbolReference(), 0)),
                                 p.tableScan(
                                         ruleTester.getCurrentCatalogTableHandle(TEST_SCHEMA, TEST_TABLE),
                                         ImmutableList.of(symbol),
@@ -124,10 +122,10 @@ public class TestPushProjectionIntoTableScan
         MockConnectorFactory factory = createMockFactory(ImmutableMap.of(columnName, columnHandle), Optional.of(this::mockApplyProjection));
         try (RuleTester ruleTester = RuleTester.builder().withDefaultCatalogConnectorFactory(factory).build()) {
             // Prepare project node symbols and types
-            Symbol identity = new Symbol(UNKNOWN, "symbol_identity");
-            Symbol dereference = new Symbol(UNKNOWN, "symbol_dereference");
-            Symbol constant = new Symbol(UNKNOWN, "symbol_constant");
-            ImmutableMap<Symbol, Type> types = ImmutableMap.of(
+            Symbol identity = new Symbol(ROW_TYPE, "symbol_identity");
+            Symbol dereference = new Symbol(BIGINT, "symbol_dereference");
+            Symbol constant = new Symbol(BIGINT, "symbol_constant");
+            Map<Symbol, Type> types = ImmutableMap.of(
                     baseColumn, ROW_TYPE,
                     identity, ROW_TYPE,
                     dereference, BIGINT,
@@ -136,32 +134,30 @@ public class TestPushProjectionIntoTableScan
             // Prepare project node assignments
             Assignments inputProjections = Assignments.builder()
                     .put(identity, baseColumn.toSymbolReference())
-                    .put(dereference, new SubscriptExpression(BIGINT, baseColumn.toSymbolReference(), new Constant(INTEGER, 1L)))
-                    .put(constant, new Constant(INTEGER, 5L))
+                    .put(dereference, new FieldReference(baseColumn.toSymbolReference(), 0))
+                    .put(constant, new Constant(BIGINT, 5L))
                     .build();
 
             // Compute expected symbols after applyProjection
             TransactionId transactionId = ruleTester.getPlanTester().getTransactionManager().beginTransaction(false);
             Session session = MOCK_SESSION.beginTransactionId(transactionId, ruleTester.getPlanTester().getTransactionManager(), ruleTester.getPlanTester().getAccessControl());
-            ImmutableMap<Symbol, String> connectorNames = inputProjections.entrySet().stream()
+            Map<Symbol, String> connectorNames = inputProjections.entrySet().stream()
                     .collect(toImmutableMap(Map.Entry::getKey, e -> translate(session, e.getValue()).get().toString()));
-            ImmutableMap<Symbol, String> newNames = ImmutableMap.of(
+            Map<Symbol, String> newNames = ImmutableMap.of(
                     identity, "projected_variable_" + connectorNames.get(identity),
                     dereference, "projected_dereference_" + connectorNames.get(dereference));
-            ImmutableMap<Symbol, Expression> constants = ImmutableMap.of(
+            Map<Symbol, Expression> constants = ImmutableMap.of(
                     constant, requireNonNull(inputProjections.get(constant)));
             Map<String, ColumnHandle> expectedColumns = newNames.entrySet().stream()
                     .collect(toImmutableMap(
                             Map.Entry::getValue,
                             e -> column(e.getValue(), types.get(e.getKey()))));
 
-            String name = newNames.get(dereference);
-            String name1 = newNames.get(identity);
             ruleTester.assertThat(createRule(ruleTester))
                     .withSession(MOCK_SESSION)
                     .on(p -> {
                         // Register symbols
-                        types.forEach((symbol, type) -> p.symbol(symbol.getName(), type));
+                        types.forEach((symbol, type) -> p.symbol(symbol.name(), type));
 
                         return p.project(
                                 inputProjections,
@@ -178,10 +174,10 @@ public class TestPushProjectionIntoTableScan
                     .matches(project(
                             Stream.concat(newNames.entrySet().stream(), constants.entrySet().stream())
                                     .collect(toImmutableMap(
-                                            e -> e.getKey().getName(),
+                                            e -> e.getKey().name(),
                                             e -> {
                                                 if (e.getValue() instanceof String value) {
-                                                    return expression(new SymbolReference(BIGINT, value));
+                                                    return expression(new Reference(BIGINT, value));
                                                 }
                                                 if (e.getValue() instanceof Expression value) {
                                                     return expression(value);
@@ -195,15 +191,7 @@ public class TestPushProjectionIntoTableScan
                                             Optional.of(ImmutableList.copyOf(expectedColumns.values())))::equals,
                                     TupleDomain.all(),
                                     expectedColumns.entrySet().stream()
-                                            .collect(toImmutableMap(Map.Entry::getKey, e -> e.getValue()::equals)),
-                                    Optional.of(PlanNodeStatsEstimate.builder()
-                                            .setOutputRowCount(42)
-                                            .addSymbolStatistics(new Symbol(UNKNOWN, name1), SymbolStatsEstimate.builder()
-                                                    .setDistinctValuesCount(33)
-                                                    .setNullsFraction(0)
-                                                    .build())
-                                            .addSymbolStatistics(new Symbol(UNKNOWN, name), SymbolStatsEstimate.unknown())
-                                            .build())::equals)));
+                                            .collect(toImmutableMap(Map.Entry::getKey, e -> e.getValue()::equals)))));
         }
     }
 
@@ -234,7 +222,7 @@ public class TestPushProjectionIntoTableScan
     private MockConnectorFactory createMockFactory(Map<String, ColumnHandle> assignments, Optional<MockConnectorFactory.ApplyProjection> applyProjection)
     {
         List<ColumnMetadata> metadata = assignments.entrySet().stream()
-                .map(entry -> new ColumnMetadata(entry.getKey(), ((TpchColumnHandle) entry.getValue()).getType()))
+                .map(entry -> new ColumnMetadata(entry.getKey(), ((TpchColumnHandle) entry.getValue()).type()))
                 .collect(toImmutableList());
 
         MockConnectorFactory.Builder builder = MockConnectorFactory.builder()

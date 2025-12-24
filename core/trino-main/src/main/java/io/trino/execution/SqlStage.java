@@ -13,7 +13,6 @@
  */
 package io.trino.execution;
 
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import com.google.errorprone.annotations.ThreadSafe;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
@@ -25,25 +24,31 @@ import io.trino.Session;
 import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.execution.buffer.OutputBuffers;
 import io.trino.execution.scheduler.SplitSchedulerStats;
-import io.trino.metadata.InternalNode;
 import io.trino.metadata.Split;
+import io.trino.node.InternalNode;
+import io.trino.spi.metrics.Metrics;
+import io.trino.sql.planner.PartitioningHandle;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.plan.DynamicFilterId;
+import io.trino.sql.planner.plan.ExchangeNode;
+import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.PlanNodeId;
+import io.trino.sql.planner.plan.SimplePlanRewriter;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.SystemSessionProperties.isEnableCoordinatorDynamicFiltersDistribution;
 import static io.trino.server.DynamicFilterService.getOutboundDynamicFilters;
 import static java.util.Objects.requireNonNull;
 
@@ -66,6 +71,7 @@ public final class SqlStage
     private final boolean summarizeTaskInfo;
 
     private final Set<DynamicFilterId> outboundDynamicFilterIds;
+    private final LocalExchangeBucketCountProvider bucketCountProvider;
 
     private final Map<TaskId, RemoteTask> tasks = new ConcurrentHashMap<>();
     @GuardedBy("this")
@@ -86,7 +92,8 @@ public final class SqlStage
             Executor stateMachineExecutor,
             Tracer tracer,
             Span schedulerSpan,
-            SplitSchedulerStats schedulerStats)
+            SplitSchedulerStats schedulerStats,
+            LocalExchangeBucketCountProvider bucketCountProvider)
     {
         requireNonNull(stageId, "stageId is null");
         requireNonNull(fragment, "fragment is null");
@@ -113,7 +120,8 @@ public final class SqlStage
                 stateMachine,
                 remoteTaskFactory,
                 nodeTaskMap,
-                summarizeTaskInfo);
+                summarizeTaskInfo,
+                bucketCountProvider);
         sqlStage.initialize();
         return sqlStage;
     }
@@ -123,20 +131,17 @@ public final class SqlStage
             StageStateMachine stateMachine,
             RemoteTaskFactory remoteTaskFactory,
             NodeTaskMap nodeTaskMap,
-            boolean summarizeTaskInfo)
+            boolean summarizeTaskInfo,
+            LocalExchangeBucketCountProvider bucketCountProvider)
     {
         this.session = requireNonNull(session, "session is null");
         this.stateMachine = stateMachine;
         this.remoteTaskFactory = requireNonNull(remoteTaskFactory, "remoteTaskFactory is null");
         this.nodeTaskMap = requireNonNull(nodeTaskMap, "nodeTaskMap is null");
         this.summarizeTaskInfo = summarizeTaskInfo;
+        this.bucketCountProvider = requireNonNull(bucketCountProvider, "bucketCountProvider is null");
 
-        if (isEnableCoordinatorDynamicFiltersDistribution(session)) {
-            this.outboundDynamicFilterIds = getOutboundDynamicFilters(stateMachine.getFragment());
-        }
-        else {
-            this.outboundDynamicFilterIds = ImmutableSet.of();
-        }
+        this.outboundDynamicFilterIds = getOutboundDynamicFilters(stateMachine.getFragment());
     }
 
     // this is a separate method to ensure that the `this` reference is not leaked during construction
@@ -217,7 +222,7 @@ public final class SqlStage
     public Duration getTotalCpuTime()
     {
         long millis = tasks.values().stream()
-                .mapToLong(task -> task.getTaskInfo().getStats().getTotalCpuTime().toMillis())
+                .mapToLong(task -> task.getTaskInfo().stats().getTotalCpuTime().toMillis())
                 .sum();
         return new Duration(millis, TimeUnit.MILLISECONDS);
     }
@@ -249,6 +254,7 @@ public final class SqlStage
             int partition,
             int attempt,
             Optional<int[]> bucketToPartition,
+            OptionalInt skewedBucketCount,
             OutputBuffers outputBuffers,
             Multimap<PlanNodeId, Split> splits,
             Set<PlanNodeId> noMoreSplits,
@@ -263,13 +269,21 @@ public final class SqlStage
 
         stateMachine.transitionToScheduling();
 
+        // set partitioning information on coordinator side
+        PlanFragment fragment = stateMachine.getFragment();
+        fragment = fragment.withOutputPartitioning(bucketToPartition, skewedBucketCount);
+        PlanNode newRoot = fragment.getRoot();
+        LocalExchangePartitionRewriter rewriter = new LocalExchangePartitionRewriter(handle -> bucketCountProvider.getBucketCount(session, handle));
+        newRoot = SimplePlanRewriter.rewriteWith(rewriter, newRoot);
+        fragment = fragment.withRoot(newRoot);
+
         RemoteTask task = remoteTaskFactory.createRemoteTask(
                 session,
                 stateMachine.getStageSpan(),
                 taskId,
                 node,
                 speculative,
-                stateMachine.getFragment().withBucketToPartition(bucketToPartition),
+                fragment,
                 splits,
                 outputBuffers,
                 nodeTaskMap.createPartitionedSplitCountTracker(node, taskId),
@@ -290,9 +304,9 @@ public final class SqlStage
         return Optional.of(task);
     }
 
-    public void recordGetSplitTime(long start)
+    public void recordSplitSourceMetrics(PlanNodeId nodeId, Metrics metrics, long start)
     {
-        stateMachine.recordGetSplitTime(start);
+        stateMachine.recordSplitSourceMetrics(nodeId, metrics, start);
     }
 
     private void updateTaskStatus(TaskStatus status)
@@ -316,7 +330,7 @@ public final class SqlStage
 
     private synchronized void updateFinalTaskInfo(TaskInfo finalTaskInfo)
     {
-        tasksWithFinalInfo.add(finalTaskInfo.getTaskStatus().getTaskId());
+        tasksWithFinalInfo.add(finalTaskInfo.taskStatus().getTaskId());
         checkAllTaskFinal();
     }
 
@@ -379,6 +393,35 @@ public final class SqlStage
                 previousRevocableMemory = 0;
                 finalUsageReported = true;
             }
+        }
+    }
+
+    public interface LocalExchangeBucketCountProvider
+    {
+        OptionalInt getBucketCount(Session session, PartitioningHandle partitioning);
+    }
+
+    private static final class LocalExchangePartitionRewriter
+            extends SimplePlanRewriter<Void>
+    {
+        private final Function<PartitioningHandle, OptionalInt> bucketCountProvider;
+
+        public LocalExchangePartitionRewriter(Function<PartitioningHandle, OptionalInt> bucketCountProvider)
+        {
+            this.bucketCountProvider = requireNonNull(bucketCountProvider, "bucketCountProvider is null");
+        }
+
+        @Override
+        public PlanNode visitExchange(ExchangeNode node, RewriteContext<Void> context)
+        {
+            return new ExchangeNode(
+                    node.getId(),
+                    node.getType(),
+                    node.getScope(),
+                    node.getPartitioningScheme().withBucketCount(bucketCountProvider.apply(node.getPartitioningScheme().getPartitioning().getHandle())),
+                    node.getSources(),
+                    node.getInputs(),
+                    node.getOrderingScheme());
         }
     }
 }

@@ -17,13 +17,19 @@ import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
 import io.airlift.configuration.ConfigSecuritySensitive;
 import jakarta.validation.constraints.AssertTrue;
+import org.apache.iceberg.rest.auth.OAuth2Properties;
 
+import java.net.URI;
 import java.util.Optional;
 
 public class OAuth2SecurityConfig
 {
     private String credential;
+    private String scope;
     private String token;
+    private URI serverUri;
+    private boolean tokenRefreshEnabled = OAuth2Properties.TOKEN_REFRESH_ENABLED_DEFAULT;
+    private boolean tokenExchangeEnabled = OAuth2Properties.TOKEN_EXCHANGE_ENABLED_DEFAULT;
 
     public Optional<String> getCredential()
     {
@@ -36,6 +42,19 @@ public class OAuth2SecurityConfig
     public OAuth2SecurityConfig setCredential(String credential)
     {
         this.credential = credential;
+        return this;
+    }
+
+    public Optional<String> getScope()
+    {
+        return Optional.ofNullable(scope);
+    }
+
+    @Config("iceberg.rest-catalog.oauth2.scope")
+    @ConfigDescription("The scope which will be used for interactions with the server")
+    public OAuth2SecurityConfig setScope(String scope)
+    {
+        this.scope = scope;
         return this;
     }
 
@@ -53,9 +72,54 @@ public class OAuth2SecurityConfig
         return this;
     }
 
+    public Optional<URI> getServerUri()
+    {
+        return Optional.ofNullable(serverUri);
+    }
+
+    @Config("iceberg.rest-catalog.oauth2.server-uri")
+    @ConfigDescription("The endpoint to retrieve access token from OAuth2 Server")
+    public OAuth2SecurityConfig setServerUri(URI serverUri)
+    {
+        this.serverUri = serverUri;
+        return this;
+    }
+
+    public boolean isTokenRefreshEnabled()
+    {
+        return tokenRefreshEnabled;
+    }
+
+    @Config("iceberg.rest-catalog.oauth2.token-refresh-enabled")
+    @ConfigDescription("Controls whether a token should be refreshed if information about its expiration time is available")
+    public OAuth2SecurityConfig setTokenRefreshEnabled(boolean tokenRefreshEnabled)
+    {
+        this.tokenRefreshEnabled = tokenRefreshEnabled;
+        return this;
+    }
+
+    public boolean isTokenExchangeEnabled()
+    {
+        return tokenExchangeEnabled;
+    }
+
+    @Config("iceberg.rest-catalog.oauth2.token-exchange-enabled")
+    @ConfigDescription("Controls whether to use the token exchange flow to acquire new tokens")
+    public OAuth2SecurityConfig setTokenExchangeEnabled(boolean tokenExchangeEnabled)
+    {
+        this.tokenExchangeEnabled = tokenExchangeEnabled;
+        return this;
+    }
+
     @AssertTrue(message = "OAuth2 requires a credential or token")
     public boolean credentialOrTokenPresent()
     {
         return credential != null || token != null;
+    }
+
+    @AssertTrue(message = "Scope is applicable only when using credential")
+    public boolean scopePresentOnlyWithCredential()
+    {
+        return !(token != null && scope != null);
     }
 }

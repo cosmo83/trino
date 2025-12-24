@@ -14,14 +14,17 @@
 package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.inject.CreationException;
 import io.airlift.bootstrap.ApplicationConfigurationException;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorFactory;
 import io.trino.testing.TestingConnectorContext;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
@@ -238,6 +241,24 @@ public class TestIcebergPlugin
     }
 
     @Test
+    void testRestCatalogWithBigLakeMetastore(@TempDir Path jsonKeyFilePath)
+    {
+        ConnectorFactory factory = getConnectorFactory();
+        factory.create(
+                        "test",
+                        ImmutableMap.<String, String>builder()
+                                .put("iceberg.catalog.type", "rest")
+                                .put("iceberg.rest-catalog.uri", "https://foo:1234")
+                                .put("iceberg.rest-catalog.security", "GOOGLE")
+                                .put("iceberg.rest-catalog.google-project-id", "dev")
+                                .put("gcs.json-key-file-path", jsonKeyFilePath.toString())
+                                .put("bootstrap.quiet", "true")
+                                .buildOrThrow(),
+                        new TestingConnectorContext())
+                .shutdown();
+    }
+
+    @Test
     public void testRestCatalogValidations()
     {
         ConnectorFactory factory = getConnectorFactory();
@@ -285,6 +306,7 @@ public class TestIcebergPlugin
                                 "iceberg.catalog.type", "nessie",
                                 "iceberg.nessie-catalog.default-warehouse-dir", "/tmp",
                                 "iceberg.nessie-catalog.uri", "http://foo:1234",
+                                "iceberg.nessie-catalog.client-api-version", "V1",
                                 "bootstrap.quiet", "true"),
                         new TestingConnectorContext())
                 .shutdown();
@@ -301,6 +323,7 @@ public class TestIcebergPlugin
                                 "iceberg.catalog.type", "nessie",
                                 "iceberg.nessie-catalog.default-warehouse-dir", "/tmp",
                                 "iceberg.nessie-catalog.uri", "http://foo:1234",
+                                "iceberg.nessie-catalog.client-api-version", "V2",
                                 "iceberg.nessie-catalog.authentication.type", "BEARER",
                                 "iceberg.nessie-catalog.authentication.token", "someToken"),
                         new TestingConnectorContext())
@@ -341,6 +364,40 @@ public class TestIcebergPlugin
                 .shutdown())
                 .isInstanceOf(ApplicationConfigurationException.class)
                 .hasMessageContaining("'iceberg.nessie-catalog.authentication.token' must be configured with 'iceberg.nessie-catalog.authentication.type' BEARER");
+    }
+
+    @Test
+    public void testNessieCatalogClientAPIVersion()
+    {
+        ConnectorFactory factory = getConnectorFactory();
+
+        assertThatThrownBy(() -> factory.create(
+                        "test",
+                        Map.of(
+                                "iceberg.catalog.type", "nessie",
+                                "iceberg.nessie-catalog.uri", "http://foo:1234",
+                                "iceberg.nessie-catalog.default-warehouse-dir", "/tmp"),
+                        new TestingConnectorContext())
+                .shutdown())
+                .isInstanceOf(CreationException.class)
+                .hasMessageContaining("URI doesn't end with the version: http://foo:1234. Please configure `client-api-version` in the catalog properties explicitly.");
+    }
+
+    @Test
+    public void testSnowflakeCatalog()
+    {
+        ConnectorFactory factory = getConnectorFactory();
+
+        factory.create(
+                        "test",
+                        Map.of(
+                                "iceberg.catalog.type", "snowflake",
+                                "iceberg.snowflake-catalog.account-uri", "jdbc:snowflake://sample.url",
+                                "iceberg.snowflake-catalog.user", "user",
+                                "iceberg.snowflake-catalog.password", "password",
+                                "iceberg.snowflake-catalog.database", "database"),
+                        new TestingConnectorContext())
+                .shutdown();
     }
 
     private static ConnectorFactory getConnectorFactory()

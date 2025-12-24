@@ -13,14 +13,12 @@
  */
 package io.trino.plugin.kafka.schema.confluent;
 
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
 import io.airlift.units.Duration;
 import io.airlift.units.MaxDuration;
 import io.airlift.units.MinDuration;
-import io.trino.plugin.kafka.schema.confluent.AvroSchemaConverter.EmptyFieldStrategy;
 import io.trino.spi.HostAddress;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -29,13 +27,12 @@ import jakarta.validation.constraints.Size;
 import java.util.Set;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static com.google.common.collect.Streams.stream;
-import static io.trino.plugin.kafka.schema.confluent.AvroSchemaConverter.EmptyFieldStrategy.IGNORE;
+import static io.trino.plugin.kafka.schema.confluent.EmptyFieldStrategy.IGNORE;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class ConfluentSchemaRegistryConfig
 {
-    private Set<HostAddress> confluentSchemaRegistryUrls;
+    private Set<HostAddress> confluentSchemaRegistryUrls = ImmutableSet.of();
     private int confluentSchemaRegistryClientCacheSize = 1000;
     private EmptyFieldStrategy emptyFieldStrategy = IGNORE;
     private Duration confluentSubjectsCacheRefreshInterval = new Duration(1, SECONDS);
@@ -48,9 +45,11 @@ public class ConfluentSchemaRegistryConfig
 
     @Config("kafka.confluent-schema-registry-url")
     @ConfigDescription("The url of the Confluent Schema Registry")
-    public ConfluentSchemaRegistryConfig setConfluentSchemaRegistryUrls(String confluentSchemaRegistryUrls)
+    public ConfluentSchemaRegistryConfig setConfluentSchemaRegistryUrls(Set<String> confluentSchemaRegistryUrls)
     {
-        this.confluentSchemaRegistryUrls = (confluentSchemaRegistryUrls == null) ? null : parseNodes(confluentSchemaRegistryUrls);
+        this.confluentSchemaRegistryUrls = confluentSchemaRegistryUrls.stream()
+                .map(ConfluentSchemaRegistryConfig::toHostAddress)
+                .collect(toImmutableSet());
         return this;
     }
 
@@ -95,14 +94,6 @@ public class ConfluentSchemaRegistryConfig
     {
         this.confluentSubjectsCacheRefreshInterval = confluentSubjectsCacheRefreshInterval;
         return this;
-    }
-
-    private static ImmutableSet<HostAddress> parseNodes(String nodes)
-    {
-        Splitter splitter = Splitter.on(',').omitEmptyStrings().trimResults();
-        return stream(splitter.split(nodes))
-                .map(ConfluentSchemaRegistryConfig::toHostAddress)
-                .collect(toImmutableSet());
     }
 
     private static HostAddress toHostAddress(String value)

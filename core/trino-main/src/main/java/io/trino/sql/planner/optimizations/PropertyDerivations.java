@@ -30,12 +30,12 @@ import io.trino.spi.connector.LocalProperty;
 import io.trino.spi.predicate.NullableValue;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.CoalesceExpression;
+import io.trino.sql.ir.Coalesce;
+import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
+import io.trino.sql.ir.optimizer.IrExpressionOptimizer;
 import io.trino.sql.planner.DomainTranslator;
-import io.trino.sql.planner.IrExpressionInterpreter;
-import io.trino.sql.planner.NoOpSymbolResolver;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.optimizations.ActualProperties.Global;
@@ -99,6 +99,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.spi.predicate.TupleDomain.extractFixedValues;
+import static io.trino.sql.ir.optimizer.IrExpressionOptimizer.newOptimizer;
 import static io.trino.sql.planner.SystemPartitioningHandle.ARBITRARY_DISTRIBUTION;
 import static io.trino.sql.planner.optimizations.ActualProperties.Global.arbitraryPartition;
 import static io.trino.sql.planner.optimizations.ActualProperties.Global.coordinatorSinglePartition;
@@ -162,11 +163,13 @@ public final class PropertyDerivations
             extends PlanVisitor<ActualProperties, List<ActualProperties>>
     {
         private final PlannerContext plannerContext;
+        private final IrExpressionOptimizer optimizer;
         private final Session session;
 
         public Visitor(PlannerContext plannerContext, Session session)
         {
             this.plannerContext = plannerContext;
+            this.optimizer = newOptimizer(plannerContext);
             this.session = session;
         }
 
@@ -247,7 +250,7 @@ public final class PropertyDerivations
             // If the input is completely pre-partitioned and sorted, then the original input properties will be respected
             Optional<OrderingScheme> orderingScheme = node.getOrderingScheme();
             if (ImmutableSet.copyOf(node.getPartitionBy()).equals(node.getPrePartitionedInputs())
-                    && (orderingScheme.isEmpty() || node.getPreSortedOrderPrefix() == orderingScheme.get().getOrderBy().size())) {
+                    && (orderingScheme.isEmpty() || node.getPreSortedOrderPrefix() == orderingScheme.get().orderBy().size())) {
                 return properties;
             }
 
@@ -289,7 +292,7 @@ public final class PropertyDerivations
             // Otherwise, partitioning and sorting will be respected.
             Optional<OrderingScheme> orderingScheme = node.getOrderingScheme();
             if (ImmutableSet.copyOf(node.getPartitionBy()).equals(node.getPrePartitionedInputs())
-                    && (orderingScheme.isEmpty() || node.getPreSortedOrderPrefix() == orderingScheme.get().getOrderBy().size())) {
+                    && (orderingScheme.isEmpty() || node.getPreSortedOrderPrefix() == orderingScheme.get().orderBy().size())) {
                 if (node.getRowsPerMatch() == WINDOW ||
                         node.getRowsPerMatch() == ONE ||
                         node.getSkipToPosition() == PAST_LAST) {
@@ -360,7 +363,7 @@ public final class PropertyDerivations
             }
 
             List<Symbol> partitionBy = node.getSpecification()
-                    .map(DataOrganizationSpecification::getPartitionBy)
+                    .map(DataOrganizationSpecification::partitionBy)
                     .orElse(ImmutableList.of());
             if (!partitionBy.isEmpty()) {
                 localProperties.add(new GroupingProperty<>(partitionBy));
@@ -758,9 +761,9 @@ public final class PropertyDerivations
         {
             ActualProperties properties = Iterables.getOnlyElement(inputProperties);
 
-            Map<Symbol, Symbol> identities = computeIdentityTranslations(node.getAssignments().getMap());
+            Map<Symbol, Symbol> identities = computeIdentityTranslations(node.getAssignments().assignments());
 
-            ActualProperties translatedProperties = properties.translate(column -> Optional.ofNullable(identities.get(column)), expression -> rewriteExpression(node.getAssignments().getMap(), expression));
+            ActualProperties translatedProperties = properties.translate(column -> Optional.ofNullable(identities.get(column)), expression -> rewriteExpression(node.getAssignments().assignments(), expression));
 
             // Extract additional constants
             Map<Symbol, NullableValue> constants = new HashMap<>();
@@ -768,23 +771,22 @@ public final class PropertyDerivations
                 Expression expression = assignment.getValue();
 
                 Type type = expression.type();
-                IrExpressionInterpreter optimizer = new IrExpressionInterpreter(expression, plannerContext, session);
                 // TODO:
                 // We want to use a symbol resolver that looks up in the constants from the input subplan
                 // to take advantage of constant-folding for complex expressions
                 // However, that currently causes errors when those expressions operate on arrays or row types
                 // ("ROW comparison not supported for fields with null elements", etc)
-                Object value = optimizer.optimize(NoOpSymbolResolver.INSTANCE);
+                Expression value = optimizer.process(expression, session, ImmutableMap.of()).orElse(expression);
 
-                if (value instanceof SymbolReference) {
-                    Symbol symbol = Symbol.from((SymbolReference) value);
+                if (value instanceof Reference) {
+                    Symbol symbol = Symbol.from(value);
                     NullableValue existingConstantValue = constants.get(symbol);
                     if (existingConstantValue != null) {
                         constants.put(assignment.getKey(), new NullableValue(type, value));
                     }
                 }
-                else if (!(value instanceof Expression)) {
-                    constants.put(assignment.getKey(), new NullableValue(type, value));
+                else if (value instanceof Constant constant) {
+                    constants.put(assignment.getKey(), new NullableValue(type, constant.value()));
                 }
             }
             constants.putAll(translatedProperties.getConstants());
@@ -895,12 +897,12 @@ public final class PropertyDerivations
         {
             if (layout.getTablePartitioning().isPresent() && node.isUseConnectorNodePartitioning()) {
                 TablePartitioning tablePartitioning = layout.getTablePartitioning().get();
-                if (assignments.keySet().containsAll(tablePartitioning.getPartitioningColumns())) {
-                    List<Symbol> arguments = tablePartitioning.getPartitioningColumns().stream()
+                if (assignments.keySet().containsAll(tablePartitioning.partitioningColumns())) {
+                    List<Symbol> arguments = tablePartitioning.partitioningColumns().stream()
                             .map(assignments::get)
                             .collect(toImmutableList());
 
-                    return partitionedOn(tablePartitioning.getPartitioningHandle(), arguments);
+                    return partitionedOn(tablePartitioning.partitioningHandle(), arguments);
                 }
             }
             return arbitraryPartition();
@@ -910,7 +912,7 @@ public final class PropertyDerivations
         {
             Map<Symbol, Symbol> inputToOutput = new HashMap<>();
             for (Map.Entry<Symbol, Expression> assignment : assignments.entrySet()) {
-                if (assignment.getValue() instanceof SymbolReference) {
+                if (assignment.getValue() instanceof Reference) {
                     inputToOutput.put(Symbol.from(assignment.getValue()), assignment.getKey());
                 }
             }
@@ -967,12 +969,12 @@ public final class PropertyDerivations
     private static Optional<Symbol> rewriteExpression(Map<Symbol, Expression> assignments, Expression expression)
     {
         // Only simple coalesce expressions supported currently
-        if (!(expression instanceof CoalesceExpression)) {
+        if (!(expression instanceof Coalesce coalesce)) {
             return Optional.empty();
         }
 
-        Set<Expression> arguments = ImmutableSet.copyOf(((CoalesceExpression) expression).getOperands());
-        if (!arguments.stream().allMatch(SymbolReference.class::isInstance)) {
+        Set<Expression> arguments = ImmutableSet.copyOf(coalesce.operands());
+        if (!arguments.stream().allMatch(Reference.class::isInstance)) {
             return Optional.empty();
         }
 
@@ -980,9 +982,9 @@ public final class PropertyDerivations
         // of the arguments. Thus we extract and compare the symbols of the CoalesceExpression as a set rather than compare the
         // CoalesceExpression directly.
         for (Map.Entry<Symbol, Expression> entry : assignments.entrySet()) {
-            if (entry.getValue() instanceof CoalesceExpression) {
-                Set<Expression> candidateArguments = ImmutableSet.copyOf(((CoalesceExpression) entry.getValue()).getOperands());
-                if (!candidateArguments.stream().allMatch(SymbolReference.class::isInstance)) {
+            if (entry.getValue() instanceof Coalesce value) {
+                Set<Expression> candidateArguments = ImmutableSet.copyOf(value.operands());
+                if (!candidateArguments.stream().allMatch(Reference.class::isInstance)) {
                     return Optional.empty();
                 }
 

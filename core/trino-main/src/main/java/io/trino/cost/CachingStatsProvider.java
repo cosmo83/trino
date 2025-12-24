@@ -42,7 +42,7 @@ public final class CachingStatsProvider
     private final TableStatsProvider tableStatsProvider;
     private final RuntimeInfoProvider runtimeInfoProvider;
 
-    private final Map<PlanNode, PlanNodeStatsEstimate> cache = new IdentityHashMap<>();
+    private final Map<PlanNode, PlanNodeStatsEstimate> cache = new IdentityHashMap<>(0);
 
     public CachingStatsProvider(StatsCalculator statsCalculator, Session session, TableStatsProvider tableStatsProvider)
     {
@@ -75,8 +75,8 @@ public final class CachingStatsProvider
         requireNonNull(node, "node is null");
 
         try {
-            if (node instanceof GroupReference) {
-                return getGroupStats((GroupReference) node);
+            if (node instanceof GroupReference group) {
+                return getGroupStats(group);
             }
 
             PlanNodeStatsEstimate stats = cache.get(node);
@@ -90,7 +90,7 @@ public final class CachingStatsProvider
         }
         catch (RuntimeException e) {
             if (isIgnoreStatsCalculatorFailures(session)) {
-                log.error(e, "Error occurred when computing stats for query %s", session.getQueryId());
+                log.warn(e, "Error occurred when computing stats for query %s", session.getQueryId());
                 return PlanNodeStatsEstimate.unknown();
             }
             throw e;

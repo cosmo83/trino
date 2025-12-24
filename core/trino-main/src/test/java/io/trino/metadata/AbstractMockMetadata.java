@@ -17,24 +17,30 @@ import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.Slice;
 import io.trino.Session;
+import io.trino.connector.CatalogHandle;
 import io.trino.connector.system.GlobalSystemConnector;
+import io.trino.spi.RefreshType;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
 import io.trino.spi.connector.BeginTableExecuteResult;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnPosition;
 import io.trino.spi.connector.ConnectorCapabilities;
+import io.trino.spi.connector.ConnectorName;
 import io.trino.spi.connector.ConnectorOutputMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.EntityKindAndName;
 import io.trino.spi.connector.JoinApplicationResult;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
@@ -67,11 +73,15 @@ import io.trino.spi.function.FunctionNullability;
 import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.function.OperatorType;
 import io.trino.spi.function.Signature;
+import io.trino.spi.metrics.Metrics;
 import io.trino.spi.predicate.TupleDomain;
+import io.trino.spi.security.FunctionAuthorization;
 import io.trino.spi.security.GrantInfo;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.Privilege;
 import io.trino.spi.security.RoleGrant;
+import io.trino.spi.security.SchemaAuthorization;
+import io.trino.spi.security.TableAuthorization;
 import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.statistics.ComputedStatistics;
 import io.trino.spi.statistics.TableStatistics;
@@ -163,7 +173,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void executeTableExecute(Session session, TableExecuteHandle handle)
+    public Map<String, Long> executeTableExecute(Session session, TableExecuteHandle handle)
     {
         throw new UnsupportedOperationException();
     }
@@ -181,7 +191,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public TableHandle makeCompatiblePartitioning(Session session, TableHandle table, PartitioningHandle partitioningHandle)
+    public Optional<TableHandle> applyPartitioning(Session session, TableHandle tableHandle, Optional<PartitioningHandle> partitioning, List<ColumnHandle> columns)
     {
         throw new UnsupportedOperationException();
     }
@@ -194,6 +204,12 @@ public abstract class AbstractMockMetadata
 
     @Override
     public Optional<Object> getInfo(Session session, TableHandle handle)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Metrics getMetrics(Session session, String catalogName)
     {
         throw new UnsupportedOperationException();
     }
@@ -259,6 +275,18 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public void createCatalog(Session session, CatalogName catalog, ConnectorName connectorName, Map<String, String> properties, boolean notExists)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void dropCatalog(Session session, CatalogName catalog, boolean cascade)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void createSchema(Session session, CatalogSchemaName schema, Map<String, Object> properties, TrinoPrincipal principal)
     {
         throw new UnsupportedOperationException();
@@ -272,12 +300,6 @@ public abstract class AbstractMockMetadata
 
     @Override
     public void renameSchema(Session session, CatalogSchemaName source, String target)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setSchemaAuthorization(Session session, CatalogSchemaName source, TrinoPrincipal principal)
     {
         throw new UnsupportedOperationException();
     }
@@ -337,7 +359,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void addColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnMetadata column)
+    public void addColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnMetadata column, ColumnPosition position)
     {
         throw new UnsupportedOperationException();
     }
@@ -361,6 +383,18 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public void setDefaultValue(Session session, TableHandle tableHandle, ColumnHandle column, String defaultValue)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void dropDefaultValue(Session session, TableHandle tableHandle, ColumnHandle column)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void setColumnType(Session session, TableHandle tableHandle, ColumnHandle column, Type type)
     {
         throw new UnsupportedOperationException();
@@ -374,12 +408,6 @@ public abstract class AbstractMockMetadata
 
     @Override
     public void dropNotNullConstraint(Session session, TableHandle tableHandle, ColumnHandle column)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void setTableAuthorization(Session session, CatalogSchemaTableName table, TrinoPrincipal principal)
     {
         throw new UnsupportedOperationException();
     }
@@ -427,7 +455,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public TableStatisticsMetadata getStatisticsCollectionMetadataForWrite(Session session, CatalogHandle catalogHandle, ConnectorTableMetadata tableMetadata)
+    public TableStatisticsMetadata getStatisticsCollectionMetadataForWrite(Session session, CatalogHandle catalogHandle, ConnectorTableMetadata tableMetadata, boolean tableReplace)
     {
         throw new UnsupportedOperationException();
     }
@@ -487,7 +515,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public InsertTableHandle beginRefreshMaterializedView(Session session, TableHandle tableHandle, List<TableHandle> sourceTableHandles)
+    public InsertTableHandle beginRefreshMaterializedView(Session session, TableHandle tableHandle, List<TableHandle> sourceTableHandles, RefreshType refreshType)
     {
         throw new UnsupportedOperationException();
     }
@@ -548,13 +576,13 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public MergeHandle beginMerge(Session session, TableHandle tableHandle)
+    public MergeHandle beginMerge(Session session, TableHandle tableHandle, Multimap<Integer, ColumnHandle> updateCaseColumnHandles)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void finishMerge(Session session, MergeHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public void finishMerge(Session session, MergeHandle tableHandle, List<TableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         throw new UnsupportedOperationException();
     }
@@ -567,6 +595,12 @@ public abstract class AbstractMockMetadata
 
     @Override
     public List<CatalogInfo> listCatalogs(Session session)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public List<CatalogInfo> listActiveCatalogs(Session session)
     {
         throw new UnsupportedOperationException();
     }
@@ -590,6 +624,18 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public boolean isView(Session session, QualifiedObjectName viewName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Map<String, Object> getViewProperties(Session session, QualifiedObjectName viewName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public Map<String, Object> getSchemaProperties(Session session, CatalogSchemaName schemaName)
     {
         throw new UnsupportedOperationException();
@@ -602,7 +648,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, boolean replace)
+    public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, Map<String, Object> viewProperties, boolean replace)
     {
         throw new UnsupportedOperationException();
     }
@@ -614,7 +660,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void setViewAuthorization(Session session, CatalogSchemaTableName view, TrinoPrincipal principal)
+    public void refreshView(Session session, QualifiedObjectName viewName, ViewDefinition viewDefinition)
     {
         throw new UnsupportedOperationException();
     }
@@ -793,6 +839,28 @@ public abstract class AbstractMockMetadata
     }
 
     //
+    // Branches
+    //
+
+    @Override
+    public void grantTableBranchPrivileges(Session session, QualifiedObjectName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void denyTableBranchPrivileges(Session session, QualifiedObjectName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void revokeTableBranchPrivileges(Session session, QualifiedObjectName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    //
     // Functions
     //
 
@@ -875,6 +943,12 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public Collection<LanguageFunction> getLanguageFunctions(Session session, QualifiedObjectName name)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public boolean languageFunctionExists(Session session, QualifiedObjectName name, String signatureToken)
     {
         throw new UnsupportedOperationException();
@@ -888,6 +962,36 @@ public abstract class AbstractMockMetadata
 
     @Override
     public void dropLanguageFunction(Session session, QualifiedObjectName name, String signatureToken)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void createBranch(Session session, TableHandle tableHandle, String branch, Optional<String> fromBranch, SaveMode saveMode, Map<String, Object> properties)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void dropBranch(Session session, TableHandle tableHandle, String branch)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void fastForwardBranch(Session session, TableHandle tableHandle, String sourceBranch, String targetBranch)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Collection<String> listBranches(Session session, QualifiedObjectName tableName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean branchExists(Session session, QualifiedObjectName tableName, String branch)
     {
         throw new UnsupportedOperationException();
     }
@@ -985,6 +1089,9 @@ public abstract class AbstractMockMetadata
     @Override
     public RedirectionAwareTableHandle getRedirectionAwareTableHandle(Session session, QualifiedObjectName tableName, Optional<TableVersion> startVersion, Optional<TableVersion> endVersion)
     {
+        if (startVersion.isEmpty() || endVersion.isEmpty()) {
+            return noRedirection(getTableHandle(session, tableName));
+        }
         throw new UnsupportedOperationException();
     }
 
@@ -1001,6 +1108,12 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public boolean allowSplittingReadIntoMultipleSubQueries(Session session, TableHandle tableHandle)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public WriterScalingOptions getNewTableWriterScalingOptions(Session session, QualifiedObjectName tableName, Map<String, Object> tableProperties)
     {
         throw new UnsupportedOperationException();
@@ -1008,6 +1121,30 @@ public abstract class AbstractMockMetadata
 
     @Override
     public WriterScalingOptions getInsertWriterScalingOptions(Session session, TableHandle tableHandle)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void setEntityAuthorization(Session session, EntityKindAndName entityKindAndName, TrinoPrincipal principal)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Set<SchemaAuthorization> getSchemasAuthorizationInfo(Session session, QualifiedSchemaPrefix prefix)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Set<TableAuthorization> getTablesAuthorizationInfo(Session session, QualifiedTablePrefix prefix)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Set<FunctionAuthorization> getFunctionsAuthorizationInfo(Session session, QualifiedObjectPrefix prefix)
     {
         throw new UnsupportedOperationException();
     }

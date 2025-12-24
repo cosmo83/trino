@@ -1,4 +1,3 @@
-
 /*
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,22 +16,11 @@ package io.trino.sql.tree;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
-import java.util.Optional;
 
 public final class Rollback
         extends Statement
 {
-    public Rollback()
-    {
-        this(Optional.empty());
-    }
-
     public Rollback(NodeLocation location)
-    {
-        this(Optional.of(location));
-    }
-
-    private Rollback(Optional<NodeLocation> location)
     {
         super(location);
     }

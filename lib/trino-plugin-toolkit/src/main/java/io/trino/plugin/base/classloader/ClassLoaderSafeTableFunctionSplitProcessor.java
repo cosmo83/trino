@@ -17,6 +17,8 @@ import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.function.table.TableFunctionProcessorState;
 import io.trino.spi.function.table.TableFunctionSplitProcessor;
 
+import java.io.IOException;
+
 import static java.util.Objects.requireNonNull;
 
 public final class ClassLoaderSafeTableFunctionSplitProcessor
@@ -34,8 +36,17 @@ public final class ClassLoaderSafeTableFunctionSplitProcessor
     @Override
     public TableFunctionProcessorState process()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.process();
+        }
+    }
+
+    @Override
+    public void close()
+            throws IOException
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.close();
         }
     }
 }

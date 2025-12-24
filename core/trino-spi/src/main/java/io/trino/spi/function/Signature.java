@@ -16,7 +16,6 @@ package io.trino.spi.function;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.errorprone.annotations.DoNotCall;
-import io.trino.spi.Experimental;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignature;
 
@@ -29,7 +28,6 @@ import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Stream.concat;
 
-@Experimental(eta = "2022-10-31")
 public class Signature
 {
     private final List<TypeVariableConstraint> typeVariableConstraints;
@@ -97,15 +95,14 @@ public class Signature
         if (this == obj) {
             return true;
         }
-        if (!(obj instanceof Signature)) {
+        if (!(obj instanceof Signature other)) {
             return false;
         }
-        Signature other = (Signature) obj;
         return Objects.equals(this.typeVariableConstraints, other.typeVariableConstraints) &&
                 Objects.equals(this.longVariableConstraints, other.longVariableConstraints) &&
                 Objects.equals(this.returnType, other.returnType) &&
                 Objects.equals(this.argumentTypes, other.argumentTypes) &&
-                Objects.equals(this.variableArity, other.variableArity);
+                this.variableArity == other.variableArity;
     }
 
     @Override
@@ -208,6 +205,12 @@ public class Signature
         public Builder longVariable(String name, String expression)
         {
             this.longVariableConstraints.add(new LongVariableConstraint(name, expression));
+            return this;
+        }
+
+        public Builder longVariable(String name)
+        {
+            this.longVariableConstraints.add(new LongVariableConstraint(name, name));
             return this;
         }
 

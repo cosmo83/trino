@@ -18,7 +18,7 @@ import io.trino.tests.product.launcher.docker.DockerFiles;
 import io.trino.tests.product.launcher.env.common.Standard;
 import io.trino.tests.product.launcher.env.common.TestsEnvironment;
 
-import static java.util.Objects.requireNonNull;
+import static io.trino.testing.SystemEnvironmentUtils.requireEnv;
 
 @TestsEnvironment
 public class EnvSinglenodeDeltaLakeDatabricks133
@@ -33,6 +33,11 @@ public class EnvSinglenodeDeltaLakeDatabricks133
     @Override
     String databricksTestJdbcUrl()
     {
-        return requireNonNull(System.getenv("DATABRICKS_133_JDBC_URL"), "Environment DATABRICKS_133_JDBC_URL was not set");
+        // After upgrading the Databricks JDBC driver, the application
+        // must be configured with the required JVM options described in:
+        // https://docs.databricks.com/aws/en/integrations/jdbc-oss/#requirements
+        // To avoid requiring these additional runtime options, we explicitly disable
+        // Arrow support by setting `EnableArrow=0` in the JDBC URL.
+        return requireEnv("DATABRICKS_133_JDBC_URL") + ";EnableArrow=0";
     }
 }

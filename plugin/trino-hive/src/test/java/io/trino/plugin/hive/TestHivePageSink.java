@@ -24,10 +24,11 @@ import io.trino.filesystem.FileIterator;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.memory.MemoryFileSystemFactory;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.HiveMetastoreFactory;
 import io.trino.operator.FlatHashStrategyCompiler;
 import io.trino.operator.GroupByHashPageIndexerFactory;
-import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
+import io.trino.operator.NullSafeHashCompiler;
 import io.trino.plugin.hive.metastore.HivePageSinkMetadata;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
@@ -39,11 +40,11 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.SourcePage;
 import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
 import io.trino.testing.MaterializedResult;
-import io.trino.testing.TestingNodeManager;
 import io.trino.tpch.LineItem;
 import io.trino.tpch.LineItemColumn;
 import io.trino.tpch.LineItemGenerator;
@@ -62,7 +63,6 @@ import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
-import static io.airlift.testing.Assertions.assertGreaterThan;
 import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.trino.hive.thrift.metastore.hive_metastoreConstants.FILE_INPUT_FORMAT;
@@ -78,13 +78,12 @@ import static io.trino.plugin.hive.HiveTestUtils.PAGE_SORTER;
 import static io.trino.plugin.hive.HiveTestUtils.getDefaultHiveFileWriterFactories;
 import static io.trino.plugin.hive.HiveTestUtils.getDefaultHivePageSourceFactories;
 import static io.trino.plugin.hive.HiveTestUtils.getHiveSession;
-import static io.trino.plugin.hive.HiveTestUtils.getHiveSessionProperties;
 import static io.trino.plugin.hive.LocationHandle.WriteMode.DIRECT_TO_TARGET_NEW_DIRECTORY;
 import static io.trino.plugin.hive.acid.AcidTransaction.NO_ACID_TRANSACTION;
 import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
+import static io.trino.plugin.hive.util.HiveTypeTranslator.toHiveType;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_TYPES;
-import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DoubleType.DOUBLE;
@@ -124,10 +123,18 @@ public class TestHivePageSink
                 // REGEX format is readonly
                 continue;
             }
+            if (format == HiveStorageFormat.ESRI) {
+                // ESRI format is readonly
+                continue;
+            }
+            if (format == HiveStorageFormat.SEQUENCEFILE_PROTOBUF) {
+                // SEQUENCEFILE_PROTOBUF format is readonly
+                continue;
+            }
             config.setHiveStorageFormat(format);
             config.setHiveCompressionCodec(NONE);
             long uncompressedLength = writeTestFile(fileSystemFactory, config, sortingFileWriterConfig, metastore, makeFileName(config));
-            assertGreaterThan(uncompressedLength, 0L);
+            assertThat(uncompressedLength).isGreaterThan(0L);
 
             for (HiveCompressionOption codec : HiveCompressionOption.values()) {
                 if (codec == NONE) {
@@ -181,8 +188,8 @@ public class TestHivePageSink
         List<HiveColumnHandle> columnHandles = getPartitionedColumnHandles(SHIP_MODE.getColumnName());
         Location location = makeFileName(config);
         ConnectorPageSink pageSink = createPageSink(fileSystemFactory, transaction, config, sortingFileWriterConfig, metastore, location, stats, columnHandles);
-        Page truckPage = createPage(lineItem -> lineItem.getShipMode().equals("TRUCK"));
-        Page shipPage = createPage(lineItem -> lineItem.getShipMode().equals("SHIP"));
+        Page truckPage = createPage(lineItem -> lineItem.shipMode().equals("TRUCK"));
+        Page shipPage = createPage(lineItem -> lineItem.shipMode().equals("SHIP"));
 
         pageSink.appendPage(truckPage);
         pageSink.appendPage(shipPage);
@@ -252,9 +259,9 @@ public class TestHivePageSink
         List<Page> pages = new ArrayList<>();
         try (ConnectorPageSource pageSource = createPageSource(fileSystemFactory, transaction, config, fileEntry.location())) {
             while (!pageSource.isFinished()) {
-                Page nextPage = pageSource.getNextPage();
+                SourcePage nextPage = pageSource.getNextSourcePage();
                 if (nextPage != null) {
-                    pages.add(nextPage.getLoadedPage());
+                    pages.add(nextPage.getPage());
                 }
             }
         }
@@ -328,7 +335,6 @@ public class TestHivePageSink
         long length = fileSystemFactory.create(ConnectorIdentity.ofUser("test")).newInputFile(location).length();
         Map<String, String> splitProperties = ImmutableMap.<String, String>builder()
                 .put(FILE_INPUT_FORMAT, config.getHiveStorageFormat().getInputFormat())
-                .put(SERIALIZATION_LIB, config.getHiveStorageFormat().getSerde())
                 .put(LIST_COLUMNS, Joiner.on(',').join(getColumnHandles().stream().map(HiveColumnHandle::getName).collect(toImmutableList())))
                 .put(LIST_COLUMN_TYPES, Joiner.on(',').join(getColumnHandles().stream().map(HiveColumnHandle::getHiveType).map(hiveType -> hiveType.getHiveTypeName().toString()).collect(toImmutableList())))
                 .buildOrThrow();
@@ -339,7 +345,7 @@ public class TestHivePageSink
                 length,
                 length,
                 0,
-                splitProperties,
+                new Schema(config.getHiveStorageFormat().getSerde(), false, splitProperties),
                 ImmutableList.of(),
                 ImmutableList.of(),
                 OptionalInt.empty(),
@@ -389,16 +395,13 @@ public class TestHivePageSink
                 getDefaultHiveFileWriterFactories(config, fileSystemFactory),
                 HDFS_FILE_SYSTEM_FACTORY,
                 PAGE_SORTER,
-                HiveMetastoreFactory.ofInstance(metastore),
-                new GroupByHashPageIndexerFactory(new FlatHashStrategyCompiler(new TypeOperators())),
+                HiveMetastoreFactory.ofInstance(metastore, false),
+                new GroupByHashPageIndexerFactory(new FlatHashStrategyCompiler(new TypeOperators(), new NullSafeHashCompiler(new TypeOperators()))),
                 TESTING_TYPE_MANAGER,
                 config,
                 sortingFileWriterConfig,
                 new HiveLocationService(HDFS_FILE_SYSTEM_FACTORY, config),
                 partitionUpdateCodec,
-                new TestingNodeManager("fake-environment"),
-                new HiveEventClient(),
-                getHiveSessionProperties(config),
                 stats);
         return provider.createPageSink(transaction, getHiveSession(config), handle, TESTING_PAGE_SINK_ID);
     }
@@ -410,7 +413,7 @@ public class TestHivePageSink
         for (int i = 0; i < columns.size(); i++) {
             LineItemColumn column = columns.get(i);
             Type type = getType(column.getType());
-            handles.add(createBaseColumn(column.getColumnName(), i, HiveType.toHiveType(type), type, REGULAR, Optional.empty()));
+            handles.add(createBaseColumn(column.getColumnName(), i, toHiveType(type), type, REGULAR, Optional.empty()));
         }
         return handles.build();
     }
@@ -423,10 +426,10 @@ public class TestHivePageSink
             LineItemColumn column = columns.get(i);
             Type type = getType(column.getType());
             if (column.getColumnName().equals(partitionColumn)) {
-                handles.add(createBaseColumn(column.getColumnName(), i, HiveType.toHiveType(type), type, PARTITION_KEY, Optional.empty()));
+                handles.add(createBaseColumn(column.getColumnName(), i, toHiveType(type), type, PARTITION_KEY, Optional.empty()));
             }
             else {
-                handles.add(createBaseColumn(column.getColumnName(), i, HiveType.toHiveType(type), type, REGULAR, Optional.empty()));
+                handles.add(createBaseColumn(column.getColumnName(), i, toHiveType(type), type, REGULAR, Optional.empty()));
             }
         }
         return handles.build();

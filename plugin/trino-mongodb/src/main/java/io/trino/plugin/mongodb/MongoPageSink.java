@@ -30,10 +30,8 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.MapType;
-import io.trino.spi.type.NamedTypeSignature;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
-import io.trino.spi.type.TypeSignatureParameter;
 import io.trino.spi.type.VarcharType;
 import org.bson.BsonInvalidOperationException;
 import org.bson.Document;
@@ -98,9 +96,9 @@ public class MongoPageSink
             Optional<String> pageSinkIdColumnName,
             ConnectorPageSinkId pageSinkId)
     {
-        this.mongoSession = mongoSession;
-        this.remoteTableName = remoteTableName;
-        this.columns = columns;
+        this.mongoSession = requireNonNull(mongoSession, "mongoSession is null");
+        this.remoteTableName = requireNonNull(remoteTableName, "remoteTableName is null");
+        this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
         this.implicitPrefix = requireNonNull(implicitPrefix, "implicitPrefix is null");
         this.pageSinkIdColumnName = requireNonNull(pageSinkIdColumnName, "pageSinkIdColumnName is null");
         this.pageSinkId = requireNonNull(pageSinkId, "pageSinkId is null");
@@ -118,7 +116,7 @@ public class MongoPageSink
 
             for (int channel = 0; channel < page.getChannelCount(); channel++) {
                 MongoColumnHandle column = columns.get(channel);
-                doc.append(column.getBaseName(), getObjectValue(columns.get(channel).getType(), page.getBlock(channel), position));
+                doc.append(column.baseName(), getObjectValue(columns.get(channel).type(), page.getBlock(channel), position));
             }
             batch.add(doc);
         }
@@ -237,7 +235,7 @@ public class MongoPageSink
             SqlRow sqlRow = rowType.getObject(block, position);
             int rawIndex = sqlRow.getRawIndex();
 
-            List<Type> fieldTypes = rowType.getTypeParameters();
+            List<Type> fieldTypes = rowType.getFieldTypes();
             if (fieldTypes.size() != sqlRow.getFieldCount()) {
                 throw new TrinoException(StandardErrorCode.GENERIC_INTERNAL_ERROR, "Expected row value field count does not match type field count");
             }
@@ -254,7 +252,7 @@ public class MongoPageSink
             Map<String, Object> rowValue = new HashMap<>();
             for (int i = 0; i < sqlRow.getFieldCount(); i++) {
                 rowValue.put(
-                        rowType.getTypeSignature().getParameters().get(i).getNamedTypeSignature().getName().orElse("field" + i),
+                        rowType.getFields().get(i).getName().orElse("field" + i),
                         getObjectValue(fieldTypes.get(i), sqlRow.getRawFieldBlock(i), rawIndex));
             }
             return unmodifiableMap(rowValue);
@@ -263,12 +261,11 @@ public class MongoPageSink
         throw new TrinoException(NOT_SUPPORTED, "unsupported type: " + type);
     }
 
-    private boolean isImplicitRowType(Type type)
+    private boolean isImplicitRowType(RowType type)
     {
-        return type.getTypeSignature().getParameters()
+        return type.getFields()
                 .stream()
-                .map(TypeSignatureParameter::getNamedTypeSignature)
-                .map(NamedTypeSignature::getName)
+                .map(RowType.Field::getName)
                 .filter(Optional::isPresent)
                 .map(Optional::get)
                 .allMatch(name -> name.startsWith(implicitPrefix));
@@ -283,7 +280,5 @@ public class MongoPageSink
     }
 
     @Override
-    public void abort()
-    {
-    }
+    public void abort() {}
 }

@@ -302,7 +302,7 @@ public class IoPlanPrinter
                 return false;
             }
             Constraint o = (Constraint) obj;
-            return Objects.equals(isNone, o.isNone) &&
+            return isNone == o.isNone &&
                     Objects.equals(columnConstraints, o.columnConstraints);
         }
 
@@ -452,11 +452,11 @@ public class IoPlanPrinter
                 return false;
             }
             EstimatedStatsAndCost o = (EstimatedStatsAndCost) obj;
-            return Objects.equals(outputRowCount, o.outputRowCount) &&
-                    Objects.equals(outputSizeInBytes, o.outputSizeInBytes) &&
-                    Objects.equals(cpuCost, o.cpuCost) &&
-                    Objects.equals(maxMemory, o.maxMemory) &&
-                    Objects.equals(networkCost, o.networkCost);
+            return Double.compare(outputRowCount, o.outputRowCount) == 0 &&
+                    Double.compare(outputSizeInBytes, o.outputSizeInBytes) == 0 &&
+                    Double.compare(cpuCost, o.cpuCost) == 0 &&
+                    Double.compare(maxMemory, o.maxMemory) == 0 &&
+                    Double.compare(networkCost, o.networkCost) == 0;
         }
 
         @Override
@@ -514,7 +514,7 @@ public class IoPlanPrinter
                 return false;
             }
             FormattedDomain o = (FormattedDomain) obj;
-            return Objects.equals(nullsAllowed, o.nullsAllowed) &&
+            return nullsAllowed == o.nullsAllowed &&
                     Objects.equals(ranges, o.ranges);
         }
 
@@ -693,25 +693,25 @@ public class IoPlanPrinter
             WriterTarget writerTarget = node.getTarget();
             if (writerTarget instanceof CreateTarget target) {
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getHandle().getCatalogHandle().getCatalogName().toString(),
+                        target.getHandle().catalogHandle().getCatalogName().toString(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
             else if (writerTarget instanceof InsertTarget target) {
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getHandle().getCatalogHandle().getCatalogName().toString(),
+                        target.getHandle().catalogHandle().getCatalogName().toString(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
             else if (writerTarget instanceof MergeTarget target) {
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getHandle().getCatalogHandle().getCatalogName().toString(),
+                        target.getHandle().catalogHandle().getCatalogName().toString(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
             else if (writerTarget instanceof TableWriterNode.RefreshMaterializedViewTarget target) {
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getInsertHandle().getCatalogHandle().getCatalogName().toString(),
+                        target.getInsertHandle().catalogHandle().getCatalogName().toString(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
@@ -783,7 +783,7 @@ public class IoPlanPrinter
                                     .collect(toImmutableSet())),
                     discreteValues -> formattedRanges.addAll(
                             discreteValues.getValues().stream()
-                                    .map(value -> valuePrinter.castToVarcharOrFail(type, value))
+                                    .map(value -> valuePrinter.render(type, value))
                                     .map(value -> new FormattedMarker(Optional.of(value), Bound.EXACTLY))
                                     .map(marker -> new FormattedRange(marker, marker))
                                     .collect(toImmutableSet())),
@@ -799,13 +799,13 @@ public class IoPlanPrinter
             FormattedMarker low = range.isLowUnbounded()
                     ? new FormattedMarker(Optional.empty(), Bound.ABOVE)
                     : new FormattedMarker(
-                    Optional.of(valuePrinter.castToVarcharOrFail(range.getType(), range.getLowBoundedValue())),
+                    Optional.of(valuePrinter.render(range.getType(), range.getLowBoundedValue())),
                     range.isLowInclusive() ? Bound.EXACTLY : Bound.ABOVE);
 
             FormattedMarker high = range.isHighUnbounded()
                     ? new FormattedMarker(Optional.empty(), Bound.BELOW)
                     : new FormattedMarker(
-                    Optional.of(valuePrinter.castToVarcharOrFail(range.getType(), range.getHighBoundedValue())),
+                    Optional.of(valuePrinter.render(range.getType(), range.getHighBoundedValue())),
                     range.isHighInclusive() ? Bound.EXACTLY : Bound.BELOW);
 
             return new FormattedRange(low, high);

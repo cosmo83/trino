@@ -13,18 +13,17 @@
  */
 package io.trino.plugin.deltalake;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
+import io.trino.testing.sql.TestTable;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createDeltaLakeQueryRunner;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
 @TestInstance(PER_CLASS)
@@ -35,7 +34,9 @@ public class TestDeltaLakeTableStatistics
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createDeltaLakeQueryRunner(DELTA_CATALOG, ImmutableMap.of(), ImmutableMap.of("delta.register-table-procedure.enabled", "true"));
+        return DeltaLakeQueryRunner.builder()
+                .addDeltaProperty("delta.register-table-procedure.enabled", "true")
+                .build();
     }
 
     @BeforeAll
@@ -43,7 +44,7 @@ public class TestDeltaLakeTableStatistics
     {
         String dataPath = Resources.getResource("databricks73/person").toExternalForm();
         getQueryRunner().execute(
-                format("CALL system.register_table('%s', 'person', '%s')", getSession().getSchema().orElseThrow(), dataPath));
+                format("CALL system.register_table(CURRENT_SCHEMA, 'person', '%s')", dataPath));
     }
 
     @Test
@@ -178,5 +179,30 @@ public class TestDeltaLakeTableStatistics
                         //  column_name | data_size | distinct_values_count | nulls_fraction | row_count | low_value | high_value
                         "('col', 0.0, 0.0, 1.0, null, null, null)," +
                         "(null, null, null, null, 1.0, null, null)");
+    }
+
+    @Test
+    public void testShowStatsReplaceTable()
+    {
+        try (TestTable table = newTrinoTable("show_stats_after_replace_table_", "AS SELECT 1 a, 2 b")) {
+            assertThat(query("SHOW STATS FOR " + table.getName()))
+                    .skippingTypesCheck()
+                    .matches("""
+                        VALUES
+                        ('a', null, 1e0, 0e0, NULL, '1', '1'),
+                        ('b', null, 1e0, 0e0, NULL, '2', '2'),
+                        (NULL, NULL, NULL, NULL, 1e0, NULL, NULL)
+                        """);
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT 3 x, 4 y", 1);
+            assertThat(query("SHOW STATS FOR " + table.getName()))
+                    .skippingTypesCheck()
+                    .matches("""
+                        VALUES
+                        ('x', null, 1e0, 0e0, NULL, '3', '3'),
+                        ('y', null, 1e0, 0e0, NULL, '4', '4'),
+                        (NULL, NULL, NULL, NULL, 1e0, NULL, NULL)
+                        """);
+        }
     }
 }

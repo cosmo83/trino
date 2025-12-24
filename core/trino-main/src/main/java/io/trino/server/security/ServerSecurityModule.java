@@ -20,9 +20,6 @@ import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.multibindings.MapBinder;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
-import io.airlift.discovery.server.DynamicAnnouncementResource;
-import io.airlift.discovery.server.ServiceResource;
-import io.airlift.discovery.store.StoreResource;
 import io.airlift.http.server.HttpServer.ClientCertificate;
 import io.airlift.http.server.HttpServerConfig;
 import io.airlift.jmx.MBeanResource;
@@ -44,6 +41,7 @@ import static io.airlift.configuration.ConditionalModule.conditionalModule;
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.airlift.configuration.ConfigurationAwareModule.combine;
 import static io.airlift.http.server.HttpServer.ClientCertificate.REQUESTED;
+import static io.airlift.http.server.HttpServerConfig.ProcessForwardedMode.ACCEPT;
 import static io.airlift.jaxrs.JaxrsBinder.jaxrsBinder;
 import static io.trino.server.security.ResourceSecurityBinder.resourceSecurityBinder;
 import static java.util.Locale.ENGLISH;
@@ -58,11 +56,8 @@ public class ServerSecurityModule
         jaxrsBinder(binder).bind(ResourceSecurityDynamicFeature.class);
 
         resourceSecurityBinder(binder)
-                .managementReadResource(ServiceResource.class)
                 .managementReadResource(MBeanResource.class)
-                .managementReadResource(MetricsResource.class)
-                .internalOnlyResource(DynamicAnnouncementResource.class)
-                .internalOnlyResource(StoreResource.class);
+                .managementReadResource(MetricsResource.class);
 
         newOptionalBinder(binder, PasswordAuthenticatorManager.class);
         binder.bind(CertificateAuthenticatorManager.class).in(Scopes.SINGLETON);
@@ -139,7 +134,7 @@ public class ServerSecurityModule
         HttpServerConfig httpServerConfig = buildConfigObject(HttpServerConfig.class);
         SecurityConfig securityConfig = buildConfigObject(SecurityConfig.class);
         // if secure https authentication is enabled, disable insecure authentication over http
-        if ((httpServerConfig.isHttpsEnabled() || httpServerConfig.isProcessForwarded()) &&
+        if ((httpServerConfig.isHttpsEnabled() || httpServerConfig.getProcessForwarded() == ACCEPT) &&
                 !securityConfig.getAuthenticationTypes().equals(ImmutableList.of("insecure"))) {
             install(binder -> configBinder(binder).bindConfigDefaults(SecurityConfig.class, config -> config.setInsecureAuthenticationOverHttpAllowed(false)));
         }

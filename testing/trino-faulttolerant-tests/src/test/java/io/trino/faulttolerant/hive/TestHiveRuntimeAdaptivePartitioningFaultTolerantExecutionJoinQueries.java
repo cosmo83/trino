@@ -15,7 +15,6 @@ package io.trino.faulttolerant.hive;
 
 import com.google.common.collect.ImmutableMap;
 import io.trino.execution.DynamicFilterConfig;
-import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.hive.HiveQueryRunner;
 import io.trino.testing.AbstractTestFaultTolerantExecutionJoinQueries;
 import io.trino.testing.FaultTolerantExecutionConnectorTestHelper;
@@ -25,7 +24,6 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static com.google.common.base.Verify.verify;
-import static io.trino.tpch.TpchTable.getTables;
 
 public class TestHiveRuntimeAdaptivePartitioningFaultTolerantExecutionJoinQueries
         extends AbstractTestFaultTolerantExecutionJoinQueries
@@ -41,13 +39,9 @@ public class TestHiveRuntimeAdaptivePartitioningFaultTolerantExecutionJoinQuerie
         verify(new DynamicFilterConfig().isEnableDynamicFiltering(), "this class assumes dynamic filtering is enabled by default");
         return HiveQueryRunner.builder()
                 .setExtraProperties(extraPropertiesWithRuntimeAdaptivePartitioning.buildOrThrow())
-                .setAdditionalSetup(runner -> {
-                    runner.installPlugin(new FileSystemExchangePlugin());
-                    runner.loadExchangeManager("filesystem", ImmutableMap.of("exchange.base-directories",
-                            System.getProperty("java.io.tmpdir") + "/trino-local-file-system-exchange-manager"));
-                })
-                .setInitialTables(getTables())
+                .withExchange("filesystem")
                 .addHiveProperty("hive.dynamic-filtering.wait-timeout", "1h")
+                .setInitialTables(REQUIRED_TPCH_TABLES)
                 .build();
     }
 

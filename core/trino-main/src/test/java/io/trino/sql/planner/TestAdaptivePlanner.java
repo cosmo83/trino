@@ -29,6 +29,7 @@ import io.trino.sql.planner.plan.JoinNode;
 import io.trino.sql.planner.plan.Patterns;
 import io.trino.sql.planner.plan.PlanFragmentId;
 import io.trino.sql.planner.plan.PlanNodeId;
+import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import org.junit.jupiter.api.Test;
 
@@ -36,6 +37,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 import static io.trino.execution.scheduler.faulttolerant.OutputStatsEstimator.OutputStatsEstimateResult;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.adaptivePlan;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.any;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
@@ -44,7 +46,6 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.output;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.remoteSource;
 import static io.trino.sql.planner.plan.JoinType.INNER;
-import static io.trino.type.UnknownType.UNKNOWN;
 
 public class TestAdaptivePlanner
         extends BasePlanTest
@@ -63,11 +64,11 @@ public class TestAdaptivePlanner
                                 any(
                                         adaptivePlan(
                                                 join(INNER, builder -> builder
-                                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(UNKNOWN, "nationkey"), new Symbol(UNKNOWN, "nationkey_1"))))
+                                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(BIGINT, "nationkey"), new Symbol(BIGINT, "nationkey_1"))))
                                                         .left(remoteSource(ImmutableList.of(new PlanFragmentId("1"))))
                                                         .right(any(remoteSource(ImmutableList.of(new PlanFragmentId("2")))))),
                                                 join(INNER, builder -> builder
-                                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(UNKNOWN, "nationkey_1"), new Symbol(UNKNOWN, "nationkey"))))
+                                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(BIGINT, "nationkey_1"), new Symbol(BIGINT, "nationkey"))))
                                                         .right(remoteSource(ImmutableList.of(new PlanFragmentId("1"))))
                                                         .left(any(remoteSource(ImmutableList.of(new PlanFragmentId("2"))))))))))
                 .children(
@@ -89,7 +90,8 @@ public class TestAdaptivePlanner
                 ImmutableMap.of(
                         new PlanFragmentId("1"), createRuntimeStats(ImmutableLongArray.of(10000L, 10000L, 10000L), 10000),
                         new PlanFragmentId("2"), createRuntimeStats(ImmutableLongArray.of(200L, 2000L, 1000L), 500)),
-                matcher);
+                matcher,
+                true);
     }
 
     @Test
@@ -115,11 +117,11 @@ public class TestAdaptivePlanner
                                 .planPattern(node(AggregationNode.class,
                                         adaptivePlan(
                                                 join(INNER, builder -> builder
-                                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(UNKNOWN, "nationkey"), new Symbol(UNKNOWN, "count"))))
+                                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(BIGINT, "nationkey"), new Symbol(BIGINT, "count"))))
                                                         .left(remoteSource(ImmutableList.of(new PlanFragmentId("2"))))
                                                         .right(any(remoteSource(ImmutableList.of(new PlanFragmentId("3")))))),
                                                 join(INNER, builder -> builder
-                                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(UNKNOWN, "count"), new Symbol(UNKNOWN, "nationkey"))))
+                                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(BIGINT, "count"), new Symbol(BIGINT, "nationkey"))))
                                                         .right(remoteSource(ImmutableList.of(new PlanFragmentId("2"))))
                                                         .left(any(remoteSource(ImmutableList.of(new PlanFragmentId("3"))))))))))
                                 .children(
@@ -159,8 +161,79 @@ public class TestAdaptivePlanner
                 ImmutableMap.of(
                         new PlanFragmentId("3"), createRuntimeStats(ImmutableLongArray.of(10000L, 10000L, 10000L), 10000),
                         new PlanFragmentId("2"), createRuntimeStats(ImmutableLongArray.of(200L, 2000L, 1000L), 500)),
-                matcher
-        );
+                matcher,
+                true);
+    }
+
+    @Test
+    public void testAdaptivePlanNodeAsRootOfFragment()
+    {
+        Session session = Session.builder(getPlanTester().getDefaultSession())
+                .setSystemProperty("join_distribution_type", "PARTITIONED")
+                .setSystemProperty("push_partial_aggregation_through_join", "true")
+                .setSystemProperty("distinct_aggregations_strategy", "SINGLE_STEP")
+                .build();
+
+        SubPlanMatcher matcher = SubPlanMatcher.builder()
+                .fragmentMatcher(fm -> fm
+                        // This fragment id should change since it is downstream of adaptive stage
+                        .fragmentId(5)
+                        .planPattern(
+                                output(
+                                        node(AggregationNode.class,
+                                                exchange(
+                                                        remoteSource(ImmutableList.of(new PlanFragmentId("6"))))))))
+                .children(
+                        spb -> spb.fragmentMatcher(fm -> fm
+                                        // This fragment id should change since it has adaptive plan
+                                        .fragmentId(6)
+                                        .planPattern(
+                                                adaptivePlan(
+                                                        join(INNER, builder -> builder
+                                                                .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(BIGINT, "nationkey"), new Symbol(BIGINT, "count"))))
+                                                                .left(remoteSource(ImmutableList.of(new PlanFragmentId("2"))))
+                                                                .right(any(remoteSource(ImmutableList.of(new PlanFragmentId("3")))))),
+                                                        join(INNER, builder -> builder
+                                                                .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(BIGINT, "count"), new Symbol(BIGINT, "nationkey"))))
+                                                                .right(remoteSource(ImmutableList.of(new PlanFragmentId("2"))))
+                                                                .left(any(remoteSource(ImmutableList.of(new PlanFragmentId("3")))))))))
+                                .children(
+                                        spb2 -> spb2.fragmentMatcher(fm -> fm
+                                                        // This fragment id should not change
+                                                        .fragmentId(3)
+                                                        .planPattern(
+                                                                node(AggregationNode.class,
+                                                                        exchange(
+                                                                                remoteSource(ImmutableList.of(new PlanFragmentId("4")))))))
+                                                .children(spb3 -> spb3.fragmentMatcher(fm -> fm
+                                                        // This fragment id should not change
+                                                        .fragmentId(4)
+                                                        .planPattern(node(AggregationNode.class, node(TableScanNode.class))))),
+                                        spb2 -> spb2.fragmentMatcher(fm -> fm
+                                                // This fragment id should not change
+                                                .fragmentId(2).planPattern(any(node(TableScanNode.class))))))
+                .build();
+
+        assertAdaptivePlan(
+                """
+                    WITH t AS (SELECT regionkey, count(*) as some_count FROM nation group by regionkey)
+                    SELECT max(distinct s.nationkey), sum(distinct t.regionkey)
+                    FROM supplier AS s
+                    JOIN t
+                    ON s.nationkey = t.some_count
+                """,
+                session,
+                ImmutableList.of(new IterativeOptimizer(
+                        getPlanTester().getPlannerContext(),
+                        new RuleStatsRecorder(),
+                        getPlanTester().getStatsCalculator(),
+                        getPlanTester().getCostCalculator(),
+                        ImmutableSet.<Rule<?>>builder()
+                                .add(new TestJoinOrderSwitchRule())
+                                .build())),
+                ImmutableMap.of(),
+                matcher,
+                true);
     }
 
     @Test
@@ -175,7 +248,7 @@ public class TestAdaptivePlanner
                         .fragmentId(0)
                         .planPattern(
                                 any(join(INNER, builder -> builder
-                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(UNKNOWN, "nationkey"), new Symbol(UNKNOWN, "nationkey_1"))))
+                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(BIGINT, "nationkey"), new Symbol(BIGINT, "nationkey_1"))))
                                         .left(remoteSource(ImmutableList.of(new PlanFragmentId("1"))))
                                         .right(any(remoteSource(ImmutableList.of(new PlanFragmentId("2")))))))))
                 .children(
@@ -199,7 +272,8 @@ public class TestAdaptivePlanner
                         new PlanFragmentId("2"), createRuntimeStats(ImmutableLongArray.of(200L, 2000L, 1000L), 500),
                         // Since the runtime stats are accurate, adaptivePlanner will not change this subplan
                         new PlanFragmentId("0"), createRuntimeStats(ImmutableLongArray.of(10000L, 10000L, 10000L), 10000)),
-                matcher);
+                matcher,
+                true);
     }
 
     @Test
@@ -224,7 +298,7 @@ public class TestAdaptivePlanner
                                         .fragmentId(1)
                                         .planPattern(node(AggregationNode.class,
                                                 join(INNER, builder -> builder
-                                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(UNKNOWN, "nationkey"), new Symbol(UNKNOWN, "count"))))
+                                                        .equiCriteria(ImmutableList.of(aliases -> new JoinNode.EquiJoinClause(new Symbol(BIGINT, "nationkey"), new Symbol(BIGINT, "count"))))
                                                         .left(remoteSource(ImmutableList.of(new PlanFragmentId("2"))))
                                                         .right(any(remoteSource(ImmutableList.of(new PlanFragmentId("3")))))))))
                                 .children(
@@ -267,8 +341,66 @@ public class TestAdaptivePlanner
                         new PlanFragmentId("3"), createRuntimeStats(ImmutableLongArray.of(10000L, 10000L, 10000L), 10000),
                         new PlanFragmentId("4"), createRuntimeStats(ImmutableLongArray.of(10000L, 10000L, 10000L), 10000),
                         new PlanFragmentId("2"), createRuntimeStats(ImmutableLongArray.of(200L, 2000L, 1000L), 500)),
-                matcher
-        );
+                matcher,
+                true);
+    }
+
+    @Test
+    public void testWhenSimilarColumnIsProjectedTwice()
+    {
+        Session session = Session.builder(getPlanTester().getDefaultSession())
+                .setSystemProperty("join_distribution_type", "PARTITIONED")
+                // This is to ensure that the plan is not optimized to use partial aggregation
+                .setSystemProperty("prefer_partial_aggregation", "false")
+                .build();
+
+        assertAdaptivePlan(
+                    """
+                    SELECT
+                        sum(sales),
+                        sum(another_sales),
+                        sum(acctbal)
+                    FROM (
+                    SELECT
+                        CAST(0 AS DECIMAL(7,2)) "sales",
+                        CAST(0 AS DECIMAL(7,2)) "another_sales",
+                        cast("acctbal" as DECIMAL(7,2)) "acctbal"
+                    FROM customer
+                    UNION ALL
+                    SELECT
+                        cast("acctbal" as DECIMAL(7,2)) "sales",
+                        CAST(0 AS DECIMAL(7,2)) "another_sales",
+                        CAST(0 AS DECIMAL(7,2)) "acctbal"
+                    FROM customer
+                    ) test_table
+                """,
+                session,
+                ImmutableList.of(new IterativeOptimizer(
+                        getPlanTester().getPlannerContext(),
+                        new RuleStatsRecorder(),
+                        getPlanTester().getStatsCalculator(),
+                        getPlanTester().getCostCalculator(),
+                        ImmutableSet.<Rule<?>>builder()
+                                .add(new TestJoinOrderSwitchRule())
+                                .build())),
+                ImmutableMap.of(),
+                SubPlanMatcher.builder()
+                        .fragmentMatcher(fm -> fm
+                                .fragmentId(0)
+                                .planPattern(
+                                        output(
+                                                node(AggregationNode.class,
+                                                        exchange(
+                                                                remoteSource(ImmutableList.of(new PlanFragmentId("1"), new PlanFragmentId("2"))))))))
+                        .children(
+                                spb -> spb.fragmentMatcher(fm -> fm
+                                        .fragmentId(1)
+                                        .planPattern(node(ProjectNode.class, node(TableScanNode.class)))),
+                                spb -> spb.fragmentMatcher(fm -> fm
+                                        .fragmentId(2)
+                                        .planPattern(node(ProjectNode.class, node(TableScanNode.class)))))
+                        .build(),
+                true);
     }
 
     private OutputStatsEstimateResult createRuntimeStats(ImmutableLongArray partitionDataSizes, long outputRowCountEstimate)

@@ -15,8 +15,8 @@ package io.trino.plugin.hive;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.spi.type.NamedTypeSignature;
-import io.trino.spi.type.RowFieldName;
+import io.trino.metastore.HiveType;
+import io.trino.plugin.hive.HiveTestUtils.Field;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 
@@ -28,7 +28,10 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static io.trino.plugin.hive.HiveColumnHandle.createBaseColumn;
 import static io.trino.plugin.hive.HiveTestUtils.rowType;
-import static io.trino.plugin.hive.HiveType.toHiveType;
+import static io.trino.plugin.hive.util.HiveTypeTranslator.toHiveType;
+import static io.trino.plugin.hive.util.HiveTypeUtil.getHiveDereferenceNames;
+import static io.trino.plugin.hive.util.HiveTypeUtil.getHiveTypeForDereferences;
+import static io.trino.plugin.hive.util.HiveTypeUtil.getTypeSignature;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 
@@ -37,12 +40,12 @@ public class TestHiveReaderProjectionsUtil
     private TestHiveReaderProjectionsUtil() {}
 
     public static final RowType ROWTYPE_OF_PRIMITIVES = rowType(ImmutableList.of(
-            new NamedTypeSignature(Optional.of(new RowFieldName("f_bigint_0")), BIGINT.getTypeSignature()),
-            new NamedTypeSignature(Optional.of(new RowFieldName("f_bigint_1")), BIGINT.getTypeSignature())));
+            new Field("f_bigint_0", BIGINT.getTypeSignature()),
+            new Field("f_bigint_1", BIGINT.getTypeSignature())));
 
     public static final RowType ROWTYPE_OF_ROW_AND_PRIMITIVES = rowType(ImmutableList.of(
-            new NamedTypeSignature(Optional.of(new RowFieldName("f_row_0")), ROWTYPE_OF_PRIMITIVES.getTypeSignature()),
-            new NamedTypeSignature(Optional.of(new RowFieldName("f_bigint_0")), BIGINT.getTypeSignature())));
+            new Field("f_row_0", ROWTYPE_OF_PRIMITIVES.getTypeSignature()),
+            new Field("f_bigint_0", BIGINT.getTypeSignature())));
 
     public static Map<String, HiveColumnHandle> createTestFullColumns(List<String> names, Map<String, Type> types)
     {
@@ -69,10 +72,10 @@ public class TestHiveReaderProjectionsUtil
         }
 
         HiveType baseHiveType = column.getHiveType();
-        List<String> names = baseHiveType.getHiveDereferenceNames(indices);
-        HiveType hiveType = baseHiveType.getHiveTypeForDereferences(indices).get();
+        List<String> names = getHiveDereferenceNames(baseHiveType, indices);
+        HiveType hiveType = getHiveTypeForDereferences(baseHiveType, indices).get();
 
-        HiveColumnProjectionInfo columnProjection = new HiveColumnProjectionInfo(indices, names, hiveType, TESTING_TYPE_MANAGER.getType(hiveType.getTypeSignature()));
+        HiveColumnProjectionInfo columnProjection = new HiveColumnProjectionInfo(indices, names, hiveType, TESTING_TYPE_MANAGER.getType(getTypeSignature(hiveType)));
 
         return new HiveColumnHandle(
                 column.getBaseColumnName(),

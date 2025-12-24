@@ -93,7 +93,7 @@ public class StatsNormalizer
         double distinctValuesCount = symbolStats.getDistinctValuesCount();
 
         if (!isNaN(distinctValuesCount)) {
-            double maxDistinctValuesByLowHigh = maxDistinctValuesByLowHigh(symbolStats, symbol.getType());
+            double maxDistinctValuesByLowHigh = maxDistinctValuesByLowHigh(symbolStats, symbol.type());
             if (distinctValuesCount > maxDistinctValuesByLowHigh) {
                 distinctValuesCount = maxDistinctValuesByLowHigh;
             }
@@ -127,7 +127,7 @@ public class StatsNormalizer
         double nullsFraction = symbolStats.getNullsFraction();
 
         if (!isNaN(distinctValuesCount)) {
-            double maxDistinctValuesByLowHigh = maxDistinctValuesByLowHigh(symbolStats, symbol.getType());
+            double maxDistinctValuesByLowHigh = maxDistinctValuesByLowHigh(symbolStats, symbol.type());
             if (distinctValuesCount > maxDistinctValuesByLowHigh) {
                 distinctValuesCount = maxDistinctValuesByLowHigh;
             }
@@ -170,8 +170,8 @@ public class StatsNormalizer
             return NaN;
         }
 
-        if (type instanceof DecimalType) {
-            length *= pow(10, ((DecimalType) type).getScale());
+        if (type instanceof DecimalType decimalType) {
+            length *= pow(10, decimalType.getScale());
         }
         return floor(length + 1);
     }

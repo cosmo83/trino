@@ -13,7 +13,6 @@
  */
 package io.trino.sql.planner.iterative.rule;
 
-import com.google.common.collect.ImmutableList;
 import io.trino.Session;
 import io.trino.matching.Capture;
 import io.trino.matching.Captures;
@@ -23,7 +22,7 @@ import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Booleans;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.DomainTranslator;
 import io.trino.sql.planner.Symbol;
@@ -53,10 +52,12 @@ public class PushdownFilterIntoRowNumber
     private static final Pattern<FilterNode> PATTERN = filter().with(source().matching(rowNumber().capturedAs(CHILD)));
 
     private final PlannerContext plannerContext;
+    private final DomainTranslator domainTranslator;
 
     public PushdownFilterIntoRowNumber(PlannerContext plannerContext)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
+        this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
     }
 
     @Override
@@ -82,7 +83,7 @@ public class PushdownFilterIntoRowNumber
         }
 
         if (upperBound.getAsInt() <= 0) {
-            return Result.ofPlanNode(new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of()));
+            return Result.ofPlanNode(new ValuesNode(node.getId(), node.getOutputSymbols()));
         }
 
         RowNumberNode merged = mergeLimit(source, upperBound.getAsInt());
@@ -101,9 +102,9 @@ public class PushdownFilterIntoRowNumber
         TupleDomain<Symbol> newTupleDomain = tupleDomain.filter((symbol, domain) -> !symbol.equals(rowNumberSymbol));
         Expression newPredicate = combineConjuncts(
                 extractionResult.getRemainingExpression(),
-                new DomainTranslator().toPredicate(newTupleDomain));
+                domainTranslator.toPredicate(newTupleDomain));
 
-        if (newPredicate.equals(BooleanLiteral.TRUE_LITERAL)) {
+        if (newPredicate.equals(Booleans.TRUE)) {
             return Result.ofPlanNode(source);
         }
 
@@ -170,7 +171,6 @@ public class PushdownFilterIntoRowNumber
                 node.getPartitionBy(),
                 node.isOrderSensitive(),
                 node.getRowNumberSymbol(),
-                Optional.of(newRowCountPerPartition),
-                node.getHashSymbol());
+                Optional.of(newRowCountPerPartition));
     }
 }

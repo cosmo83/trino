@@ -43,6 +43,7 @@ import static io.trino.spi.function.InvocationConvention.InvocationArgumentConve
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.FLAT;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.NEVER_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.NULL_FLAG;
+import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.VALUE_BLOCK_POSITION_NOT_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.BLOCK_BUILDER;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
 import static io.trino.spi.function.InvocationConvention.simpleConvention;
@@ -121,12 +122,12 @@ public class TypeOperators
         return getOperatorAdaptor(type, callingConvention, OperatorType.XX_HASH_64).get();
     }
 
-    public MethodHandle getDistinctFromOperator(Type type, InvocationConvention callingConvention)
+    public MethodHandle getIdenticalOperator(Type type, InvocationConvention callingConvention)
     {
         if (!type.isComparable()) {
             throw new UnsupportedOperationException(type + " is not comparable");
         }
-        return getOperatorAdaptor(type, callingConvention, OperatorType.IS_DISTINCT_FROM).get();
+        return getOperatorAdaptor(type, callingConvention, OperatorType.IDENTICAL).get();
     }
 
     public MethodHandle getIndeterminateOperator(Type type, InvocationConvention callingConvention)
@@ -192,17 +193,21 @@ public class TypeOperators
     private class OperatorAdaptor
     {
         private final OperatorConvention operatorConvention;
-        private MethodHandle adapted;
+        private volatile MethodHandle adapted;
 
         public OperatorAdaptor(OperatorConvention operatorConvention)
         {
             this.operatorConvention = operatorConvention;
         }
 
-        public synchronized MethodHandle get()
+        public MethodHandle get()
         {
             if (adapted == null) {
-                adapted = adaptOperator(operatorConvention);
+                synchronized (this) {
+                    if (adapted == null) {
+                        adapted = adaptOperator(operatorConvention);
+                    }
+                }
             }
             return adapted;
         }
@@ -227,7 +232,7 @@ public class TypeOperators
         private OperatorMethodHandle selectOperatorMethodHandleToAdapt(OperatorConvention operatorConvention)
         {
             List<OperatorMethodHandle> operatorMethodHandles = getOperatorMethodHandles(operatorConvention).stream()
-                    .sorted(Comparator.comparing(TypeOperators::getScore).reversed())
+                    .sorted(Comparator.comparingInt(TypeOperators::getScore).reversed())
                     .toList();
 
             // if a method handle exists for the exact convention, use it
@@ -278,12 +283,12 @@ public class TypeOperators
                     yield hashCodeOperators;
                 }
                 case XX_HASH_64 -> typeOperatorDeclaration.getXxHash64Operators();
-                case IS_DISTINCT_FROM -> {
-                    Collection<OperatorMethodHandle> distinctFromOperators = typeOperatorDeclaration.getDistinctFromOperators();
-                    if (distinctFromOperators.isEmpty()) {
-                        yield List.of(generateDistinctFromOperator(operatorConvention));
+                case IDENTICAL -> {
+                    Collection<OperatorMethodHandle> operators = typeOperatorDeclaration.getIdenticalOperators();
+                    if (operators.isEmpty()) {
+                        yield List.of(generateIdenticalOperators(operatorConvention));
                     }
-                    yield distinctFromOperators;
+                    yield operators;
                 }
                 case INDETERMINATE -> {
                     Collection<OperatorMethodHandle> indeterminateOperators = typeOperatorDeclaration.getIndeterminateOperators();
@@ -370,17 +375,17 @@ public class TypeOperators
             return TYPE_WRITE_OBJECT.bindTo(type);
         }
 
-        private OperatorMethodHandle generateDistinctFromOperator(OperatorConvention operatorConvention)
+        private OperatorMethodHandle generateIdenticalOperators(OperatorConvention operatorConvention)
         {
             // This code assumes that the declared equals method for the type is not nullable, which is true for all non-container types.
             // Container types directly define the distinct operator, so this assumption is reasonable.
             List<InvocationArgumentConvention> argumentConventions = operatorConvention.callingConvention().getArgumentConventions();
 
-            // if none of the arguments are nullable, return "not equal"
+            // if none of the arguments are nullable, return "equal"
             if (argumentConventions.stream().noneMatch(InvocationArgumentConvention::isNullable)) {
                 InvocationConvention convention = new InvocationConvention(argumentConventions, FAIL_ON_NULL, false, false);
                 MethodHandle equalMethodHandle = adaptOperator(new OperatorConvention(operatorConvention.type(), EQUAL, Optional.empty(), convention));
-                return new OperatorMethodHandle(convention, filterReturnValue(equalMethodHandle, LOGICAL_NOT));
+                return new OperatorMethodHandle(convention, equalMethodHandle);
             }
 
             // one or both of the arguments are nullable
@@ -405,20 +410,18 @@ public class TypeOperators
             InvocationArgumentConvention leftDistinctConvention = distinctArgumentConventions.get(0);
             InvocationArgumentConvention rightDistinctConvention = distinctArgumentConventions.get(1);
 
-            // distinct is "not equal", with some extra handling for nulls
-            MethodHandle notEqualMethodHandle = filterReturnValue(
-                    adaptOperator(new OperatorConvention(
-                            operatorConvention.type(),
-                            EQUAL,
-                            Optional.empty(),
-                            new InvocationConvention(equalArgumentConventions, FAIL_ON_NULL, false, false))),
-                    LOGICAL_NOT);
+            // identical is "equal", with some extra handling for nulls
+            MethodHandle equalMethodHandle = adaptOperator(new OperatorConvention(
+                    operatorConvention.type(),
+                    EQUAL,
+                    Optional.empty(),
+                    new InvocationConvention(equalArgumentConventions, FAIL_ON_NULL, false, false)));
             // add the unused null flag if necessary
             if (rightDistinctConvention == NULL_FLAG) {
-                notEqualMethodHandle = dropArguments(notEqualMethodHandle, notEqualMethodHandle.type().parameterCount(), boolean.class);
+                equalMethodHandle = dropArguments(equalMethodHandle, equalMethodHandle.type().parameterCount(), boolean.class);
             }
             if (leftDistinctConvention == NULL_FLAG) {
-                notEqualMethodHandle = dropArguments(notEqualMethodHandle, 1, boolean.class);
+                equalMethodHandle = dropArguments(equalMethodHandle, 1, boolean.class);
             }
 
             MethodHandle testNullHandle;
@@ -433,17 +436,17 @@ public class TypeOperators
             }
             else {
                 testNullHandle = distinctArgumentNullTest(operatorConvention, rightDistinctConvention);
-                testNullHandle = dropArguments(testNullHandle, 0, notEqualMethodHandle.type().parameterList().subList(0, leftDistinctConvention.getParameterCount()));
+                testNullHandle = dropArguments(testNullHandle, 0, equalMethodHandle.type().parameterList().subList(0, leftDistinctConvention.getParameterCount()));
             }
 
             MethodHandle hasNullResultHandle;
             if (leftDistinctConvention.isNullable() && rightDistinctConvention.isNullable()) {
-                hasNullResultHandle = BOOLEAN_NOT_EQUAL;
+                hasNullResultHandle = BOOLEAN_EQUAL;
                 hasNullResultHandle = collectArguments(hasNullResultHandle, 1, distinctArgumentNullTest(operatorConvention, rightDistinctConvention));
                 hasNullResultHandle = collectArguments(hasNullResultHandle, 0, distinctArgumentNullTest(operatorConvention, leftDistinctConvention));
             }
             else {
-                hasNullResultHandle = dropArguments(constant(boolean.class, true), 0, notEqualMethodHandle.type().parameterList());
+                hasNullResultHandle = dropArguments(constant(boolean.class, false), 0, equalMethodHandle.type().parameterList());
             }
 
             return new OperatorMethodHandle(
@@ -451,7 +454,7 @@ public class TypeOperators
                     guardWithTest(
                             testNullHandle,
                             hasNullResultHandle,
-                            notEqualMethodHandle));
+                            equalMethodHandle));
         }
 
         private static MethodHandle distinctArgumentNullTest(OperatorConvention operatorConvention, InvocationArgumentConvention distinctArgumentConvention)
@@ -494,7 +497,12 @@ public class TypeOperators
             SortOrder sortOrder = operatorConvention.sortOrder().orElseThrow(() -> new IllegalArgumentException("Operator convention does not contain a sort order"));
             OperatorType comparisonType = operatorConvention.operatorType();
             if (operatorConvention.callingConvention().getArgumentConventions().equals(List.of(BLOCK_POSITION, BLOCK_POSITION))) {
-                OperatorConvention comparisonOperator = new OperatorConvention(operatorConvention.type(), comparisonType, Optional.empty(), simpleConvention(FAIL_ON_NULL, BLOCK_POSITION, BLOCK_POSITION));
+                OperatorConvention comparisonOperator = new OperatorConvention(
+                        operatorConvention.type(),
+                        comparisonType,
+                        Optional.empty(),
+                        // null positions are handled separately in adaptBlockPositionComparisonToOrdering and not used in the comparison
+                        simpleConvention(FAIL_ON_NULL, BLOCK_POSITION_NOT_NULL, BLOCK_POSITION_NOT_NULL));
                 MethodHandle comparisonInvoker = adaptOperator(comparisonOperator);
                 return adaptBlockPositionComparisonToOrdering(sortOrder, comparisonInvoker);
             }
@@ -507,7 +515,7 @@ public class TypeOperators
         private static Type getOperatorReturnType(OperatorConvention operatorConvention)
         {
             return switch (operatorConvention.operatorType()) {
-                case EQUAL, IS_DISTINCT_FROM, LESS_THAN, LESS_THAN_OR_EQUAL, INDETERMINATE -> BOOLEAN;
+                case EQUAL, IDENTICAL, LESS_THAN, LESS_THAN_OR_EQUAL, INDETERMINATE -> BOOLEAN;
                 case COMPARISON_UNORDERED_LAST, COMPARISON_UNORDERED_FIRST -> INTEGER;
                 case HASH_CODE, XX_HASH_64 -> BIGINT;
                 case READ_VALUE -> operatorConvention.type();
@@ -518,10 +526,9 @@ public class TypeOperators
         private static List<Type> getOperatorArgumentTypes(OperatorConvention operatorConvention)
         {
             return switch (operatorConvention.operatorType()) {
-                case EQUAL, IS_DISTINCT_FROM, COMPARISON_UNORDERED_LAST, COMPARISON_UNORDERED_FIRST, LESS_THAN, LESS_THAN_OR_EQUAL ->
+                case EQUAL, IDENTICAL, COMPARISON_UNORDERED_LAST, COMPARISON_UNORDERED_FIRST, LESS_THAN, LESS_THAN_OR_EQUAL ->
                         List.of(operatorConvention.type(), operatorConvention.type());
-                case READ_VALUE, HASH_CODE, XX_HASH_64, INDETERMINATE ->
-                        List.of(operatorConvention.type());
+                case READ_VALUE, HASH_CODE, XX_HASH_64, INDETERMINATE -> List.of(operatorConvention.type());
                 default -> throw new IllegalArgumentException("Unsupported operator type: " + operatorConvention.operatorType());
             };
         }
@@ -537,7 +544,7 @@ public class TypeOperators
             if (argument == NULL_FLAG || argument == FLAT) {
                 score += 100;
             }
-            else if (argument == BLOCK_POSITION) {
+            else if (argument == BLOCK_POSITION || argument == VALUE_BLOCK_POSITION_NOT_NULL) {
                 score += 1;
             }
         }
@@ -555,9 +562,8 @@ public class TypeOperators
         }
     }
 
-    private static final MethodHandle LOGICAL_NOT;
     private static final MethodHandle LOGICAL_OR;
-    private static final MethodHandle BOOLEAN_NOT_EQUAL;
+    private static final MethodHandle BOOLEAN_EQUAL;
     private static final MethodHandle IS_COMPARISON_LESS_THAN;
     private static final MethodHandle IS_COMPARISON_LESS_THAN_OR_EQUAL;
     private static final MethodHandle ORDER_NULLS;
@@ -579,9 +585,8 @@ public class TypeOperators
     static {
         try {
             Lookup lookup = lookup();
-            LOGICAL_NOT = lookup.findStatic(TypeOperators.class, "logicalNot", MethodType.methodType(boolean.class, boolean.class));
             LOGICAL_OR = lookup.findStatic(Boolean.class, "logicalOr", MethodType.methodType(boolean.class, boolean.class, boolean.class));
-            BOOLEAN_NOT_EQUAL = lookup.findStatic(TypeOperators.class, "booleanNotEqual", MethodType.methodType(boolean.class, boolean.class, boolean.class));
+            BOOLEAN_EQUAL = lookup.findStatic(TypeOperators.class, "booleanEqual", MethodType.methodType(boolean.class, boolean.class, boolean.class));
             IS_COMPARISON_LESS_THAN = lookup.findStatic(TypeOperators.class, "isComparisonLessThan", MethodType.methodType(boolean.class, long.class));
             IS_COMPARISON_LESS_THAN_OR_EQUAL = lookup.findStatic(TypeOperators.class, "isComparisonLessThanOrEqual", MethodType.methodType(boolean.class, long.class));
             ORDER_NULLS = lookup.findStatic(TypeOperators.class, "orderNulls", MethodType.methodType(int.class, SortOrder.class, boolean.class, boolean.class));
@@ -614,14 +619,9 @@ public class TypeOperators
                 0, 2, 1);
     }
 
-    private static boolean logicalNot(boolean value)
+    private static boolean booleanEqual(boolean left, boolean right)
     {
-        return !value;
-    }
-
-    private static boolean booleanNotEqual(boolean left, boolean right)
-    {
-        return left != right;
+        return left == right;
     }
 
     //

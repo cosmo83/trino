@@ -13,32 +13,43 @@
  */
 package io.trino.sql.routine;
 
+import com.google.common.hash.Hashing;
+import io.airlift.json.JsonCodec;
+import io.airlift.json.JsonCodecFactory;
+import io.airlift.json.ObjectMapperProvider;
 import io.airlift.slice.Slice;
 import io.trino.Session;
+import io.trino.block.BlockJsonSerde;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.operator.scalar.SpecializedSqlScalarFunction;
 import io.trino.security.AllowAllAccessControl;
+import io.trino.spi.block.Block;
 import io.trino.spi.function.FunctionId;
 import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.function.InvocationConvention;
 import io.trino.spi.function.ScalarFunctionImplementation;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarcharType;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.parser.SqlParser;
 import io.trino.sql.routine.ir.IrRoutine;
 import io.trino.sql.tree.FunctionSpecification;
 import io.trino.transaction.TransactionManager;
+import io.trino.type.TypeDeserializer;
+import io.trino.type.TypeSignatureKeyDeserializer;
 import org.assertj.core.api.ThrowingConsumer;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.Test;
 
 import java.lang.invoke.MethodHandle;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.metadata.FunctionManager.createTestingFunctionManager;
+import static io.trino.metadata.InternalBlockEncodingSerde.TESTING_BLOCK_ENCODING_SERDE;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.BOXED_NULLABLE;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.NEVER_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
@@ -46,7 +57,9 @@ import static io.trino.spi.function.InvocationConvention.InvocationReturnConvent
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DoubleType.DOUBLE;
+import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.spi.type.VarcharType.createVarcharType;
 import static io.trino.sql.planner.TestingPlannerContext.plannerContextBuilder;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static io.trino.testing.TransactionBuilder.transaction;
@@ -63,11 +76,25 @@ class TestSqlFunctions
             .withTransactionManager(TRANSACTION_MANAGER)
             .build();
     private static final Session SESSION = testSessionBuilder().build();
+    private static final JsonCodec<IrRoutine> IR_ROUTINE_CODEC;
+
+    static {
+        ObjectMapperProvider provider = new ObjectMapperProvider();
+        provider.setJsonSerializers(Map.of(
+                Block.class, new BlockJsonSerde.Serializer(PLANNER_CONTEXT.getBlockEncodingSerde())));
+        provider.setJsonDeserializers(Map.of(
+                Type.class, new TypeDeserializer(PLANNER_CONTEXT.getTypeManager()),
+                Block.class, new BlockJsonSerde.Deserializer(PLANNER_CONTEXT.getBlockEncodingSerde())));
+        provider.setKeyDeserializers(Map.of(
+                TypeSignature.class, new TypeSignatureKeyDeserializer()));
+        IR_ROUTINE_CODEC = new JsonCodecFactory(provider).jsonCodec(IrRoutine.class);
+    }
 
     @Test
     void testConstantReturn()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION answer()
                 RETURNS BIGINT
                 RETURN 42
@@ -78,7 +105,8 @@ class TestSqlFunctions
     @Test
     void testSimpleReturn()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION hello(s VARCHAR)
                 RETURNS VARCHAR
                 RETURN 'Hello, ' || s || '!'
@@ -94,7 +122,8 @@ class TestSqlFunctions
     @Test
     void testSimpleExpression()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION test(a bigint)
                 RETURNS bigint
                 BEGIN
@@ -113,7 +142,8 @@ class TestSqlFunctions
     @Test
     void testSimpleCase()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION simple_case(a bigint)
                 RETURNS varchar
                 BEGIN
@@ -139,7 +169,8 @@ class TestSqlFunctions
     @Test
     void testSingleIf()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION test_if(a bigint)
                   RETURNS varchar
                   BEGIN
@@ -148,7 +179,7 @@ class TestSqlFunctions
                     END IF;
                     RETURN 'other';
                   END
-                  """;
+                """;
         assertFunction(sql, handle -> {
             assertThat(handle.invoke(0L)).isEqualTo(utf8Slice("zero"));
             assertThat(handle.invoke(1L)).isEqualTo(utf8Slice("other"));
@@ -159,7 +190,8 @@ class TestSqlFunctions
     @Test
     void testSingleBranchIfElse()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION if_else(a bigint)
                   RETURNS varchar
                   BEGIN
@@ -170,7 +202,7 @@ class TestSqlFunctions
                     END IF;
                     RETURN NULL;
                   END
-                  """;
+                """;
         assertFunction(sql, handle -> {
             assertThat(handle.invoke(0L)).isEqualTo(utf8Slice("zero"));
             assertThat(handle.invoke(1L)).isEqualTo(utf8Slice("other"));
@@ -181,7 +213,8 @@ class TestSqlFunctions
     @Test
     void testMultiBranchIfElse()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION multi_if_else(a bigint)
                   RETURNS varchar
                   BEGIN
@@ -196,7 +229,7 @@ class TestSqlFunctions
                     END IF;
                     RETURN NULL;
                   END
-                  """;
+                """;
         assertFunction(sql, handle -> {
             assertThat(handle.invoke(0L)).isEqualTo(utf8Slice("zero"));
             assertThat(handle.invoke(1L)).isEqualTo(utf8Slice("one"));
@@ -208,7 +241,8 @@ class TestSqlFunctions
     @Test
     void testSearchCase()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION search_case(a bigint, b bigint)
                 RETURNS varchar
                 BEGIN
@@ -240,7 +274,8 @@ class TestSqlFunctions
     @Test
     void testFibonacciWhileLoop()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION fib(n bigint)
                 RETURNS bigint
                 BEGIN
@@ -273,7 +308,8 @@ class TestSqlFunctions
     @Test
     void testBreakContinue()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION test()
                 RETURNS bigint
                 BEGIN
@@ -297,7 +333,8 @@ class TestSqlFunctions
     @Test
     void testRepeat()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION test_repeat(a bigint)
                 RETURNS bigint
                 BEGIN
@@ -316,7 +353,8 @@ class TestSqlFunctions
     @Test
     void testRepeatContinue()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION test_repeat_continue()
                 RETURNS bigint
                 BEGIN
@@ -336,9 +374,35 @@ class TestSqlFunctions
     }
 
     @Test
+    void testLoop()
+    {
+        @Language("SQL") String sql =
+                """
+                FUNCTION test()
+                RETURNS bigint
+                BEGIN
+                  DECLARE a, b int DEFAULT 0;
+                  top: LOOP
+                    SET a = a + 1;
+                    IF a < 3 THEN
+                      ITERATE top;
+                    END IF;
+                    SET b = b + 1;
+                    IF a > 6 THEN
+                      LEAVE top;
+                    END IF;
+                  END LOOP;
+                  RETURN b;
+                END
+                """;
+        assertFunction(sql, handle -> assertThat(handle.invoke()).isEqualTo(5L));
+    }
+
+    @Test
     void testReuseLabels()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION test()
                 RETURNS int
                 BEGIN
@@ -358,9 +422,25 @@ class TestSqlFunctions
     }
 
     @Test
+    void testSpecialForm()
+    {
+        @Language("SQL") String sql =
+                """
+                FUNCTION test(a varchar)
+                RETURNS varchar
+                BEGIN
+                  RETURN NULLIF(a, 'test');
+                END
+                """;
+        assertFunction(sql, handle -> assertThat(handle.invoke(utf8Slice("test"))).isEqualTo(null));
+        assertFunction(sql, handle -> assertThat(handle.invoke(utf8Slice("test2"))).isEqualTo(utf8Slice("test2")));
+    }
+
+    @Test
     void testReuseVariables()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION test()
                 RETURNS bigint
                 BEGIN
@@ -382,7 +462,8 @@ class TestSqlFunctions
     @Test
     void testAssignParameter()
     {
-        @Language("SQL") String sql = """
+        @Language("SQL") String sql =
+                """
                 FUNCTION test(x int)
                 RETURNS int
                 BEGIN
@@ -409,8 +490,8 @@ class TestSqlFunctions
     @Test
     void testArray()
     {
-        testSingleExpression(BIGINT, 3L, BIGINT, 5L, "array[3,4,5,6,7][p]");
-        testSingleExpression(BIGINT, 0L, BIGINT, 0L, "array_sort(array[3,2,4,5,1,p])[1]");
+        testSingleExpression(INTEGER, 3L, INTEGER, 5L, "array[3,4,5,6,7][p]");
+        testSingleExpression(INTEGER, 0L, INTEGER, 0L, "array_sort(array[3,2,4,5,1,p])[1]");
     }
 
     @Test
@@ -422,7 +503,7 @@ class TestSqlFunctions
     @Test
     void testLambda()
     {
-        testSingleExpression(BIGINT, 3L, BIGINT, 9L, "(transform(ARRAY [5, 6], x -> x + p)[2])", false);
+        testSingleExpression(INTEGER, 3L, INTEGER, 9L, "(transform(ARRAY [5, 6], x -> x + p)[2])", true);
     }
 
     @Test
@@ -461,11 +542,11 @@ class TestSqlFunctions
     @Test
     void testSpecialType()
     {
-        testSingleExpression(VARCHAR, utf8Slice("abc"), BOOLEAN, true, "(p LIKE '%bc')");
-        testSingleExpression(VARCHAR, utf8Slice("xb"), BOOLEAN, false, "(p LIKE '%bc')");
-        testSingleExpression(VARCHAR, utf8Slice("abc"), BOOLEAN, false, "regexp_like(p, '\\d')");
-        testSingleExpression(VARCHAR, utf8Slice("123"), BOOLEAN, true, "regexp_like(p, '\\d')");
-        testSingleExpression(VARCHAR, utf8Slice("[4,5,6]"), VARCHAR, "6", "json_extract_scalar(p, '$[2]')");
+        testSingleExpression(createVarcharType(3), utf8Slice("abc"), BOOLEAN, true, "(p LIKE '%bc')");
+        testSingleExpression(createVarcharType(2), utf8Slice("xb"), BOOLEAN, false, "(p LIKE '%bc')");
+        testSingleExpression(createVarcharType(3), utf8Slice("abc"), BOOLEAN, false, "regexp_like(p, '\\d')");
+        testSingleExpression(createVarcharType(3), utf8Slice("123"), BOOLEAN, true, "regexp_like(p, '\\d')");
+        testSingleExpression(createVarcharType(7), utf8Slice("[4,5,6]"), VARCHAR, "6", "json_extract_scalar(p, '$[2]')");
     }
 
     private final AtomicLong nextId = new AtomicLong();
@@ -500,7 +581,17 @@ class TestSqlFunctions
         transaction(TRANSACTION_MANAGER, PLANNER_CONTEXT.getMetadata(), new AllowAllAccessControl())
                 .singleStatement()
                 .execute(SESSION, session -> {
-                    ScalarFunctionImplementation implementation = compileFunction(sql, session);
+                    ScalarFunctionImplementation implementation = compileFunction(sql, session, false);
+                    MethodHandle handle = implementation.getMethodHandle()
+                            .bindTo(getInstance(implementation))
+                            .bindTo(session.toConnectorSession());
+                    consumer.accept(handle);
+                });
+
+        transaction(TRANSACTION_MANAGER, PLANNER_CONTEXT.getMetadata(), new AllowAllAccessControl())
+                .singleStatement()
+                .execute(SESSION, session -> {
+                    ScalarFunctionImplementation implementation = compileFunction(sql, session, true);
                     MethodHandle handle = implementation.getMethodHandle()
                             .bindTo(getInstance(implementation))
                             .bindTo(session.toConnectorSession());
@@ -519,7 +610,7 @@ class TestSqlFunctions
         }
     }
 
-    private static ScalarFunctionImplementation compileFunction(@Language("SQL") String sql, Session session)
+    private static ScalarFunctionImplementation compileFunction(@Language("SQL") String sql, Session session, boolean serialize)
     {
         FunctionSpecification function = SQL_PARSER.createFunctionSpecification(sql);
 
@@ -529,7 +620,15 @@ class TestSqlFunctions
         SqlRoutineAnalysis analysis = analyzer.analyze(session, new AllowAllAccessControl(), function);
 
         SqlRoutinePlanner planner = new SqlRoutinePlanner(PLANNER_CONTEXT);
-        IrRoutine routine = planner.planSqlFunction(session, function, analysis);
+        IrRoutine routine = planner.planSqlFunction(session, analysis);
+
+        if (serialize) {
+            // Simulate worker communication
+            routine = IR_ROUTINE_CODEC.fromJson(IR_ROUTINE_CODEC.toJson(routine));
+        }
+
+        // verify routine hash does not fail
+        SqlRoutineHash.hash(routine, Hashing.sha256().newHasher(), TESTING_BLOCK_ENCODING_SERDE);
 
         SqlRoutineCompiler compiler = new SqlRoutineCompiler(createTestingFunctionManager());
         SpecializedSqlScalarFunction sqlScalarFunction = compiler.compile(routine);

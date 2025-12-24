@@ -49,9 +49,9 @@ public class TestSmallintArrayType
     protected Object getGreaterValue(Object value)
     {
         Block block = (Block) value;
-        BlockBuilder blockBuilder = SMALLINT.createBlockBuilder(null, block.getPositionCount() + 1);
+        BlockBuilder blockBuilder = SMALLINT.createFixedSizeBlockBuilder(block.getPositionCount() + 1);
         for (int i = 0; i < block.getPositionCount(); i++) {
-            SMALLINT.appendTo(block, i, blockBuilder);
+            blockBuilder.append(block.getUnderlyingValueBlock(), block.getUnderlyingValuePosition(i));
         }
         SMALLINT.writeLong(blockBuilder, 1L);
 

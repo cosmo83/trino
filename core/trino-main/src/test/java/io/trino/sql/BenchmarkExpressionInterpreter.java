@@ -16,8 +16,8 @@ package io.trino.sql;
 import com.google.common.collect.ImmutableList;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.InPredicate;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.In;
+import io.trino.sql.ir.Reference;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -64,7 +64,7 @@ public class BenchmarkExpressionInterpreter
         public void setup()
         {
             expressions = ImmutableList.of(
-                    new InPredicate(new SymbolReference(INTEGER, "bound_value"), IntStream.range(0, inValuesCount).mapToObj(i -> new Constant(INTEGER, (long) i))
+                    new In(new Reference(INTEGER, "bound_value"), IntStream.range(0, inValuesCount).mapToObj(i -> new Constant(INTEGER, (long) i))
                             .collect(Collectors.toList())));
         }
     }
@@ -83,10 +83,10 @@ public class BenchmarkExpressionInterpreter
         BenchmarkData data = new BenchmarkData();
         data.setup();
         BenchmarkExpressionInterpreter benchmark = new BenchmarkExpressionInterpreter();
-        assertThat(benchmark.optimize(data).size()).isEqualTo(data.expressions.size());
+        assertThat(benchmark.optimize(data)).hasSize(data.expressions.size());
     }
 
-    public static void main(String[] args)
+    static void main()
             throws Exception
     {
         benchmark(BenchmarkExpressionInterpreter.class, WarmupMode.BULK).run();

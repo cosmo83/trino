@@ -27,8 +27,10 @@ import io.trino.sql.planner.Symbol;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_ARBITRARY_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_BROADCAST_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
@@ -103,7 +105,7 @@ public class ExchangeNode
             PartitioningHandle partitioningHandle = partitioningScheme.getPartitioning().getHandle();
             checkArgument(scope != REMOTE || partitioningHandle.equals(SINGLE_DISTRIBUTION), "remote merging exchange requires single distribution");
             checkArgument(scope != LOCAL || partitioningHandle.equals(FIXED_PASSTHROUGH_DISTRIBUTION), "local merging exchange requires passthrough distribution");
-            checkArgument(partitioningScheme.getOutputLayout().containsAll(ordering.getOrderBy()), "Partitioning scheme does not supply all required ordering symbols");
+            checkArgument(partitioningScheme.getOutputLayout().containsAll(ordering.orderBy()), "Partitioning scheme does not supply all required ordering symbols");
             checkArgument(type == Type.GATHER, "Merging exchange must be of GATHER type");
             checkArgument(inputs.size() == 1, "Merging exchange must have single input");
         });
@@ -115,12 +117,12 @@ public class ExchangeNode
         this.orderingScheme = orderingScheme;
     }
 
-    public static ExchangeNode partitionedExchange(PlanNodeId id, Scope scope, PlanNode child, List<Symbol> partitioningColumns, Optional<Symbol> hashColumns)
+    public static ExchangeNode partitionedExchange(PlanNodeId id, Scope scope, PlanNode child, List<Symbol> partitioningColumns)
     {
-        return partitionedExchange(id, scope, child, partitioningColumns, hashColumns, false);
+        return partitionedExchange(id, scope, child, partitioningColumns, false);
     }
 
-    public static ExchangeNode partitionedExchange(PlanNodeId id, Scope scope, PlanNode child, List<Symbol> partitioningColumns, Optional<Symbol> hashColumns, boolean replicateNullsAndAny)
+    public static ExchangeNode partitionedExchange(PlanNodeId id, Scope scope, PlanNode child, List<Symbol> partitioningColumns, boolean replicateNullsAndAny)
     {
         return partitionedExchange(
                 id,
@@ -129,10 +131,10 @@ public class ExchangeNode
                 new PartitioningScheme(
                         Partitioning.create(FIXED_HASH_DISTRIBUTION, partitioningColumns),
                         child.getOutputSymbols(),
-                        hashColumns,
                         replicateNullsAndAny,
                         Optional.empty(),
-                        Optional.empty()));
+                        OptionalInt.empty(),
+                        OptionalInt.empty()));
     }
 
     public static ExchangeNode partitionedExchange(PlanNodeId id, Scope scope, PlanNode child, PartitioningScheme partitioningScheme)
@@ -147,6 +149,23 @@ public class ExchangeNode
                 partitioningScheme,
                 ImmutableList.of(child),
                 ImmutableList.of(partitioningScheme.getOutputLayout()),
+                Optional.empty());
+    }
+
+    public static ExchangeNode partitionedExchange(PlanNodeId id, Scope scope, List<PlanNode> sources, List<Symbol> partitioningColumns, List<Symbol> outputSymbols)
+    {
+        List<List<Symbol>> sourceInputs = sources.stream()
+                .map(PlanNode::getOutputSymbols)
+                .collect(toImmutableList());
+        return new ExchangeNode(
+                id,
+                ExchangeNode.Type.REPARTITION,
+                scope,
+                new PartitioningScheme(
+                        Partitioning.create(FIXED_HASH_DISTRIBUTION, partitioningColumns),
+                        outputSymbols),
+                sources,
+                sourceInputs,
                 Optional.empty());
     }
 
@@ -181,6 +200,21 @@ public class ExchangeNode
                 scope,
                 child,
                 new PartitioningScheme(Partitioning.create(FIXED_ARBITRARY_DISTRIBUTION, ImmutableList.of()), child.getOutputSymbols()));
+    }
+
+    public static ExchangeNode roundRobinExchange(PlanNodeId id, Scope scope, List<PlanNode> sources, List<Symbol> outputSymbols)
+    {
+        List<List<Symbol>> sourceInputs = sources.stream()
+                .map(PlanNode::getOutputSymbols)
+                .collect(toImmutableList());
+        return new ExchangeNode(
+                id,
+                ExchangeNode.Type.REPARTITION,
+                scope,
+                new PartitioningScheme(Partitioning.create(FIXED_ARBITRARY_DISTRIBUTION, ImmutableList.of()), outputSymbols),
+                sources,
+                sourceInputs,
+                Optional.empty());
     }
 
     public static ExchangeNode mergingExchange(PlanNodeId id, Scope scope, PlanNode child, OrderingScheme orderingScheme)

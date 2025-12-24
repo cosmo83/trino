@@ -68,12 +68,6 @@ class TestingConnectorSplit
     }
 
     @Override
-    public Object getInfo()
-    {
-        return null;
-    }
-
-    @Override
     public long getRetainedSizeInBytes()
     {
         return INSTANCE_SIZE

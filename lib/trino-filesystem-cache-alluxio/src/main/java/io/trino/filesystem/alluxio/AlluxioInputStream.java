@@ -27,12 +27,11 @@ import java.io.EOFException;
 import java.io.IOException;
 
 import static com.google.common.base.Verify.verify;
-import static com.google.common.primitives.Ints.saturatedCast;
-import static io.trino.filesystem.alluxio.AlluxioTracing.withTracing;
 import static io.trino.filesystem.tracing.CacheSystemAttributes.CACHE_FILE_LOCATION;
 import static io.trino.filesystem.tracing.CacheSystemAttributes.CACHE_FILE_READ_POSITION;
 import static io.trino.filesystem.tracing.CacheSystemAttributes.CACHE_FILE_READ_SIZE;
 import static io.trino.filesystem.tracing.CacheSystemAttributes.CACHE_KEY;
+import static io.trino.filesystem.tracing.Tracing.withTracing;
 import static java.lang.Integer.max;
 import static java.lang.Math.addExact;
 import static java.lang.Math.min;
@@ -70,9 +69,10 @@ public class AlluxioInputStream
     public int available()
             throws IOException
     {
+        // Not needed per contract, but complies with AbstractTestTrinoFileSystem expectations easier.
+        // It's easer to just check "is open?" in available() than refactor that test.
         ensureOpen();
-
-        return saturatedCast(fileLength - position);
+        return super.available();
     }
 
     @Override
@@ -139,7 +139,7 @@ public class AlluxioInputStream
             return 0;
         }
 
-        Span span = tracer.spanBuilder("Alluxio.readExternal")
+        Span span = tracer.spanBuilder("Alluxio.readExternalStream")
                 .setAttribute(CACHE_KEY, key)
                 .setAttribute(CACHE_FILE_LOCATION, inputFile.location().toString())
                 .setAttribute(CACHE_FILE_READ_SIZE, (long) length)

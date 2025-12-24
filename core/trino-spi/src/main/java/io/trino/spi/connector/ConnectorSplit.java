@@ -40,8 +40,6 @@ public interface ConnectorSplit
         return List.of();
     }
 
-    Object getInfo();
-
     default SplitWeight getSplitWeight()
     {
         return SplitWeight.standard();

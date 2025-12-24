@@ -13,6 +13,7 @@
  */
 package io.trino.sql.planner.iterative.rule;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multiset;
@@ -42,6 +43,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -67,6 +69,7 @@ import static io.trino.sql.planner.plan.Patterns.Exchange.scope;
 import static io.trino.sql.planner.plan.Patterns.source;
 import static java.lang.Double.isNaN;
 import static java.lang.Math.min;
+import static java.util.Comparator.comparing;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -144,8 +147,20 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
     public Set<Rule<?>> rules()
     {
         return ImmutableSet.of(
-                new AddExchangesBelowProjectionPartialAggregationGroupId(),
-                new AddExchangesBelowExchangePartialAggregationGroupId());
+                belowProjectionRule(),
+                belowExchangeRule());
+    }
+
+    @VisibleForTesting
+    AddExchangesBelowExchangePartialAggregationGroupId belowExchangeRule()
+    {
+        return new AddExchangesBelowExchangePartialAggregationGroupId();
+    }
+
+    @VisibleForTesting
+    AddExchangesBelowProjectionPartialAggregationGroupId belowProjectionRule()
+    {
+        return new AddExchangesBelowProjectionPartialAggregationGroupId();
     }
 
     private class AddExchangesBelowProjectionPartialAggregationGroupId
@@ -173,7 +188,8 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
         }
     }
 
-    private class AddExchangesBelowExchangePartialAggregationGroupId
+    @VisibleForTesting
+    class AddExchangesBelowExchangePartialAggregationGroupId
             extends BaseAddExchangesBelowExchangePartialAggregationGroupId
     {
         @Override
@@ -211,7 +227,7 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
             return isEnableForcedExchangeBelowGroupId(session);
         }
 
-        protected Optional<PlanNode> transform(AggregationNode aggregation, GroupIdNode groupId, Optional<Integer> partitionCount, Context context)
+        protected Optional<PlanNode> transform(AggregationNode aggregation, GroupIdNode groupId, OptionalInt partitionCount, Context context)
         {
             if (groupId.getGroupingSets().size() < 2) {
                 return Optional.empty();
@@ -247,6 +263,14 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
                     .map(groupId.getGroupingColumns()::get)
                     .collect(toImmutableList());
 
+            // Use only the symbol with the highest cardinality (if we have statistics). This makes partial aggregation more efficient in case of
+            // low correlation between symbol that are in every grouping set vs additional symbols.
+            PlanNodeStatsEstimate sourceStats = context.getStatsProvider().getStats(groupId.getSource());
+            desiredHashSymbols = desiredHashSymbols.stream()
+                    .filter(symbol -> !isNaN(sourceStats.getSymbolStatistics(symbol).getDistinctValuesCount()))
+                    .max(comparing(symbol -> sourceStats.getSymbolStatistics(symbol).getDistinctValuesCount()))
+                    .map(symbol -> (List<Symbol>) ImmutableList.of(symbol)).orElse(desiredHashSymbols);
+
             StreamPreferredProperties requiredProperties = fixedParallelism().withPartitioning(desiredHashSymbols);
             StreamProperties sourceProperties = derivePropertiesRecursively(groupId.getSource(), context);
             if (requiredProperties.isSatisfiedBy(sourceProperties)) {
@@ -276,9 +300,9 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
                     new PartitioningScheme(
                             Partitioning.create(FIXED_HASH_DISTRIBUTION, desiredHashSymbols),
                             source.getOutputSymbols(),
-                            Optional.empty(),
                             false,
                             Optional.empty(),
+                            OptionalInt.empty(),
                             // It's fine to reuse partitionCount since that is computed by considering all the expanding nodes and table scans in a query
                             partitionCount));
 

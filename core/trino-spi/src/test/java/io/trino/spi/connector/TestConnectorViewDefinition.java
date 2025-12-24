@@ -34,7 +34,7 @@ import static io.trino.spi.type.VarcharType.createVarcharType;
 import static java.util.Comparator.comparing;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class TestConnectorViewDefinition
+class TestConnectorViewDefinition
 {
     private static final JsonCodec<ConnectorViewDefinition> CODEC = createTestingViewCodec();
     private static final String BASE_JSON = "" +
@@ -112,7 +112,7 @@ public class TestConnectorViewDefinition
     private static void assertBaseView(ConnectorViewDefinition view)
     {
         assertThat(view.getOriginalSql()).isEqualTo("SELECT 42 x");
-        assertThat(view.getColumns().size()).isEqualTo(1);
+        assertThat(view.getColumns()).hasSize(1);
         ViewColumn column = getOnlyElement(view.getColumns());
         assertThat(column.getName()).isEqualTo("x");
         assertThat(column.getType()).isEqualTo(BIGINT.getTypeId());

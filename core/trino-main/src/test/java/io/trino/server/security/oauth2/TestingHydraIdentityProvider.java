@@ -29,11 +29,10 @@ import io.airlift.log.Level;
 import io.airlift.log.Logging;
 import io.airlift.node.NodeConfig;
 import io.airlift.node.NodeInfo;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.server.testing.TestingTrinoServer;
 import io.trino.server.ui.OAuth2WebUiAuthenticationFilter;
 import io.trino.server.ui.WebUiModule;
-import io.trino.testing.ResourcePresence;
-import io.trino.util.AutoCloseableCloser;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -49,10 +48,11 @@ import okhttp3.Response;
 import org.testcontainers.containers.FixedHostPortGenericContainer;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
-import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.containers.startupcheck.OneShotStartupCheckStrategy;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.containers.wait.strategy.WaitAllStrategy;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.utility.MountableFile;
 
 import java.io.IOException;
@@ -72,13 +72,15 @@ import static java.util.Objects.requireNonNull;
 public class TestingHydraIdentityProvider
         implements AutoCloseable
 {
-    private static final String HYDRA_IMAGE = "oryd/hydra:v1.10.6";
+    private static final DockerImageName POSTGRES_IMAGE = DockerImageName.parse(PostgreSQLContainer.IMAGE)
+            .withTag(PostgreSQLContainer.DEFAULT_TAG);
+    private static final String HYDRA_IMAGE = "oryd/hydra:v1.11.10";
     private static final String ISSUER = "https://localhost:4444/";
     private static final String DSN = "postgres://hydra:mysecretpassword@database:5432/hydra?sslmode=disable";
 
     private final Network network = Network.newNetwork();
 
-    private final PostgreSQLContainer<?> databaseContainer = new PostgreSQLContainer<>()
+    private final PostgreSQLContainer databaseContainer = new PostgreSQLContainer(POSTGRES_IMAGE)
             .withNetwork(network)
             .withNetworkAliases("database")
             .withUsername("hydra")
@@ -230,7 +232,7 @@ public class TestingHydraIdentityProvider
                 .setNodeInternalAddress(InetAddresses.toAddrString(InetAddress.getLocalHost())));
         HttpServerConfig config = new HttpServerConfig().setHttpPort(0);
         HttpServerInfo httpServerInfo = new HttpServerInfo(config, nodeInfo);
-        return new TestingHttpServer(httpServerInfo, nodeInfo, config, new AcceptAllLoginsAndConsentsServlet(), ImmutableMap.of());
+        return new TestingHttpServer("testing-login-and-consent-server", httpServerInfo, nodeInfo, config, new AcceptAllLoginsAndConsentsServlet());
     }
 
     private class AcceptAllLoginsAndConsentsServlet
@@ -378,13 +380,7 @@ public class TestingHydraIdentityProvider
         }
     }
 
-    @ResourcePresence
-    public boolean isRunning()
-    {
-        return hydraContainer.getContainerId() != null || databaseContainer.getContainerId() != null || migrationContainer.getContainerId() != null;
-    }
-
-    public static void main(String[] args)
+    static void main()
             throws Exception
     {
         Logging logging = Logging.initialize();

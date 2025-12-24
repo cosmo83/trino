@@ -32,7 +32,7 @@ import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.type.BlockTypeOperators.BlockPositionHashCode;
-import io.trino.type.BlockTypeOperators.BlockPositionIsDistinctFrom;
+import io.trino.type.BlockTypeOperators.BlockPositionIsIdentical;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntList;
 
@@ -41,7 +41,7 @@ import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.BLOCK_POSITION;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 
 @ScalarFunction("multimap_from_entries")
 @Description("Construct a multimap from an array of entries")
@@ -67,9 +67,9 @@ public final class MultimapFromEntriesFunction
     public SqlMap multimapFromEntries(
             @TypeParameter("map(K,array(V))") MapType mapType,
             @OperatorDependency(
-                    operator = IS_DISTINCT_FROM,
+                    operator = IDENTICAL,
                     argumentTypes = {"K", "K"},
-                    convention = @Convention(arguments = {BLOCK_POSITION, BLOCK_POSITION}, result = FAIL_ON_NULL)) BlockPositionIsDistinctFrom keysDistinctOperator,
+                    convention = @Convention(arguments = {BLOCK_POSITION, BLOCK_POSITION}, result = FAIL_ON_NULL)) BlockPositionIsIdentical keysIdenticalOperator,
             @OperatorDependency(
                     operator = HASH_CODE,
                     argumentTypes = "K",
@@ -84,7 +84,7 @@ public final class MultimapFromEntriesFunction
         if (entryCount > entryIndicesList.length) {
             initializeEntryIndicesList(entryCount);
         }
-        BlockSet keySet = new BlockSet(keyType, keysDistinctOperator, keyHashCode, entryCount);
+        BlockSet keySet = new BlockSet(keysIdenticalOperator, keyHashCode, entryCount);
 
         for (int i = 0; i < entryCount; i++) {
             if (mapEntries.isNull(i)) {
@@ -113,11 +113,13 @@ public final class MultimapFromEntriesFunction
                 IntList indexList = entryIndicesList[i];
 
                 SqlRow keyEntry = mapEntryType.getObject(mapEntries, indexList.getInt(0));
-                keyType.appendTo(keyEntry.getRawFieldBlock(0), keyEntry.getRawIndex(), keyBuilder);
+                Block rawKeyBlock = keyEntry.getRawFieldBlock(0);
+                keyBuilder.append(rawKeyBlock.getUnderlyingValueBlock(), rawKeyBlock.getUnderlyingValuePosition(keyEntry.getRawIndex()));
                 ((ArrayBlockBuilder) valueBuilder).buildEntry(elementBuilder -> {
                     for (int entryIndex : indexList) {
                         SqlRow valueEntry = mapEntryType.getObject(mapEntries, entryIndex);
-                        valueType.appendTo(valueEntry.getRawFieldBlock(1), valueEntry.getRawIndex(), elementBuilder);
+                        Block rawValueBlock = valueEntry.getRawFieldBlock(1);
+                        elementBuilder.append(rawValueBlock.getUnderlyingValueBlock(), rawValueBlock.getUnderlyingValuePosition(valueEntry.getRawIndex()));
                     }
                 });
             }

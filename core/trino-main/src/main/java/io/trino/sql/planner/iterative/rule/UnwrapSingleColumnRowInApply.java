@@ -18,9 +18,8 @@ import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
-import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SubscriptExpression;
+import io.trino.sql.ir.FieldReference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.ApplyNode;
@@ -32,30 +31,29 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiFunction;
 
-import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.sql.planner.plan.Patterns.applyNode;
 import static java.util.Objects.requireNonNull;
 
 /**
  * Given x::row(t) and y::row(t), converts assignments of the form
  *
- * <p><code>x IN (y...)</code> => <code>x[1] IN (y[1]...)</code>
+ * <p>{@code x IN (y...)</code> => <code>x[1] IN (y[1]...)}
  *
  * <p>and</p>
  *
- * <p> <code>x &lt;comparison&gt; &lt;quantifier&gt; (y...)</code></p> => <code>x[1] &lt;comparison&gt; &lt;quantifier&gt; (y[1]...)</code></p>
+ * <p>{@code x <comparison> <quantifier> (y...) => x[1] <comparison> <quantifier> (y[1]...)}
  *
  * <p>In particular, it transforms a plan with the following shape:</p>
  *
- * <pre>
+ * <pre>{@code
  * - Apply x IN y
  *   - S [x :: row(T)]
  *   - Q [y :: row(T)]
- * </pre>
+ * }</pre>
  * <p>
  * into
  *
- * <pre>
+ * <pre>{@code
  * - Project (to preserve the outputs of Apply)
  *   - Apply x' IN y'
  *     - Project [x' :: T]
@@ -64,7 +62,7 @@ import static java.util.Objects.requireNonNull;
  *     - Project [y' :: T]
  *         y' = y[1]
  *       - Q [y :: row(T)]
- * </pre>
+ * }</pre>
  */
 public class UnwrapSingleColumnRowInApply
         implements Rule<ApplyNode>
@@ -143,13 +141,13 @@ public class UnwrapSingleColumnRowInApply
         Type type = value.type();
         if (type instanceof RowType rowType) {
             if (rowType.getFields().size() == 1) {
-                Type elementType = rowType.getTypeParameters().get(0);
+                Type elementType = rowType.getFields().getFirst().getType();
 
                 Symbol valueSymbol = context.getSymbolAllocator().newSymbol("input", elementType);
                 Symbol listSymbol = context.getSymbolAllocator().newSymbol("subquery", elementType);
 
-                Assignment inputAssignment = new Assignment(valueSymbol, new SubscriptExpression(elementType, value, new Constant(INTEGER, 1L)));
-                Assignment nestedPlanAssignment = new Assignment(listSymbol, new SubscriptExpression(elementType, list, new Constant(INTEGER, 1L)));
+                Assignment inputAssignment = new Assignment(valueSymbol, new FieldReference(value, 0));
+                Assignment nestedPlanAssignment = new Assignment(listSymbol, new FieldReference(list, 0));
                 ApplyNode.SetExpression comparison = function.apply(valueSymbol, listSymbol);
 
                 return Optional.of(new Unwrapping(comparison, inputAssignment, nestedPlanAssignment));

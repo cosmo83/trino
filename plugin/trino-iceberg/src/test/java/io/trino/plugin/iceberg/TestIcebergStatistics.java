@@ -18,6 +18,7 @@ import com.google.common.math.IntMath;
 import io.trino.Session;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
+import io.trino.testing.sql.TestTable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -26,6 +27,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.util.List;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.COLLECT_EXTENDED_STATISTICS_ON_WRITE;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.EXPIRE_SNAPSHOTS_MIN_RETENTION;
 import static io.trino.testing.DataProviders.cartesianProduct;
@@ -59,12 +61,13 @@ public class TestIcebergStatistics
         String tableName = "test_analyze_" + collectOnStatsOnWrites;
 
         assertUpdate(writeSession, "CREATE TABLE " + tableName + " AS SELECT * FROM tpch.sf1.nation", 25);
-        String goodStatsInitial = """
+        String goodStatsInitial =
+                """
                 VALUES
                   ('nationkey', null, 25, 0, null, '0', '24'),
                   ('regionkey', null, 5, 0, null, '0', '4'),
-                  ('comment', 2178.0, 25, 0, null, null, null),
-                  ('name', 594.0, 25, 0, null, null, null),
+                  ('comment', 2162.0, 25, 0, null, null, null),
+                  ('name', 583.0, 25, 0, null, null, null),
                   (null, null, null, null, 25, null, null)""";
 
         if (collectOnStatsOnWrites) {
@@ -74,12 +77,12 @@ public class TestIcebergStatistics
             assertQuery(
                     "SHOW STATS FOR " + tableName,
                     """
-                            VALUES
-                              ('nationkey', null, null, 0, null, '0', '24'),
-                              ('regionkey', null, null, 0, null, '0', '4'),
-                              ('comment', 2178.0, null, 0, null, null, null),
-                              ('name', 594.0, null, 0, null, null, null),
-                              (null, null, null, null, 25, null, null)""");
+                    VALUES
+                      ('nationkey', null, null, 0, null, '0', '24'),
+                      ('regionkey', null, null, 0, null, '0', '4'),
+                      ('comment', 2162.0, null, 0, null, null, null),
+                      ('name', 583.0, null, 0, null, null, null),
+                      (null, null, null, null, 25, null, null)""");
         }
 
         assertUpdate("ANALYZE " + tableName);
@@ -91,25 +94,28 @@ public class TestIcebergStatistics
 
         // insert one more copy; should not influence stats other than rowcount
         assertUpdate(writeSession, "INSERT INTO " + tableName + " SELECT * FROM tpch.sf1.nation", 25);
-        String goodStatsAfterFirstInsert = """
+        String goodStatsAfterFirstInsert =
+                """
                 VALUES
                   ('nationkey', null, 25, 0, null, '0', '24'),
                   ('regionkey', null, 5, 0, null, '0', '4'),
-                  ('comment', 4357.0, 25, 0, null, null, null),
-                  ('name', 1188.0, 25, 0, null, null, null),
+                  ('comment', 4325.0, 25, 0, null, null, null),
+                  ('name', 1166.0, 25, 0, null, null, null),
                   (null, null, null, null, 50, null, null)""";
         assertUpdate("ANALYZE " + tableName);
         assertQuery("SHOW STATS FOR " + tableName, goodStatsAfterFirstInsert);
 
         // insert modified rows
         assertUpdate(writeSession, "INSERT INTO " + tableName + " SELECT nationkey + 25, reverse(name), regionkey + 5, reverse(comment) FROM tpch.sf1.nation", 25);
-        String goodStatsAfterSecondInsert = """
+        String goodStatsAfterSecondInsert =
+                """
                 VALUES
                   ('nationkey', null, 50, 0, null, '0', '49'),
                   ('regionkey', null, 10, 0, null, '0', '9'),
-                  ('comment', 6517.0, 50, 0, null, null, null),
-                  ('name', 1800.0, 50, 0, null, null, null),
-                  (null, null, null, null, 75, null, null)""";
+                  ('comment', 6463.0, 50, 0, null, null, null),
+                  ('name', 1768.0, 50, 0, null, null, null),
+                  (null, null, null, null, 75, null, null)
+                """;
 
         if (collectOnStatsOnWrites) {
             assertQuery("SHOW STATS FOR " + tableName, goodStatsAfterSecondInsert);
@@ -119,12 +125,13 @@ public class TestIcebergStatistics
             assertQuery(
                     "SHOW STATS FOR " + tableName,
                     """
-                            VALUES
-                              ('nationkey', null, 25, 0, null, '0', '49'),
-                              ('regionkey', null, 5, 0, null, '0', '9'),
-                              ('comment', 6517.0, 25, 0, null, null, null),
-                              ('name', 1800.0, 25, 0, null, null, null),
-                              (null, null, null, null, 75, null, null)""");
+                    VALUES
+                      ('nationkey', null, 25, 0, null, '0', '49'),
+                      ('regionkey', null, 5, 0, null, '0', '9'),
+                      ('comment', 6463.0, 25, 0, null, null, null),
+                      ('name', 1768.0, 25, 0, null, null, null),
+                      (null, null, null, null, 75, null, null)
+                    """);
         }
 
         // with analyze we should get new NDV
@@ -147,26 +154,36 @@ public class TestIcebergStatistics
         assertUpdate("ALTER TABLE " + tableName + " DROP COLUMN comment");
 
         // schema changed, ANALYZE hasn't been re-run yet
+        double nameDataSize = (double) computeActual("SHOW STATS FOR " + tableName).getMaterializedRows().stream()
+                .filter(row -> "name".equals(row.getField(0)))
+                .collect(onlyElement()).getField(1);
+        assertThat(nameDataSize).isBetween(1000.0, 3000.0);
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('name', 1908.0, 25, 0, null, null, null),
-                          ('info', null, null, null, null, null, null),
-                          (null, null, null, null, 50, null, null)""");
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  ('name', %s, 25, 0, null, null, null),
+                  ('info', null, null, null, null, null, null),
+                  (null, null, null, null, 50, null, null)
+                """.formatted(nameDataSize));
 
         assertUpdate("ANALYZE " + tableName);
+        double infoDataSize = (double) computeActual("SHOW STATS FOR " + tableName).getMaterializedRows().stream()
+                .filter(row -> "info".equals(row.getField(0)))
+                .collect(onlyElement()).getField(1);
+        assertThat(infoDataSize).isBetween(2000.0, 5000.0);
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('name', 1908.0, 25, 0, null, null, null),
-                          ('info', 4417.0, 25, 0.1, null, null, null),
-                          (null, null, null, null, 50, null, null)"""); // Row count statistics do not yet account for position deletes
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  ('name', %s, 25, 0, null, null, null),
+                  ('info', %s, 25, 0.1, null, null, null),
+                  (null, null, null, null, 50, null, null)
+                """.formatted(nameDataSize, infoDataSize)); // Row count statistics do not yet account for position deletes
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -178,13 +195,15 @@ public class TestIcebergStatistics
         Session writeSession = withStatsOnWrite(getSession(), collectOnStatsOnWrites);
         String tableName = "test_analyze_partitioned_" + collectOnStatsOnWrites;
         assertUpdate(writeSession, "CREATE TABLE " + tableName + " WITH (partitioning = ARRAY['regionkey']) AS SELECT * FROM tpch.sf1.nation", 25);
-        String goodStatsInitial = """
+        String goodStatsInitial =
+                """
                 VALUES
                   ('nationkey', null, 25, 0, null, '0', '24'),
                   ('regionkey', null, 5, 0, null, '0', '4'),
-                  ('comment', 3558.0, 25, 0, null, null, null),
-                  ('name', 1231.0, 25, 0, null, null, null),
-                  (null, null, null, null, 25, null, null)""";
+                  ('comment', 3507.0, 25, 0, null, null, null),
+                  ('name', 1182.0, 25, 0, null, null, null),
+                  (null, null, null, null, 25, null, null)
+                """;
 
         if (collectOnStatsOnWrites) {
             assertQuery("SHOW STATS FOR " + tableName, goodStatsInitial);
@@ -193,12 +212,13 @@ public class TestIcebergStatistics
             assertQuery(
                     "SHOW STATS FOR " + tableName,
                     """
-                            VALUES
-                              ('nationkey', null, null, 0, null, '0', '24'),
-                              ('regionkey', null, null, 0, null, '0', '4'),
-                              ('comment', 3558.0, null, 0, null, null, null),
-                              ('name', 1231.0, null, 0, null, null, null),
-                              (null, null, null, null, 25, null, null)""");
+                    VALUES
+                      ('nationkey', null, null, 0, null, '0', '24'),
+                      ('regionkey', null, null, 0, null, '0', '4'),
+                      ('comment', 3507.0, null, 0, null, null, null),
+                      ('name', 1182.0, null, 0, null, null, null),
+                      (null, null, null, null, 25, null, null)
+                    """);
         }
 
         assertUpdate("ANALYZE " + tableName);
@@ -211,22 +231,25 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('comment', 7117.0, 25, 0, null, null, null),
-                          ('name', 2462.0, 25, 0, null, null, null),
-                          (null, null, null, null, 50, null, null)""");
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  ('comment', 7014.0, 25, 0, null, null, null),
+                  ('name', 2365.0, 25, 0, null, null, null),
+                  (null, null, null, null, 50, null, null)
+                """);
 
         // insert modified rows
         assertUpdate(writeSession, "INSERT INTO " + tableName + " SELECT nationkey + 25, reverse(name), regionkey + 5, reverse(comment) FROM tpch.sf1.nation", 25);
-        String goodStatsAfterSecondInsert = """
+        String goodStatsAfterSecondInsert =
+                """
                 VALUES
                   ('nationkey', null, 50, 0, null, '0', '49'),
                   ('regionkey', null, 10, 0, null, '0', '9'),
-                  ('comment', 10659.0, 50, 0, null, null, null),
-                  ('name', 3715.0, 50, 0, null, null, null),
-                  (null, null, null, null, 75, null, null)""";
+                  ('comment', 10493.999999999998, 50, 0, null, null, null),
+                  ('name', 3564.0000000000005, 50, 0, null, null, null),
+                  (null, null, null, null, 75, null, null)
+                """;
 
         if (collectOnStatsOnWrites) {
             assertQuery("SHOW STATS FOR " + tableName, goodStatsAfterSecondInsert);
@@ -236,12 +259,13 @@ public class TestIcebergStatistics
             assertQuery(
                     "SHOW STATS FOR " + tableName,
                     """
-                            VALUES
-                              ('nationkey', null, 25, 0, null, '0', '49'),
-                              ('regionkey', null, 5, 0, null, '0', '9'),
-                              ('comment', 10659.0, 25, 0, null, null, null),
-                              ('name', 3715.0, 25, 0, null, null, null),
-                              (null, null, null, null, 75, null, null)""");
+                    VALUES
+                      ('nationkey', null, 25, 0, null, '0', '49'),
+                      ('regionkey', null, 5, 0, null, '0', '9'),
+                      ('comment', 10493.999999999998, 25, 0, null, null, null),
+                      ('name', 3564.0000000000005, 25, 0, null, null, null),
+                      (null, null, null, null, 75, null, null)
+                    """);
         }
 
         // with analyze we should get new NDV
@@ -262,23 +286,25 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', 0, 0, 1, null, null, null),
-                          ('regionkey', 0, 0, 1, null, null, null),
-                          ('comment', 0, 0, 1, null, null, null),
-                          ('name', 0, 0, 1, null, null, null),
-                          (null, null, null, null, 0, null, null)""");
+                VALUES
+                  ('nationkey', 0, 0, 1, null, null, null),
+                  ('regionkey', 0, 0, 1, null, null, null),
+                  ('comment', 0, 0, 1, null, null, null),
+                  ('name', 0, 0, 1, null, null, null),
+                  (null, null, null, null, 0, null, null)
+                """);
 
         assertUpdate("ANALYZE " + tableName);
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', 0, 0, 1, null, null, null),
-                          ('regionkey', 0, 0, 1, null, null, null),
-                          ('comment', 0, 0, 1, null, null, null),
-                          ('name', 0, 0, 1, null, null, null),
-                          (null, null, null, null, 0, null, null)""");
+                VALUES
+                  ('nationkey', 0, 0, 1, null, null, null),
+                  ('regionkey', 0, 0, 1, null, null, null),
+                  ('comment', 0, 0, 1, null, null, null),
+                  ('name', 0, 0, 1, null, null, null),
+                  (null, null, null, null, 0, null, null)
+                """);
 
         // add some data and reanalyze
 
@@ -288,12 +314,13 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('comment', 2178.0, 25, 0, null, null, null),
-                          ('name', 594.0, 25, 0, null, null, null),
-                          (null, null, null, null, 25, null, null)""");
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  ('comment', 2162.0, 25, 0, null, null, null),
+                  ('name', 583.0, 25, 0, null, null, null),
+                  (null, null, null, null, 25, null, null)
+                """);
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -314,42 +341,46 @@ public class TestIcebergStatistics
                 "SHOW STATS FOR " + tableName,
                 collectOnStatsOnCreateTable
                         ? """
-                        VALUES
-                          ('nationkey', null, 7, 0, null, '0', '9'),
-                          ('regionkey', null, 3, 0, null, '0', '2'),
-                          ('comment', %s, 7, 0, null, null, null),
-                          ('name', %s, 7, 0, null, null, null),
-                          (null, null, null, null, 7, null, null)"""
-                        .formatted(partitioned ? "1328.0" : "954.9999999999999", partitioned ? "501.99999999999994" : "280.0")
+                          VALUES
+                            ('nationkey', null, 7, 0, null, '0', '9'),
+                            ('regionkey', null, 3, 0, null, '0', '2'),
+                            ('comment', %s, 7, 0, null, null, null),
+                            ('name', %s, 7, 0, null, null, null),
+                            (null, null, null, null, 7, null, null)
+                          """
+                        .formatted(partitioned ? "1301.0" : "936.0", partitioned ? "469.0" : "270.0")
                         : """
-                        VALUES
-                          ('nationkey', null, null, 0, null, '0', '9'),
-                          ('regionkey', null, null, 0, null, '0', '2'),
-                          ('comment', %s, null, 0, null, null, null),
-                          ('name', %s, null, 0, null, null, null),
-                          (null, null, null, null, 7, null, null)"""
-                        .formatted(partitioned ? "1328.0" : "954.9999999999999", partitioned ? "501.99999999999994" : "280.0"));
+                          VALUES
+                            ('nationkey', null, null, 0, null, '0', '9'),
+                            ('regionkey', null, null, 0, null, '0', '2'),
+                            ('comment', %s, null, 0, null, null, null),
+                            ('name', %s, null, 0, null, null, null),
+                            (null, null, null, null, 7, null, null)
+                          """
+                        .formatted(partitioned ? "1301.0" : "936.0", partitioned ? "469.0" : "270.0"));
 
         assertUpdate(withStatsOnWrite(getSession(), true), "INSERT INTO " + tableName + " SELECT * FROM tpch.sf1.nation WHERE nationkey >= 12 OR regionkey >= 3", 18);
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 collectOnStatsOnCreateTable
                         ? """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('comment', %s, 25, 0, null, null, null),
-                          ('name', %s, 25, 0, null, null, null),
-                          (null, null, null, null, 25, null, null)"""
-                        .formatted(partitioned ? "4141.0" : "2659.0", partitioned ? "1533.0" : "745.0")
+                          VALUES
+                            ('nationkey', null, 25, 0, null, '0', '24'),
+                            ('regionkey', null, 5, 0, null, '0', '4'),
+                            ('comment', %s, 25, 0, null, null, null),
+                            ('name', %s, 25, 0, null, null, null),
+                            (null, null, null, null, 25, null, null)
+                          """
+                        .formatted(partitioned ? "4058.0" : "2627.0", partitioned ? "1447.0" : "726.0")
                         : """
-                        VALUES
-                          ('nationkey', null, null, 0, null, '0', '24'),
-                          ('regionkey', null, null, 0, null, '0', '4'),
-                          ('comment', %s, null, 0, null, null, null),
-                          ('name', %s, null, 0, null, null, null),
-                          (null, null, null, null, 25, null, null)"""
-                        .formatted(partitioned ? "4141.0" : "2659.0", partitioned ? "1533.0" : "745.0"));
+                          VALUES
+                            ('nationkey', null, null, 0, null, '0', '24'),
+                            ('regionkey', null, null, 0, null, '0', '4'),
+                            ('comment', %s, null, 0, null, null, null),
+                            ('name', %s, null, 0, null, null, null),
+                            (null, null, null, null, 25, null, null)
+                          """
+                        .formatted(partitioned ? "4058.0" : "2627.0", partitioned ? "1447.0" : "726.0"));
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -369,24 +400,26 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', 0, 0, 1, null, null, null),
-                          ('regionkey', 0, 0, 1, null, null, null),
-                          ('comment', 0, 0, 1, null, null, null),
-                          ('name', 0, 0, 1, null, null, null),
-                          (null, null, null, null, 0, null, null)""");
+                VALUES
+                  ('nationkey', 0, 0, 1, null, null, null),
+                  ('regionkey', 0, 0, 1, null, null, null),
+                  ('comment', 0, 0, 1, null, null, null),
+                  ('name', 0, 0, 1, null, null, null),
+                  (null, null, null, null, 0, null, null)
+                """);
 
         assertUpdate(withStatsOnWrite(getSession(), true), "INSERT INTO " + tableName + " TABLE tpch.sf1.nation", 25);
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('comment', %f, 25, 0, null, null, null),
-                          ('name', %f, 25, 0, null, null, null),
-                          (null, null, null, null, 25, null, null)"""
-                        .formatted(partitioned ? 3558.0 : 2178.0, partitioned ? 1231.0 : 594.0));
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  ('comment', %f, 25, 0, null, null, null),
+                  ('name', %f, 25, 0, null, null, null),
+                  (null, null, null, null, 25, null, null)
+                """
+                        .formatted(partitioned ? 3507.0 : 2162.0, partitioned ? 1182.0 : 583));
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -407,10 +440,10 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          (null, null, null, null, 25, null, null)""");
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  (null, null, null, null, 25, null, null)""");
 
         // remove two regions in multiple queries
         List<String> idsToRemove = computeActual("SELECT nationkey FROM tpch.sf1.nation WHERE regionkey IN (2, 4)").getOnlyColumn()
@@ -425,20 +458,22 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          (null, null, null, null, 25, null, null)""");
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  (null, null, null, null, 25, null, null)
+                """);
 
         if (withOptimize) {
             assertUpdate("ALTER TABLE " + tableName + " EXECUTE optimize");
             assertQuery(
                     "SHOW STATS FOR " + tableName,
                     """
-                            VALUES
-                              ('nationkey', null, 15, 0, null, '0', '24'),
-                              ('regionkey', null, 4, 0, null, '0', '3'),
-                              (null, null, null, null, 15, null, null)""");
+                    VALUES
+                      ('nationkey', null, 15, 0, null, '0', '24'),
+                      ('regionkey', null, 4, 0, null, '0', '3'),
+                      (null, null, null, null, 15, null, null)
+                    """);
         }
 
         // ANALYZE can be used to update stats and prevent them from drifting over time
@@ -447,17 +482,19 @@ public class TestIcebergStatistics
                 "SHOW STATS FOR " + tableName,
                 withOptimize
                         ? """
-                        VALUES
-                          ('nationkey', null, 15, 0, null, '0', '24'),
-                          ('regionkey', null, 4, 0, null, '0', '3'), -- not updated yet
-                          (null, null, null, null, 15, null, null)"""
+                          VALUES
+                            ('nationkey', null, 15, 0, null, '0', '24'),
+                            ('regionkey', null, 4, 0, null, '0', '3'), -- not updated yet
+                            (null, null, null, null, 15, null, null)
+                          """
                         :
                         // TODO row count and min/max values are incorrect as they are taken from manifest file list
                         """
-                                VALUES
-                                  ('nationkey', null, 15, 0, null, '0', '24'),
-                                  ('regionkey', null, 5, 0, null, '0', '4'), -- not updated yet
-                                  (null, null, null, null, 25, null, null)""");
+                        VALUES
+                          ('nationkey', null, 15, 0, null, '0', '24'),
+                          ('regionkey', null, 5, 0, null, '0', '4'), -- not updated yet
+                          (null, null, null, null, 25, null, null)
+                        """);
 
         // ANALYZE all columns
         assertUpdate("ANALYZE " + tableName);
@@ -465,17 +502,19 @@ public class TestIcebergStatistics
                 "SHOW STATS FOR " + tableName,
                 withOptimize
                         ? """
-                        VALUES
-                          ('nationkey', null, 15, 0, null, '0', '24'),
-                          ('regionkey', null, 3, 0, null, '0', '3'),
-                          (null, null, null, null, 15, null, null)"""
+                          VALUES
+                            ('nationkey', null, 15, 0, null, '0', '24'),
+                            ('regionkey', null, 3, 0, null, '0', '3'),
+                            (null, null, null, null, 15, null, null)
+                          """
                         :
                         // TODO row count and min/max values are incorrect as they are taken from manifest file list
                         """
-                                VALUES
-                                  ('nationkey', null, 15, 0, null, '0', '24'),
-                                  ('regionkey', null, 3, 0, null, '0', '4'),
-                                  (null, null, null, null, 25, null, null)""");
+                        VALUES
+                          ('nationkey', null, 15, 0, null, '0', '24'),
+                          ('regionkey', null, 3, 0, null, '0', '4'),
+                          (null, null, null, null, 25, null, null)
+                        """);
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -488,7 +527,7 @@ public class TestIcebergStatistics
         assertUpdate(noStatsOnWrite, "CREATE TABLE " + tableName + " AS SELECT * FROM tpch.sf1.nation", 25);
 
         // analyze NULL list of columns
-        assertQueryFails("ANALYZE " + tableName + " WITH (columns = NULL)", "\\QInvalid null value for catalog 'iceberg' analyze property 'columns' from [null]");
+        assertQueryFails("ANALYZE " + tableName + " WITH (columns = NULL)", "\\Qline 1:41: Invalid null value for catalog 'iceberg' analyze property 'columns' from [null]");
 
         // analyze empty list of columns
         assertQueryFails("ANALYZE " + tableName + " WITH (columns = ARRAY[])", "\\QCannot specify empty list of columns for analysis");
@@ -502,19 +541,20 @@ public class TestIcebergStatistics
         // specify NULL column
         assertQueryFails(
                 "ANALYZE " + tableName + " WITH (columns = ARRAY['nationkey', NULL])",
-                "\\QUnable to set catalog 'iceberg' analyze property 'columns' to [ARRAY['nationkey',null]]: Invalid null value in analyze columns property");
+                "\\Qline 1:41: Unable to set catalog 'iceberg' analyze property 'columns' to [ARRAY['nationkey',null]]: Invalid null value in analyze columns property");
 
         // analyze nationkey and regionkey
         assertUpdate("ANALYZE " + tableName + " WITH (columns = ARRAY['nationkey', 'regionkey'])");
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('comment', 2178.0, null, 0, null, null, null),
-                          ('name', 594.0, null, 0, null, null, null),
-                          (null, null, null, null, 25, null, null)""");
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  ('comment', 2162.0, null, 0, null, null, null),
+                  ('name', 583.0, null, 0, null, null, null),
+                  (null, null, null, null, 25, null, null)
+                """);
 
         // insert modified rows
         assertUpdate(noStatsOnWrite, "INSERT INTO " + tableName + " SELECT nationkey + 25, concat(name, '1'), regionkey + 5, concat(comment, '21') FROM tpch.sf1.nation", 25);
@@ -524,12 +564,13 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 50, 0, null, '0', '49'),
-                          ('regionkey', null, 10, 0, null, '0', '9'),
-                          ('comment', 4471.0, null, 0, null, null, null),
-                          ('name', 1215.0, null, 0, null, null, null),
-                          (null, null, null, null, 50, null, null)""");
+                VALUES
+                  ('nationkey', null, 50, 0, null, '0', '49'),
+                  ('regionkey', null, 10, 0, null, '0', '9'),
+                  ('comment', 4441.0, null, 0, null, null, null),
+                  ('name', 1193.0, null, 0, null, null, null),
+                  (null, null, null, null, 50, null, null)
+                """);
 
         // drop stats
         assertUpdate("ALTER TABLE " + tableName + " EXECUTE DROP_EXTENDED_STATS");
@@ -539,12 +580,13 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 50, 0, null, '0', '49'),
-                          ('regionkey', null, 10, 0, null, '0', '9'),
-                          ('comment', 4471.0, 50, 0, null, null, null),
-                          ('name', 1215.0, 50, 0, null, null, null),
-                          (null, null, null, null, 50, null, null)""");
+                VALUES
+                  ('nationkey', null, 50, 0, null, '0', '49'),
+                  ('regionkey', null, 10, 0, null, '0', '9'),
+                  ('comment', 4441.0, 50, 0, null, null, null),
+                  ('name', 1193.0, 50, 0, null, null, null),
+                  (null, null, null, null, 50, null, null)
+                """);
 
         // insert modified rows
         assertUpdate(noStatsOnWrite, "INSERT INTO " + tableName + " SELECT nationkey + 50, concat(name, '2'), regionkey + 10, concat(comment, '22') FROM tpch.sf1.nation", 25);
@@ -553,36 +595,39 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 50, 0, null, '0', '74'),
-                          ('regionkey', null, 10, 0, null, '0', '14'),
-                          ('comment', 6746.999999999999, 50, 0, null, null, null),
-                          ('name', 1836.0, 50, 0, null, null, null),
-                          (null, null, null, null, 75, null, null)""");
+                VALUES
+                  ('nationkey', null, 50, 0, null, '0', '74'),
+                  ('regionkey', null, 10, 0, null, '0', '14'),
+                  ('comment', 6701.0, 50, 0, null, null, null),
+                  ('name', 1803.0, 50, 0, null, null, null),
+                  (null, null, null, null, 75, null, null)
+                """);
 
         // reanalyze with a subset of columns
         assertUpdate("ANALYZE " + tableName + " WITH (columns = ARRAY['nationkey', 'regionkey'])");
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 75, 0, null, '0', '74'),
-                          ('regionkey', null, 15, 0, null, '0', '14'),
-                          ('comment', 6746.999999999999, 50, 0, null, null, null), -- result of previous analyze
-                          ('name', 1836.0, 50, 0, null, null, null), -- result of previous analyze
-                          (null, null, null, null, 75, null, null)""");
+                VALUES
+                  ('nationkey', null, 75, 0, null, '0', '74'),
+                  ('regionkey', null, 15, 0, null, '0', '14'),
+                  ('comment', 6701.0, 50, 0, null, null, null), -- result of previous analyze
+                  ('name', 1803.0, 50, 0, null, null, null), -- result of previous analyze
+                  (null, null, null, null, 75, null, null)
+                """);
 
         // analyze all columns
         assertUpdate("ANALYZE " + tableName);
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 75, 0, null, '0', '74'),
-                          ('regionkey', null, 15, 0, null, '0', '14'),
-                          ('comment', 6746.999999999999, 75, 0, null, null, null),
-                          ('name', 1836.0, 75, 0, null, null, null),
-                          (null, null, null, null, 75, null, null)""");
+                VALUES
+                  ('nationkey', null, 75, 0, null, '0', '74'),
+                  ('regionkey', null, 15, 0, null, '0', '14'),
+                  ('comment', 6701.0, 75, 0, null, null, null),
+                  ('name', 1803.0, 75, 0, null, null, null),
+                  (null, null, null, null, 75, null, null)
+                """);
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -620,20 +665,24 @@ public class TestIcebergStatistics
         String tableName = "test_drop_extended_stats";
         assertUpdate("CREATE TABLE " + tableName + " AS SELECT * FROM tpch.sf1.nation", 25);
 
-        String baseStats = """
+        String baseStats =
+                """
                 VALUES
                   ('nationkey', null, null, 0, null, '0', '24'),
                   ('regionkey', null, null, 0, null, '0', '4'),
-                  ('comment', 2178.0, null, 0, null, null, null),
-                  ('name',  594.0, null, 0, null, null, null),
-                  (null,  null, null, null, 25, null, null)""";
-        String extendedStats = """
+                  ('comment', 2162.0, null, 0, null, null, null),
+                  ('name',  583.0, null, 0, null, null, null),
+                  (null,  null, null, null, 25, null, null)
+                """;
+        String extendedStats =
+                """
                 VALUES
                   ('nationkey', null, 25, 0, null, '0', '24'),
                   ('regionkey', null, 5, 0, null, '0', '4'),
-                  ('comment', 2178.0, 25, 0, null, null, null),
-                  ('name',  594.0, 25, 0, null, null, null),
-                  (null,  null, null, null, 25, null, null)""";
+                  ('comment', 2162.0, 25, 0, null, null, null),
+                  ('name',  583.0, 25, 0, null, null, null),
+                  (null,  null, null, null, 25, null, null)
+                """;
 
         assertQuery("SHOW STATS FOR " + tableName, extendedStats);
 
@@ -659,12 +708,13 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, null, 0, null, '0', '24'),
-                          ('regionkey', null, null, 0, null, '0', '4'),
-                          ('comment', 2178.0, null, 0, null, null, null),
-                          ('name',  594.0, null, 0, null, null, null),
-                          (null,  null, null, null, 25, null, null)""");
+                VALUES
+                  ('nationkey', null, null, 0, null, '0', '24'),
+                  ('regionkey', null, null, 0, null, '0', '4'),
+                  ('comment', 2162.0, null, 0, null, null, null),
+                  ('name',  583.0, null, 0, null, null, null),
+                  (null,  null, null, null, 25, null, null)
+                """);
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -729,24 +779,26 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('comment', 2475.0, 25, 0, null, null, null),
-                          ('name',  726.0, 25, 0, null, null, null),
-                          (null,  null, null, null, 26, null, null)""");
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  ('comment', 2448.0, 25, 0, null, null, null),
+                  ('name',  704.0, 25, 0, null, null, null),
+                  (null,  null, null, null, 26, null, null)
+                """);
 
-        assertUpdate(format("CALL system.rollback_to_snapshot('%s', '%s', %s)", schema, tableName, createSnapshot));
+        assertUpdate(format("ALTER TABLE %s.%s EXECUTE rollback_to_snapshot(%s)", schema, tableName, createSnapshot));
         // NDV information still present after rollback_to_snapshot
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('comment', 2178.0, 25, 0, null, null, null),
-                          ('name',  594.0, 25, 0, null, null, null),
-                          (null,  null, null, null, 25, null, null)""");
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  ('comment', 2162.0, 25, 0, null, null, null),
+                  ('name',  583.0, 25, 0, null, null, null),
+                  (null,  null, null, null, 25, null, null)
+                """);
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -767,12 +819,13 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('nationkey', null, 25, 0, null, '0', '24'),
-                          ('regionkey', null, 5, 0, null, '0', '4'),
-                          ('comment', 2178.0, 25, 0, null, null, null),
-                          ('name',  594.0, 25, 0, null, null, null),
-                          (null,  null, null, null, 25, null, null)""");
+                VALUES
+                  ('nationkey', null, 25, 0, null, '0', '24'),
+                  ('regionkey', null, 5, 0, null, '0', '4'),
+                  ('comment', 2162.0, 25, 0, null, null, null),
+                  ('name',  583.0, 25, 0, null, null, null),
+                  (null,  null, null, null, 25, null, null)
+                """);
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -787,10 +840,11 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('a', 0, 0, 1, null, null, null),
-                          ('b', 0, 0, 1, null, null, null),
-                          (null,  null, null, null, 0, null, null)""");
+                VALUES
+                  ('a', 0, 0, 1, null, null, null),
+                  ('b', 0, 0, 1, null, null, null),
+                  (null,  null, null, null, 0, null, null)
+                """);
 
         // On empty table
         assertQueryFails("ANALYZE " + tableName + " WITH (columns = ARRAY[])", "Cannot specify empty list of columns for analysis");
@@ -801,10 +855,11 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('a', 0, 0, 1, null, null, null),
-                          ('b', 0, 0, 1, null, null, null),
-                          (null,  null, null, null, 0, null, null)""");
+                VALUES
+                  ('a', 0, 0, 1, null, null, null),
+                  ('b', 0, 0, 1, null, null, null),
+                  (null,  null, null, null, 0, null, null)
+                """);
 
         // write with stats collection
         assertUpdate(
@@ -814,10 +869,11 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('a', null, null, null, null, null, null),
-                          ('b', null, null, null, null, null, null),
-                          (null,  null, null, null, 2, null, null)""");
+                VALUES
+                  ('a', null, null, null, null, null, null),
+                  ('b', null, null, null, null, null, null),
+                  (null,  null, null, null, 2, null, null)
+                """);
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -836,10 +892,11 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('a', null, null, null, null, null, null),
-                          ('b', null, null, null, null, null, null),
-                          (null,  null, null, null, 2, null, null)""");
+                VALUES
+                  ('a', null, null, null, null, null, null),
+                  ('b', null, null, null, null, null, null),
+                  (null,  null, null, null, 2, null, null)
+                """);
 
         // On non-empty table
         assertQueryFails("ANALYZE " + tableName + " WITH (columns = ARRAY[])", "Cannot specify empty list of columns for analysis");
@@ -850,10 +907,11 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('a', null, null, null, null, null, null),
-                          ('b', null, null, null, null, null, null),
-                          (null,  null, null, null, 2, null, null)""");
+                VALUES
+                  ('a', null, null, null, null, null, null),
+                  ('b', null, null, null, null, null, null),
+                  (null,  null, null, null, 2, null, null)
+                """);
 
         // write with stats collection
         assertUpdate(
@@ -863,10 +921,11 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('a', null, null, null, null, null, null),
-                          ('b', null, null, null, null, null, null),
-                          (null,  null, null, null, 4, null, null)""");
+                VALUES
+                  ('a', null, null, null, null, null, null),
+                  ('b', null, null, null, null, null, null),
+                  (null,  null, null, null, 4, null, null)
+                """);
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -890,25 +949,53 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR (SELECT * FROM show_stats_as_of FOR VERSION AS OF " + beforeAnalyzedSnapshot + ")",
                 """
-                        VALUES
-                          ('key', null, null, 0, null, '3', '3'), -- NDV not present, as ANALYZE was run on a later snapshot
-                          (null,  null, null, null, 1, null, null)""");
+                VALUES
+                  ('key', null, null, 0, null, '3', '3'), -- NDV not present, as ANALYZE was run on a later snapshot
+                  (null,  null, null, null, 1, null, null)
+                """);
 
         assertQuery(
                 "SHOW STATS FOR (SELECT * FROM show_stats_as_of FOR VERSION AS OF " + analyzedSnapshot + ")",
                 """
-                        VALUES
-                          ('key', null, 2, 0, null, '3', '4'), -- NDV present, this is the snapshot ANALYZE was run for
-                          (null,  null, null, null, 2, null, null)""");
+                VALUES
+                  ('key', null, 2, 0, null, '3', '4'), -- NDV present, this is the snapshot ANALYZE was run for
+                  (null,  null, null, null, 2, null, null)
+                """);
 
         assertQuery(
                 "SHOW STATS FOR (SELECT * FROM show_stats_as_of FOR VERSION AS OF " + laterSnapshot + ")",
                 """
-                        VALUES
-                          ('key', null, 2, 0, null, '3', '5'), -- NDV present, stats "inherited" from previous snapshot
-                          (null,  null, null, null, 3, null, null)""");
+                VALUES
+                  ('key', null, 2, 0, null, '3', '5'), -- NDV present, stats "inherited" from previous snapshot
+                  (null,  null, null, null, 3, null, null)
+                """);
 
         assertUpdate("DROP TABLE show_stats_as_of");
+    }
+
+    @Test
+    public void testShowStatsReplaceTable()
+    {
+        try (TestTable table = newTrinoTable("show_stats_after_replace_table_", "AS SELECT 1 a, 2 b")) {
+            assertThat(query("SHOW STATS FOR " + table.getName()))
+                    .skippingTypesCheck()
+                    .matches("""
+                        VALUES
+                        ('a', null, 1e0, 0e0, NULL, '1', '1'),
+                        ('b', null, 1e0, 0e0, NULL, '2', '2'),
+                        (NULL, NULL, NULL, NULL, 1e0, NULL, NULL)
+                        """);
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT 3 x, 4 y", 1);
+            assertThat(query("SHOW STATS FOR " + table.getName()))
+                    .skippingTypesCheck()
+                    .matches("""
+                        VALUES
+                        ('x', null, 1e0, 0e0, NULL, '3', '3'),
+                        ('y', null, 1e0, 0e0, NULL, '4', '4'),
+                        (NULL, NULL, NULL, NULL, 1e0, NULL, NULL)
+                        """);
+        }
     }
 
     @Test
@@ -943,31 +1030,35 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR (SELECT * FROM show_stats_after_expiration FOR VERSION AS OF " + beforeAnalyzedSnapshot + ")",
                 """
-                        VALUES
-                          ('key', null, null, 0, null, '1', '3'), -- NDV not present, as ANALYZE was run on a later snapshot
-                          (null,  null, null, null, 3, null, null)""");
+                VALUES
+                  ('key', null, null, 0, null, '1', '3'), -- NDV not present, as ANALYZE was run on a later snapshot
+                  (null,  null, null, null, 3, null, null)
+                """);
 
         assertQuery(
                 "SHOW STATS FOR (SELECT * FROM show_stats_after_expiration FOR VERSION AS OF " + analyzedSnapshot + ")",
                 """
-                        VALUES
-                          ('key', null, 4, 0, null, '1', '4'), -- NDV present, this is the snapshot ANALYZE was run for
-                          (null,  null, null, null, 4, null, null)""");
+                VALUES
+                  ('key', null, 4, 0, null, '1', '4'), -- NDV present, this is the snapshot ANALYZE was run for
+                  (null,  null, null, null, 4, null, null)
+                """);
 
         assertQuery(
                 "SHOW STATS FOR (SELECT * FROM show_stats_after_expiration FOR VERSION AS OF " + laterSnapshot + ")",
                 """
-                        VALUES
-                          ('key', null, 4, 0, null, '1', '5'), -- NDV present, stats "inherited" from previous snapshot
-                          (null,  null, null, null, 5, null, null)""");
+                VALUES
+                  ('key', null, 4, 0, null, '1', '5'), -- NDV present, stats "inherited" from previous snapshot
+                  (null,  null, null, null, 5, null, null)
+                """);
 
         // Same as laterSnapshot but implicitly
         assertQuery(
                 "SHOW STATS FOR show_stats_after_expiration",
                 """
-                        VALUES
-                          ('key', null, 4, 0, null, '1', '5'), -- NDV present, stats "inherited" from previous snapshot
-                          (null,  null, null, null, 5, null, null)""");
+                VALUES
+                  ('key', null, 4, 0, null, '1', '5'), -- NDV present, stats "inherited" from previous snapshot
+                  (null,  null, null, null, 5, null, null)
+                """);
 
         // Re-analyzing after snapshot expired
         assertUpdate("ANALYZE show_stats_after_expiration");
@@ -975,9 +1066,10 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR show_stats_after_expiration",
                 """
-                        VALUES
-                          ('key', null, 5, 0, null, '1', '5'), -- NDV present, stats "inherited" from previous snapshot
-                          (null,  null, null, null, 5, null, null)""");
+                VALUES
+                  ('key', null, 5, 0, null, '1', '5'), -- NDV present, stats "inherited" from previous snapshot
+                  (null,  null, null, null, 5, null, null)
+                """);
 
         assertUpdate("DROP TABLE show_stats_after_expiration");
     }
@@ -992,7 +1084,7 @@ public class TestIcebergStatistics
         Session minimalSnapshotRetentionSession = Session.builder(getSession())
                 .setCatalogSessionProperty(catalog, EXPIRE_SNAPSHOTS_MIN_RETENTION, "0s")
                 .build();
-        
+
         String expireSnapshotQuery = "ALTER TABLE " + tableName + " EXECUTE expire_snapshots(retention_threshold => '0d')";
 
         assertUpdate(writeSession, "CREATE TABLE " + tableName + "(key integer)");
@@ -1007,9 +1099,10 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('key', null, 3, 0, null, '1', '4'), -- NDV present, stats "inherited" from previous snapshot
-                          (null,  null, null, null, 4, null, null)""");
+                VALUES
+                  ('key', null, 3, 0, null, '1', '4'), -- NDV present, stats "inherited" from previous snapshot
+                  (null,  null, null, null, 4, null, null)
+                """);
 
         assertUpdate(minimalSnapshotRetentionSession, expireSnapshotQuery);
 
@@ -1017,18 +1110,20 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('key', null, null, 0, null, '1', '4'), -- NDV not present as expire_snapshot removed stats for previous snapshots
-                          (null,  null, null, null, 4, null, null)""");
+                VALUES
+                  ('key', null, null, 0, null, '1', '4'), -- NDV not present as expire_snapshot removed stats for previous snapshots
+                  (null,  null, null, null, 4, null, null)
+                """);
 
         assertUpdate("ANALYZE " + tableName);
 
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('key', null, 4, 0, null, '1', '4'), -- NDV present
-                          (null,  null, null, null, 4, null, null)""");
+                VALUES
+                  ('key', null, 4, 0, null, '1', '4'), -- NDV present
+                  (null,  null, null, null, 4, null, null)
+                """);
 
         // Optimize should rewrite stats file
         assertUpdate("ALTER TABLE " + tableName + " EXECUTE optimize");
@@ -1037,9 +1132,10 @@ public class TestIcebergStatistics
         assertQuery(
                 "SHOW STATS FOR " + tableName,
                 """
-                        VALUES
-                          ('key', null, 4, 0, null, '1', '4'), -- NDV present
-                          (null,  null, null, null, 4, null, null)""");
+                VALUES
+                  ('key', null, 4, 0, null, '1', '4'), -- NDV present
+                  (null,  null, null, null, 4, null, null)
+                """);
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -1071,6 +1167,21 @@ public class TestIcebergStatistics
                         "('regionkey', DOUBLE '5', null), " +
                         "('comment', DOUBLE '25', null), " +
                         "(null, null, DOUBLE '25')");
+    }
+
+    @Test
+    public void testNaN()
+    {
+        String tableName = "test_nan";
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT 1 AS c1, double 'NaN' AS c2", 1);
+        assertQuery(
+                "SHOW STATS FOR " + tableName,
+                """
+                VALUES
+                  ('c1', null, 1.0, 0.0, null, 1, 1),
+                  ('c2', null, 1.0, 0.0, null, null, null),
+                  (null, null, null, null, 1.0, null, null)
+                """);
     }
 
     private long getCurrentSnapshotId(String tableName)

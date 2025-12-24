@@ -13,17 +13,22 @@
  */
 package io.trino.filesystem.azure;
 
+import com.azure.core.util.BinaryData;
 import com.azure.storage.blob.BlobClient;
+import com.azure.storage.blob.models.BlobErrorCode;
+import com.azure.storage.blob.models.BlobStorageException;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoOutputFile;
 import io.trino.memory.context.AggregatedMemoryContext;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.FileAlreadyExistsException;
+import java.util.concurrent.ExecutorService;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
 class AzureOutputFile
@@ -31,21 +36,25 @@ class AzureOutputFile
 {
     private final AzureLocation location;
     private final BlobClient blobClient;
+    private final ExecutorService executorService;
     private final long writeBlockSizeBytes;
     private final int maxWriteConcurrency;
     private final long maxSingleUploadSizeBytes;
+    private final boolean multipartWriteEnabled;
 
-    public AzureOutputFile(AzureLocation location, BlobClient blobClient, long writeBlockSizeBytes, int maxWriteConcurrency, long maxSingleUploadSizeBytes)
+    public AzureOutputFile(AzureLocation location, BlobClient blobClient, ExecutorService executorService, long writeBlockSizeBytes, int maxWriteConcurrency, long maxSingleUploadSizeBytes, boolean multipartWriteEnabled)
     {
         this.location = requireNonNull(location, "location is null");
         location.location().verifyValidFileLocation();
         this.blobClient = requireNonNull(blobClient, "blobClient is null");
+        this.executorService = requireNonNull(executorService, "executorService is null");
         checkArgument(writeBlockSizeBytes >= 0, "writeBlockSizeBytes is negative");
         this.writeBlockSizeBytes = writeBlockSizeBytes;
         checkArgument(maxWriteConcurrency >= 0, "maxWriteConcurrency is negative");
         this.maxWriteConcurrency = maxWriteConcurrency;
         checkArgument(maxSingleUploadSizeBytes >= 0, "maxSingleUploadSizeBytes is negative");
         this.maxSingleUploadSizeBytes = maxSingleUploadSizeBytes;
+        this.multipartWriteEnabled = multipartWriteEnabled;
     }
 
     public boolean exists()
@@ -69,8 +78,14 @@ class AzureOutputFile
     public void createOrOverwrite(byte[] data)
             throws IOException
     {
-        try (OutputStream out = createOutputStream(newSimpleAggregatedMemoryContext(), true)) {
-            out.write(data);
+        try {
+            blobClient.getBlockBlobClient().upload(BinaryData.fromBytes(data), true);
+        }
+        catch (BlobStorageException e) {
+            if (BlobErrorCode.CONTAINER_NOT_FOUND.equals(e.getErrorCode())) {
+                throw new FileNotFoundException(location.toString());
+            }
+            throw e;
         }
     }
 
@@ -83,9 +98,12 @@ class AzureOutputFile
         }
     }
 
-    private AzureOutputStream createOutputStream(AggregatedMemoryContext memoryContext, boolean overwrite)
+    private OutputStream createOutputStream(AggregatedMemoryContext memoryContext, boolean overwrite)
             throws IOException
     {
+        if (multipartWriteEnabled) {
+            return new AzureMultipartOutputStream(location, blobClient, executorService, overwrite, memoryContext, toIntExact(writeBlockSizeBytes));
+        }
         return new AzureOutputStream(location, blobClient, overwrite, memoryContext, writeBlockSizeBytes, maxWriteConcurrency, maxSingleUploadSizeBytes);
     }
 

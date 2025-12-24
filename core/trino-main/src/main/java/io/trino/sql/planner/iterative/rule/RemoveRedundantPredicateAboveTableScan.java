@@ -24,6 +24,7 @@ import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Booleans;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.DomainTranslator;
 import io.trino.sql.planner.DomainTranslator.ExtractionResult;
@@ -40,7 +41,6 @@ import java.util.Optional;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.spi.predicate.TupleDomain.intersect;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.ir.IrUtils.extractConjuncts;
 import static io.trino.sql.ir.IrUtils.filterDeterministicConjuncts;
@@ -50,7 +50,6 @@ import static io.trino.sql.planner.plan.Patterns.filter;
 import static io.trino.sql.planner.plan.Patterns.source;
 import static io.trino.sql.planner.plan.Patterns.tableScan;
 import static java.lang.Boolean.FALSE;
-import static java.lang.Boolean.TRUE;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.toList;
@@ -67,10 +66,12 @@ public class RemoveRedundantPredicateAboveTableScan
                             .matching(node -> !node.getEnforcedConstraint().isAll())));
 
     private final PlannerContext plannerContext;
+    private final DomainTranslator domainTranslator;
 
     public RemoveRedundantPredicateAboveTableScan(PlannerContext plannerContext)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
+        this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
     }
 
     @Override
@@ -86,8 +87,8 @@ public class RemoveRedundantPredicateAboveTableScan
         TableScanNode node = captures.get(TABLE_SCAN);
         Expression predicate = filterNode.getPredicate();
 
-        Expression deterministicPredicate = filterDeterministicConjuncts(plannerContext.getMetadata(), predicate);
-        Expression nonDeterministicPredicate = filterNonDeterministicConjuncts(plannerContext.getMetadata(), predicate);
+        Expression deterministicPredicate = filterDeterministicConjuncts(predicate);
+        Expression nonDeterministicPredicate = filterNonDeterministicConjuncts(predicate);
 
         ExtractionResult decomposedPredicate = getFullyExtractedPredicates(
                 session,
@@ -105,12 +106,12 @@ public class RemoveRedundantPredicateAboveTableScan
             // TODO: DomainTranslator.fromPredicate can infer that the expression is "false" in some cases (TupleDomain.none()).
             // This should move to another rule that simplifies the filter using that logic and then rely on RemoveTrivialFilters
             // to turn the subtree into a Values node
-            return Result.ofPlanNode(new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of()));
+            return Result.ofPlanNode(new ValuesNode(node.getId(), node.getOutputSymbols()));
         }
 
         if (node.getEnforcedConstraint().isNone()) {
             // table scans with none domain should be converted to ValuesNode
-            return Result.ofPlanNode(new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of()));
+            return Result.ofPlanNode(new ValuesNode(node.getId(), node.getOutputSymbols()));
         }
 
         Map<ColumnHandle, Domain> enforcedColumnDomains = node.getEnforcedConstraint().getDomains().orElseThrow(); // is not NONE
@@ -134,12 +135,12 @@ public class RemoveRedundantPredicateAboveTableScan
         Expression resultingPredicate = createResultingPredicate(
                 plannerContext,
                 session,
-                TRUE_LITERAL, // Dynamic filters are included in decomposedPredicate.getRemainingExpression()
-                new DomainTranslator().toPredicate(unenforcedDomain.transformKeys(assignments::get)),
+                Booleans.TRUE, // Dynamic filters are included in decomposedPredicate.getRemainingExpression()
+                domainTranslator.toPredicate(unenforcedDomain.transformKeys(assignments::get)),
                 nonDeterministicPredicate,
                 decomposedPredicate.getRemainingExpression());
 
-        if (!TRUE_LITERAL.equals(resultingPredicate)) {
+        if (!Booleans.TRUE.equals(resultingPredicate)) {
             return Result.ofPlanNode(new FilterNode(context.getIdAllocator().getNextId(), node, resultingPredicate));
         }
 
@@ -150,9 +151,9 @@ public class RemoveRedundantPredicateAboveTableScan
     {
         Map<Boolean, List<ExtractionResult>> extractedPredicates = extractConjuncts(predicate).stream()
                 .map(conjunct -> DomainTranslator.getExtractionResult(plannerContext, session, conjunct))
-                .collect(groupingBy(result -> result.getRemainingExpression().equals(TRUE_LITERAL), toList()));
+                .collect(groupingBy(result -> result.getRemainingExpression().equals(Booleans.TRUE), toList()));
         return new ExtractionResult(
-                intersect(extractedPredicates.getOrDefault(TRUE, ImmutableList.of()).stream()
+                intersect(extractedPredicates.getOrDefault(Boolean.TRUE, ImmutableList.of()).stream()
                         .map(ExtractionResult::getTupleDomain)
                         .collect(toImmutableList())),
                 combineConjuncts(

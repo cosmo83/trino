@@ -16,6 +16,7 @@ package io.trino.execution;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.node.NodeInfo;
 import io.airlift.stats.TestingGcMonitor;
 import io.airlift.tracing.Tracing;
@@ -24,9 +25,10 @@ import io.airlift.units.DataSize.Unit;
 import io.airlift.units.Duration;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Span;
-import io.trino.Session;
+import io.trino.connector.CatalogHandle;
 import io.trino.connector.ConnectorServices;
 import io.trino.connector.ConnectorServicesProvider;
+import io.trino.exchange.ExchangeManagerConfig;
 import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.execution.buffer.BufferResult;
 import io.trino.execution.buffer.BufferState;
@@ -38,14 +40,14 @@ import io.trino.memory.LocalMemoryManager;
 import io.trino.memory.NodeMemoryConfig;
 import io.trino.memory.QueryContext;
 import io.trino.memory.context.LocalMemoryContext;
-import io.trino.metadata.InternalNode;
+import io.trino.metadata.LanguageFunctionEngineManager;
 import io.trino.metadata.WorkerLanguageFunctionProvider;
+import io.trino.node.InternalNode;
 import io.trino.operator.DirectExchangeClient;
 import io.trino.operator.DirectExchangeClientSupplier;
 import io.trino.operator.RetryPolicy;
 import io.trino.spi.QueryId;
 import io.trino.spi.catalog.CatalogProperties;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.exchange.ExchangeId;
 import io.trino.spiller.LocalSpillManager;
 import io.trino.spiller.NodeSpillConfig;
@@ -73,7 +75,6 @@ import static io.trino.SystemSessionProperties.QUERY_MAX_MEMORY_PER_NODE;
 import static io.trino.execution.TaskTestUtils.PLAN_FRAGMENT;
 import static io.trino.execution.TaskTestUtils.SPLIT;
 import static io.trino.execution.TaskTestUtils.TABLE_SCAN_NODE_ID;
-import static io.trino.execution.TaskTestUtils.createTestSplitMonitor;
 import static io.trino.execution.TaskTestUtils.createTestingPlanner;
 import static io.trino.execution.buffer.PagesSerdeUtil.getSerializedPagePositionCount;
 import static io.trino.execution.buffer.PipelinedOutputBuffers.BufferType.PARTITIONED;
@@ -118,16 +119,16 @@ public abstract class BaseTestSqlTaskManager
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = newTaskId();
             TaskInfo taskInfo = createTask(sqlTaskManager, taskId, PipelinedOutputBuffers.createInitial(PARTITIONED).withNoMoreBufferIds());
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.RUNNING);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.RUNNING);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.RUNNING);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.RUNNING);
 
             taskInfo = createTask(sqlTaskManager, taskId, ImmutableSet.of(), PipelinedOutputBuffers.createInitial(PARTITIONED).withNoMoreBufferIds());
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.FINISHED);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.FINISHED);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.FINISHED);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.FINISHED);
         }
     }
 
@@ -141,27 +142,27 @@ public abstract class BaseTestSqlTaskManager
             createTask(sqlTaskManager, taskId, ImmutableSet.of(SPLIT), PipelinedOutputBuffers.createInitial(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds());
 
             TaskInfo taskInfo = sqlTaskManager.getTaskInfo(taskId, TaskStatus.STARTING_VERSION).get();
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.FLUSHING);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.FLUSHING);
 
             BufferResult results = sqlTaskManager.getTaskResults(taskId, OUT, 0, DataSize.of(1, Unit.MEGABYTE)).getResultsFuture().get();
             assertThat(results.isBufferComplete()).isFalse();
-            assertThat(results.getSerializedPages().size()).isEqualTo(1);
+            assertThat(results.getSerializedPages()).hasSize(1);
             assertThat(getSerializedPagePositionCount(results.getSerializedPages().get(0))).isEqualTo(1);
 
             for (boolean moreResults = true; moreResults; moreResults = !results.isBufferComplete()) {
                 results = sqlTaskManager.getTaskResults(taskId, OUT, results.getToken() + results.getSerializedPages().size(), DataSize.of(1, Unit.MEGABYTE)).getResultsFuture().get();
             }
             assertThat(results.isBufferComplete()).isTrue();
-            assertThat(results.getSerializedPages().size()).isEqualTo(0);
+            assertThat(results.getSerializedPages()).isEmpty();
 
             // complete the task by calling destroy on it
             TaskInfo info = sqlTaskManager.destroyTaskResults(taskId, OUT);
-            assertThat(info.getOutputBuffers().getState()).isEqualTo(BufferState.FINISHED);
+            assertThat(info.outputBuffers().getState()).isEqualTo(BufferState.FINISHED);
 
-            taskInfo = sqlTaskManager.getTaskInfo(taskId, taskInfo.getTaskStatus().getVersion()).get();
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.FINISHED);
+            taskInfo = sqlTaskManager.getTaskInfo(taskId, taskInfo.taskStatus().getVersion()).get();
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.FINISHED);
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.FINISHED);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.FINISHED);
         }
     }
 
@@ -172,20 +173,20 @@ public abstract class BaseTestSqlTaskManager
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = newTaskId();
             TaskInfo taskInfo = createTask(sqlTaskManager, taskId, PipelinedOutputBuffers.createInitial(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds());
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.RUNNING);
-            assertThat(taskInfo.getStats().getEndTime()).isNull();
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.RUNNING);
+            assertThat(taskInfo.stats().getEndTime()).isNull();
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.RUNNING);
-            assertThat(taskInfo.getStats().getEndTime()).isNull();
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.RUNNING);
+            assertThat(taskInfo.stats().getEndTime()).isNull();
 
             taskInfo = pollTerminatingTaskInfoUntilDone(sqlTaskManager, sqlTaskManager.cancelTask(taskId));
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.CANCELED);
-            assertThat(taskInfo.getStats().getEndTime()).isNotNull();
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.CANCELED);
+            assertThat(taskInfo.stats().getEndTime()).isNotNull();
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.CANCELED);
-            assertThat(taskInfo.getStats().getEndTime()).isNotNull();
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.CANCELED);
+            assertThat(taskInfo.stats().getEndTime()).isNotNull();
         }
     }
 
@@ -196,20 +197,20 @@ public abstract class BaseTestSqlTaskManager
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig())) {
             TaskId taskId = newTaskId();
             TaskInfo taskInfo = createTask(sqlTaskManager, taskId, PipelinedOutputBuffers.createInitial(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds());
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.RUNNING);
-            assertThat(taskInfo.getStats().getEndTime()).isNull();
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.RUNNING);
+            assertThat(taskInfo.stats().getEndTime()).isNull();
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.RUNNING);
-            assertThat(taskInfo.getStats().getEndTime()).isNull();
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.RUNNING);
+            assertThat(taskInfo.stats().getEndTime()).isNull();
 
             taskInfo = pollTerminatingTaskInfoUntilDone(sqlTaskManager, sqlTaskManager.abortTask(taskId));
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.ABORTED);
-            assertThat(taskInfo.getStats().getEndTime()).isNotNull();
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.ABORTED);
+            assertThat(taskInfo.stats().getEndTime()).isNotNull();
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.ABORTED);
-            assertThat(taskInfo.getStats().getEndTime()).isNotNull();
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.ABORTED);
+            assertThat(taskInfo.stats().getEndTime()).isNotNull();
         }
     }
 
@@ -223,15 +224,15 @@ public abstract class BaseTestSqlTaskManager
             createTask(sqlTaskManager, taskId, ImmutableSet.of(SPLIT), PipelinedOutputBuffers.createInitial(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds());
 
             TaskInfo taskInfo = sqlTaskManager.getTaskInfo(taskId, TaskStatus.STARTING_VERSION).get();
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.FLUSHING);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.FLUSHING);
 
             sqlTaskManager.destroyTaskResults(taskId, OUT);
 
-            taskInfo = sqlTaskManager.getTaskInfo(taskId, taskInfo.getTaskStatus().getVersion()).get();
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.FINISHED);
+            taskInfo = sqlTaskManager.getTaskInfo(taskId, taskInfo.taskStatus().getVersion()).get();
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.FINISHED);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.FINISHED);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.FINISHED);
         }
     }
 
@@ -243,19 +244,19 @@ public abstract class BaseTestSqlTaskManager
             TaskId taskId = newTaskId();
 
             TaskInfo taskInfo = createTask(sqlTaskManager, taskId, PipelinedOutputBuffers.createInitial(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds());
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.RUNNING);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.RUNNING);
 
             taskInfo = pollTerminatingTaskInfoUntilDone(sqlTaskManager, sqlTaskManager.cancelTask(taskId));
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.CANCELED);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.CANCELED);
 
             taskInfo = sqlTaskManager.getTaskInfo(taskId);
-            assertThat(taskInfo.getTaskStatus().getState()).isEqualTo(TaskState.CANCELED);
+            assertThat(taskInfo.taskStatus().getState()).isEqualTo(TaskState.CANCELED);
 
             Thread.sleep(100);
             sqlTaskManager.removeOldTasks();
 
             for (TaskInfo info : sqlTaskManager.getAllTaskInfo()) {
-                assertThat(info.getTaskStatus().getTaskId())
+                assertThat(info.taskStatus().getTaskId())
                         .isNotEqualTo(taskId);
             }
         }
@@ -265,14 +266,14 @@ public abstract class BaseTestSqlTaskManager
     public void testSessionPropertyMemoryLimitOverride()
     {
         NodeMemoryConfig memoryConfig = new NodeMemoryConfig()
-                .setMaxQueryMemoryPerNode(DataSize.ofBytes(3));
+                .setMaxQueryMemoryPerNode("3B");
 
         try (SqlTaskManager sqlTaskManager = createSqlTaskManager(new TaskManagerConfig(), memoryConfig)) {
             TaskId reduceLimitsId = new TaskId(new StageId("q1", 0), 1, 0);
             TaskId increaseLimitsId = new TaskId(new StageId("q2", 0), 1, 0);
 
-            QueryContext reducesLimitsContext = sqlTaskManager.getQueryContext(reduceLimitsId.getQueryId());
-            QueryContext attemptsIncreaseContext = sqlTaskManager.getQueryContext(increaseLimitsId.getQueryId());
+            QueryContext reducesLimitsContext = sqlTaskManager.getQueryContext(reduceLimitsId.queryId());
+            QueryContext attemptsIncreaseContext = sqlTaskManager.getQueryContext(increaseLimitsId.queryId());
 
             // not initialized with a task update yet
             assertThat(reducesLimitsContext.isMemoryLimitsInitialized()).isFalse();
@@ -324,10 +325,9 @@ public abstract class BaseTestSqlTaskManager
                 new EmbedVersion("testversion"),
                 new NoConnectorServicesProvider(),
                 createTestingPlanner(),
-                new WorkerLanguageFunctionProvider(),
+                new WorkerLanguageFunctionProvider(new LanguageFunctionEngineManager()),
                 new MockLocationFactory(),
                 taskExecutor,
-                createTestSplitMonitor(),
                 new NodeInfo("test"),
                 new LocalMemoryManager(nodeMemoryConfig),
                 taskManagementExecutor,
@@ -337,10 +337,10 @@ public abstract class BaseTestSqlTaskManager
                 new NodeSpillConfig(),
                 new TestingGcMonitor(),
                 noopTracer(),
-                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer()));
+                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer(), new SecretsResolver(ImmutableMap.of()), new ExchangeManagerConfig()));
     }
 
-    private TaskInfo createTask(SqlTaskManager sqlTaskManager, TaskId taskId, ImmutableSet<ScheduledSplit> splits, OutputBuffers outputBuffers)
+    private TaskInfo createTask(SqlTaskManager sqlTaskManager, TaskId taskId, Set<ScheduledSplit> splits, OutputBuffers outputBuffers)
     {
         return sqlTaskManager.updateTask(TEST_SESSION,
                 taskId,
@@ -354,7 +354,7 @@ public abstract class BaseTestSqlTaskManager
 
     private TaskInfo createTask(SqlTaskManager sqlTaskManager, TaskId taskId, OutputBuffers outputBuffers)
     {
-        sqlTaskManager.getQueryContext(taskId.getQueryId())
+        sqlTaskManager.getQueryContext(taskId.queryId())
                 .addTaskContext(new TaskStateMachine(taskId, directExecutor()), testSessionBuilder().build(), () -> {}, false, false);
         return sqlTaskManager.updateTask(TEST_SESSION,
                 taskId,
@@ -369,10 +369,10 @@ public abstract class BaseTestSqlTaskManager
     private static TaskInfo pollTerminatingTaskInfoUntilDone(SqlTaskManager taskManager, TaskInfo taskInfo)
             throws InterruptedException, ExecutionException, TimeoutException
     {
-        assertThat(taskInfo.getTaskStatus().getState().isTerminatingOrDone()).isTrue();
+        assertThat(taskInfo.taskStatus().getState().isTerminatingOrDone()).isTrue();
         int attempts = 3;
-        while (attempts > 0 && taskInfo.getTaskStatus().getState().isTerminating()) {
-            taskInfo = taskManager.getTaskInfo(taskInfo.getTaskStatus().getTaskId(), taskInfo.getTaskStatus().getVersion()).get(5, SECONDS);
+        while (attempts > 0 && taskInfo.taskStatus().getState().isTerminating()) {
+            taskInfo = taskManager.getTaskInfo(taskInfo.taskStatus().getTaskId(), taskInfo.taskStatus().getVersion()).get(5, SECONDS);
             attempts--;
         }
         return taskInfo;
@@ -429,7 +429,7 @@ public abstract class BaseTestSqlTaskManager
         public void loadInitialCatalogs() {}
 
         @Override
-        public void ensureCatalogsLoaded(Session session, List<CatalogProperties> catalogs) {}
+        public void ensureCatalogsLoaded(List<CatalogProperties> catalogs) {}
 
         @Override
         public void pruneCatalogs(Set<CatalogHandle> catalogsInUse)

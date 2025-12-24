@@ -14,14 +14,15 @@
 package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.trino.Session;
+import io.trino.connector.CatalogHandle;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableHandle;
 import io.trino.security.AllowAllAccessControl;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorTableMetadata;
@@ -67,11 +68,11 @@ public class TestDropNotNullConstraintConstraintTask
 
         metadata.createTable(testSession, TEST_CATALOG_NAME, simpleTable(tableName), FAIL);
         TableHandle table = metadata.getTableHandle(testSession, tableName).orElseThrow();
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(notNullColumn("a", BIGINT), notNullColumn("b", BIGINT));
 
         getFutureValue(executeDropNotNullConstraint(asQualifiedName(tableName), identifier("b"), false));
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(notNullColumn("a", BIGINT), nullableColumn("b", BIGINT));
     }
 
@@ -121,7 +122,7 @@ public class TestDropNotNullConstraintConstraintTask
     public void testDropNotNullConstraintOnView()
     {
         QualifiedObjectName viewName = qualifiedObjectName("existing_view");
-        metadata.createView(testSession, viewName, someView(), false);
+        metadata.createView(testSession, viewName, someView(), ImmutableMap.of(), false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropNotNullConstraint(asQualifiedName(viewName), identifier("test"), false)))
                 .hasErrorCode(TABLE_NOT_FOUND)

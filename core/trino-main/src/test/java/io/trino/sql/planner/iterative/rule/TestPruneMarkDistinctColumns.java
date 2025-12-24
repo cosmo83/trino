@@ -15,7 +15,7 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
@@ -46,7 +46,7 @@ public class TestPruneMarkDistinctColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("key2", expression(new SymbolReference(BIGINT, "key"))),
+                                ImmutableMap.of("key2", expression(new Reference(BIGINT, "key"))),
                                 values(ImmutableList.of("key", "unused"))));
     }
 
@@ -57,25 +57,22 @@ public class TestPruneMarkDistinctColumns
                 .on(p -> {
                     Symbol key = p.symbol("key");
                     Symbol mark = p.symbol("mark");
-                    Symbol hash = p.symbol("hash");
                     Symbol unused = p.symbol("unused");
                     return p.project(
                             Assignments.identity(mark),
                             p.markDistinct(
                                     mark,
                                     ImmutableList.of(key),
-                                    hash,
-                                    p.values(key, hash, unused)));
+                                    p.values(key, unused)));
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("mark", expression(new SymbolReference(BOOLEAN, "mark"))),
-                                markDistinct("mark", ImmutableList.of("key"), "hash",
+                                ImmutableMap.of("mark", expression(new Reference(BOOLEAN, "mark"))),
+                                markDistinct("mark", ImmutableList.of("key"),
                                         strictProject(
                                                 ImmutableMap.of(
-                                                        "key", expression(new SymbolReference(BIGINT, "key")),
-                                                        "hash", expression(new SymbolReference(BIGINT, "hash"))),
-                                                values(ImmutableList.of("key", "hash", "unused"))))));
+                                                        "key", expression(new Reference(BIGINT, "key"))),
+                                                values(ImmutableList.of("key", "unused"))))));
     }
 
     @Test

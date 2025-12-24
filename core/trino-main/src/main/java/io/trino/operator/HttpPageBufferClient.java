@@ -41,13 +41,13 @@ import io.trino.server.remotetask.Backoff;
 import io.trino.spi.TrinoException;
 import io.trino.spi.TrinoTransportException;
 import jakarta.annotation.Nullable;
-import org.joda.time.DateTime;
 
 import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
+import java.time.Instant;
 import java.util.List;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
@@ -80,7 +80,7 @@ import static io.trino.server.InternalHeaders.TRINO_PAGE_NEXT_TOKEN;
 import static io.trino.server.InternalHeaders.TRINO_PAGE_TOKEN;
 import static io.trino.server.InternalHeaders.TRINO_TASK_FAILED;
 import static io.trino.server.InternalHeaders.TRINO_TASK_INSTANCE_ID;
-import static io.trino.server.PagesResponseWriter.SERIALIZED_PAGES_MAGIC;
+import static io.trino.server.PagesInputStreamFactory.SERIALIZED_PAGES_MAGIC;
 import static io.trino.spi.HostAddress.fromUri;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.StandardErrorCode.REMOTE_BUFFER_CLOSE_FAILED;
@@ -104,7 +104,7 @@ public final class HttpPageBufferClient
      * For each request, the addPage method will be called zero or more times,
      * followed by either requestComplete or clientFinished (if buffer complete).  If the client is
      * closed, requestComplete or bufferFinished may never be called.
-     * <p/>
+     * <p>
      * <b>NOTE:</b> Implementations of this interface are not allowed to perform
      * blocking operations.
      */
@@ -135,7 +135,7 @@ public final class HttpPageBufferClient
     @GuardedBy("this")
     private HttpResponseFuture<?> future;
     @GuardedBy("this")
-    private DateTime lastUpdate = DateTime.now();
+    private Instant lastUpdate = Instant.now();
     @GuardedBy("this")
     private long token;
     @GuardedBy("this")
@@ -291,7 +291,7 @@ public final class HttpPageBufferClient
 
             this.future = null;
 
-            lastUpdate = DateTime.now();
+            lastUpdate = Instant.now();
         }
 
         if (future != null && !future.isDone()) {
@@ -326,7 +326,7 @@ public final class HttpPageBufferClient
             }
         }, delayNanos, NANOSECONDS);
 
-        lastUpdate = DateTime.now();
+        lastUpdate = Instant.now();
         requestsScheduled.incrementAndGet();
     }
 
@@ -349,7 +349,7 @@ public final class HttpPageBufferClient
             sendGetResults();
         }
 
-        lastUpdate = DateTime.now();
+        lastUpdate = Instant.now();
     }
 
     private synchronized void sendGetResults()
@@ -465,7 +465,7 @@ public final class HttpPageBufferClient
                     if (future == resultFuture) {
                         future = null;
                     }
-                    lastUpdate = DateTime.now();
+                    lastUpdate = Instant.now();
                 }
                 clientCallback.requestComplete(HttpPageBufferClient.this);
             }
@@ -528,7 +528,7 @@ public final class HttpPageBufferClient
             {
                 assertNotHoldsLock(HttpPageBufferClient.this);
 
-                if (result.getStatusCode() != NO_CONTENT.code()) {
+                if (result != null && result.getStatusCode() != NO_CONTENT.code()) {
                     onFailure(new TrinoTransportException(
                             REMOTE_BUFFER_CLOSE_FAILED,
                             fromUri(location),
@@ -542,7 +542,7 @@ public final class HttpPageBufferClient
                     if (future == resultFuture) {
                         future = null;
                     }
-                    lastUpdate = DateTime.now();
+                    lastUpdate = Instant.now();
                 }
                 requestsCompleted.incrementAndGet();
                 clientCallback.clientFinished(HttpPageBufferClient.this);
@@ -590,7 +590,7 @@ public final class HttpPageBufferClient
             if (future == expectedFuture) {
                 future = null;
             }
-            lastUpdate = DateTime.now();
+            lastUpdate = Instant.now();
         }
         clientCallback.requestComplete(HttpPageBufferClient.this);
     }
@@ -607,11 +607,7 @@ public final class HttpPageBufferClient
 
         HttpPageBufferClient that = (HttpPageBufferClient) o;
 
-        if (!location.equals(that.location)) {
-            return false;
-        }
-
-        return true;
+        return location.equals(that.location);
     }
 
     @Override

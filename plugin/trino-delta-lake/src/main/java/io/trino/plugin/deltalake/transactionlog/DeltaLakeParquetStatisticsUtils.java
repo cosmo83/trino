@@ -16,6 +16,7 @@ package io.trino.plugin.deltalake.transactionlog;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
+import io.trino.parquet.metadata.ColumnChunkMetadata;
 import io.trino.plugin.base.type.DecodedTimestamp;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.SqlRow;
@@ -26,6 +27,7 @@ import io.trino.spi.type.Decimals;
 import io.trino.spi.type.Int128;
 import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
+import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
@@ -36,7 +38,6 @@ import org.apache.parquet.column.statistics.FloatStatistics;
 import org.apache.parquet.column.statistics.IntStatistics;
 import org.apache.parquet.column.statistics.LongStatistics;
 import org.apache.parquet.column.statistics.Statistics;
-import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 
 import java.math.BigDecimal;
@@ -64,14 +65,20 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
+import static io.trino.spi.type.TimestampType.TIMESTAMP_MICROS;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_MILLISECOND;
+import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND;
+import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MICROSECOND;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.TypeUtils.readNativeValue;
 import static io.trino.spi.type.TypeUtils.writeNativeValue;
+import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Float.intBitsToFloat;
+import static java.lang.Math.floorDiv;
+import static java.lang.Math.floorMod;
 import static java.lang.Math.toIntExact;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.ZoneOffset.UTC;
@@ -80,20 +87,20 @@ import static java.time.format.DateTimeFormatter.ISO_LOCAL_DATE;
 import static java.time.temporal.ChronoUnit.MILLIS;
 import static java.util.Objects.requireNonNull;
 
-public class DeltaLakeParquetStatisticsUtils
+public final class DeltaLakeParquetStatisticsUtils
 {
-    private static final Logger LOG = Logger.get(DeltaLakeParquetStatisticsUtils.class);
-
     private DeltaLakeParquetStatisticsUtils() {}
 
-    public static boolean hasInvalidStatistics(Collection<ColumnChunkMetaData> metadataList)
+    private static final Logger LOG = Logger.get(DeltaLakeParquetStatisticsUtils.class);
+
+    public static boolean hasInvalidStatistics(Collection<ColumnChunkMetadata> metadataList)
     {
         return metadataList.stream()
                 .anyMatch(metadata ->
                         // If any row group does not have stats collected, stats for the file will not be valid
                         !metadata.getStatistics().isNumNullsSet() || metadata.getStatistics().isEmpty() ||
-                        // Columns with NaN values are marked by `hasNonNullValue` = false by the Parquet reader. See issue: https://issues.apache.org/jira/browse/PARQUET-1246
-                        (!metadata.getStatistics().hasNonNullValue() && metadata.getStatistics().getNumNulls() != metadata.getValueCount()));
+                                // Columns with NaN values are marked by `hasNonNullValue` = false by the Parquet reader. See issue: https://issues.apache.org/jira/browse/PARQUET-1246
+                                (!metadata.getStatistics().hasNonNullValue() && metadata.getStatistics().getNumNulls() != metadata.getValueCount()));
     }
 
     @Nullable
@@ -140,9 +147,13 @@ public class DeltaLakeParquetStatisticsUtils
         if (type == TIMESTAMP_MILLIS) {
             return Instant.parse((String) jsonValue).toEpochMilli() * MICROSECONDS_PER_MILLISECOND;
         }
+        if (type == TIMESTAMP_MICROS) {
+            Instant instant = Instant.parse((String) jsonValue);
+            return (instant.getEpochSecond() * MICROSECONDS_PER_SECOND) + (instant.getNano() / NANOSECONDS_PER_MICROSECOND);
+        }
         if (type instanceof RowType rowType) {
             Map<?, ?> values = (Map<?, ?>) jsonValue;
-            List<Type> fieldTypes = rowType.getTypeParameters();
+            List<Type> fieldTypes = rowType.getFieldTypes();
             return buildRowValue(rowType, fields -> {
                 for (int i = 0; i < values.size(); ++i) {
                     Type fieldType = fieldTypes.get(i);
@@ -199,6 +210,13 @@ public class DeltaLakeParquetStatisticsUtils
         if (type == DateType.DATE) {
             return LocalDate.ofEpochDay((long) value).format(ISO_LOCAL_DATE);
         }
+        if (type == TIMESTAMP_MICROS) {
+            long epochMicros = (long) value;
+            long epochSeconds = floorDiv(epochMicros, MICROSECONDS_PER_SECOND);
+            int nanoAdjustment = floorMod(epochMicros, MICROSECONDS_PER_SECOND) * NANOSECONDS_PER_MICROSECOND;
+            Instant instant = Instant.ofEpochSecond(epochSeconds, nanoAdjustment);
+            return ISO_INSTANT.format(ZonedDateTime.ofInstant(instant.truncatedTo(MILLIS), UTC));
+        }
         if (type == TIMESTAMP_TZ_MILLIS) {
             Instant ts = Instant.ofEpochMilli(unpackMillisUtc((long) value));
             return ISO_INSTANT.format(ZonedDateTime.ofInstant(ts, UTC));
@@ -234,7 +252,7 @@ public class DeltaLakeParquetStatisticsUtils
     private static Map<String, Object> jsonEncode(Map<String, Optional<Statistics<?>>> stats, Map<String, Type> typeForColumn, BiFunction<Type, Statistics<?>, Optional<Object>> accessor)
     {
         Map<String, Optional<Object>> allStats = stats.entrySet().stream()
-                .filter(entry -> entry.getValue() != null && entry.getValue().isPresent() && !entry.getValue().get().isEmpty())
+                .filter(entry -> entry.getValue() != null && entry.getValue().isPresent() && !entry.getValue().get().isEmpty() && typeForColumn.containsKey(entry.getKey()))
                 .collect(toImmutableMap(Map.Entry::getKey, entry -> accessor.apply(typeForColumn.get(entry.getKey()), entry.getValue().get())));
 
         return allStats.entrySet().stream()
@@ -257,7 +275,7 @@ public class DeltaLakeParquetStatisticsUtils
         return nullCounts.buildOrThrow();
     }
 
-    private static ImmutableMap<String, Object> toNullCount(RowType rowType, SqlRow row)
+    private static Map<String, Object> toNullCount(RowType rowType, SqlRow row)
     {
         List<RowType.Field> fields = rowType.getFields();
         ImmutableMap.Builder<String, Object> nullCounts = ImmutableMap.builderWithExpectedSize(fields.size());
@@ -289,13 +307,29 @@ public class DeltaLakeParquetStatisticsUtils
             return Optional.of(date.format(ISO_LOCAL_DATE));
         }
 
+        if (type instanceof TimestampType) {
+            // Spark truncates the timestamp to milliseconds. The connector follows the same behavior.
+            if (statistics instanceof LongStatistics longStatistics) {
+                long epochMicros = longStatistics.genericGetMin();
+                long epochSeconds = floorDiv(epochMicros, MICROSECONDS_PER_SECOND);
+                int nanoAdjustment = floorMod(epochMicros, MICROSECONDS_PER_SECOND) * NANOSECONDS_PER_MICROSECOND;
+                Instant instant = Instant.ofEpochSecond(epochSeconds, nanoAdjustment);
+                return Optional.of(ISO_INSTANT.format(ZonedDateTime.ofInstant(instant, UTC).truncatedTo(MILLIS)));
+            }
+            if (statistics instanceof BinaryStatistics binaryStatistics) {
+                DecodedTimestamp decodedTimestamp = decodeInt96Timestamp(binaryStatistics.genericGetMin());
+                Instant instant = Instant.ofEpochSecond(decodedTimestamp.epochSeconds(), decodedTimestamp.nanosOfSecond());
+                return Optional.of(ISO_INSTANT.format(ZonedDateTime.ofInstant(instant, UTC).truncatedTo(MILLIS)));
+            }
+        }
+
         if (type instanceof TimestampWithTimeZoneType) {
-            if (statistics instanceof LongStatistics) {
-                Instant ts = Instant.ofEpochMilli(((LongStatistics) statistics).genericGetMin());
+            if (statistics instanceof LongStatistics longStatistics) {
+                Instant ts = Instant.ofEpochMilli(longStatistics.genericGetMin());
                 return Optional.of(ISO_INSTANT.format(ZonedDateTime.ofInstant(ts, UTC)));
             }
-            if (statistics instanceof BinaryStatistics) {
-                DecodedTimestamp decodedTimestamp = decodeInt96Timestamp(((BinaryStatistics) statistics).genericGetMin());
+            if (statistics instanceof BinaryStatistics binaryStatistics) {
+                DecodedTimestamp decodedTimestamp = decodeInt96Timestamp(binaryStatistics.genericGetMin());
                 Instant ts = Instant.ofEpochSecond(decodedTimestamp.epochSeconds(), decodedTimestamp.nanosOfSecond());
                 return Optional.of(ISO_INSTANT.format(ZonedDateTime.ofInstant(ts, UTC).truncatedTo(MILLIS)));
             }
@@ -325,16 +359,16 @@ public class DeltaLakeParquetStatisticsUtils
             int scale = ((LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) logicalType).getScale();
 
             BigDecimal min;
-            if (statistics instanceof IntStatistics) {
-                min = BigDecimal.valueOf(((IntStatistics) statistics).getMin()).movePointLeft(scale);
+            if (statistics instanceof IntStatistics intStatistics) {
+                min = BigDecimal.valueOf(intStatistics.getMin()).movePointLeft(scale);
                 return Optional.of(min.toPlainString());
             }
-            if (statistics instanceof LongStatistics) {
-                min = BigDecimal.valueOf(((LongStatistics) statistics).getMin()).movePointLeft(scale);
+            if (statistics instanceof LongStatistics longStatistics) {
+                min = BigDecimal.valueOf(longStatistics.getMin()).movePointLeft(scale);
                 return Optional.of(min.toPlainString());
             }
-            if (statistics instanceof BinaryStatistics) {
-                BigInteger base = new BigInteger(((BinaryStatistics) statistics).genericGetMin().getBytes());
+            if (statistics instanceof BinaryStatistics binaryStatistics) {
+                BigInteger base = new BigInteger(binaryStatistics.genericGetMin().getBytes());
                 min = new BigDecimal(base, scale);
                 return Optional.of(min.toPlainString());
             }
@@ -344,12 +378,12 @@ public class DeltaLakeParquetStatisticsUtils
             return Optional.of(new String(((BinaryStatistics) statistics).genericGetMin().getBytes(), UTF_8));
         }
 
-        if (type.equals(BOOLEAN)) {
-            // Boolean columns do not collect min/max stats
+        if (type.equals(BOOLEAN) || type.equals(VARBINARY)) {
+            // Boolean and varbinary columns do not collect min/max stats
             return Optional.empty();
         }
 
-        LOG.warn("Accumulating Parquet statistics with Trino type: %s and Parquet statistics of type: %s is not supported", type, statistics);
+        LOG.debug("Accumulating Parquet statistics with Trino type: %s and Parquet statistics of type: %s is not supported", type, statistics);
         return Optional.empty();
     }
 
@@ -366,13 +400,39 @@ public class DeltaLakeParquetStatisticsUtils
             return Optional.of(date.format(ISO_LOCAL_DATE));
         }
 
+        if (type instanceof TimestampType timestampType) {
+            // Spark truncates the timestamp to milliseconds. The connector follows the same behavior.
+            checkArgument(timestampType.getPrecision() >= TIMESTAMP_MILLIS.getPrecision(), "type precision must be at least milliseconds");
+
+            if (statistics instanceof LongStatistics longStatistics) {
+                long epochMicros = longStatistics.genericGetMax();
+                long epochSeconds = floorDiv(epochMicros, MICROSECONDS_PER_SECOND);
+                int nanoAdjustment = floorMod(epochMicros, MICROSECONDS_PER_SECOND) * NANOSECONDS_PER_MICROSECOND;
+                Instant instant = Instant.ofEpochSecond(epochSeconds, nanoAdjustment);
+                Instant truncatedToMillis = instant.truncatedTo(MILLIS);
+                if (truncatedToMillis.isBefore(instant)) {
+                    truncatedToMillis = truncatedToMillis.plusMillis(1);
+                }
+                return Optional.of(ISO_INSTANT.format(truncatedToMillis));
+            }
+            if (statistics instanceof BinaryStatistics binaryStatistics) {
+                DecodedTimestamp decodedTimestamp = decodeInt96Timestamp(binaryStatistics.genericGetMax());
+                Instant instant = Instant.ofEpochSecond(decodedTimestamp.epochSeconds(), decodedTimestamp.nanosOfSecond());
+                Instant truncatedToMillis = instant.truncatedTo(MILLIS);
+                if (truncatedToMillis.isBefore(instant)) {
+                    truncatedToMillis = truncatedToMillis.plusMillis(1);
+                }
+                return Optional.of(ISO_INSTANT.format(truncatedToMillis));
+            }
+        }
+
         if (type instanceof TimestampWithTimeZoneType) {
-            if (statistics instanceof LongStatistics) {
-                Instant ts = Instant.ofEpochMilli(((LongStatistics) statistics).genericGetMax());
+            if (statistics instanceof LongStatistics longStatistics) {
+                Instant ts = Instant.ofEpochMilli(longStatistics.genericGetMax());
                 return Optional.of(ISO_INSTANT.format(ZonedDateTime.ofInstant(ts, UTC)));
             }
-            if (statistics instanceof BinaryStatistics) {
-                DecodedTimestamp decodedTimestamp = decodeInt96Timestamp(((BinaryStatistics) statistics).genericGetMax());
+            if (statistics instanceof BinaryStatistics binaryStatistics) {
+                DecodedTimestamp decodedTimestamp = decodeInt96Timestamp(binaryStatistics.genericGetMax());
                 Instant ts = Instant.ofEpochSecond(decodedTimestamp.epochSeconds(), decodedTimestamp.nanosOfSecond());
                 ZonedDateTime zonedDateTime = ZonedDateTime.ofInstant(ts, UTC);
                 ZonedDateTime truncatedToMillis = zonedDateTime.truncatedTo(MILLIS);
@@ -405,16 +465,16 @@ public class DeltaLakeParquetStatisticsUtils
             int scale = ((LogicalTypeAnnotation.DecimalLogicalTypeAnnotation) logicalType).getScale();
 
             BigDecimal max;
-            if (statistics instanceof IntStatistics) {
-                max = BigDecimal.valueOf(((IntStatistics) statistics).getMax()).movePointLeft(scale);
+            if (statistics instanceof IntStatistics intStatistics) {
+                max = BigDecimal.valueOf(intStatistics.getMax()).movePointLeft(scale);
                 return Optional.of(max.toPlainString());
             }
-            if (statistics instanceof LongStatistics) {
-                max = BigDecimal.valueOf(((LongStatistics) statistics).getMax()).movePointLeft(scale);
+            if (statistics instanceof LongStatistics longStatistics) {
+                max = BigDecimal.valueOf(longStatistics.getMax()).movePointLeft(scale);
                 return Optional.of(max.toPlainString());
             }
-            if (statistics instanceof BinaryStatistics) {
-                BigInteger base = new BigInteger(((BinaryStatistics) statistics).genericGetMax().getBytes());
+            if (statistics instanceof BinaryStatistics binaryStatistics) {
+                BigInteger base = new BigInteger(binaryStatistics.genericGetMax().getBytes());
                 max = new BigDecimal(base, scale);
                 return Optional.of(max.toPlainString());
             }
@@ -424,12 +484,12 @@ public class DeltaLakeParquetStatisticsUtils
             return Optional.of(new String(((BinaryStatistics) statistics).genericGetMax().getBytes(), UTF_8));
         }
 
-        if (type.equals(BOOLEAN)) {
-            // Boolean columns do not collect min/max stats
+        if (type.equals(BOOLEAN) || type.equals(VARBINARY)) {
+            // Boolean and varbinary columns do not collect min/max stats
             return Optional.empty();
         }
 
-        LOG.warn("Accumulating Parquet statistics with Trino type: %s and Parquet statistics of type: %s is not supported", type, statistics);
+        LOG.debug("Accumulating Parquet statistics with Trino type: %s and Parquet statistics of type: %s is not supported", type, statistics);
         return Optional.empty();
     }
 }

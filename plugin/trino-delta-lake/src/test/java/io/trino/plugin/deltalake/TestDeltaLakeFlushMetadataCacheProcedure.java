@@ -13,9 +13,8 @@
  */
 package io.trino.plugin.deltalake;
 
-import com.google.common.collect.ImmutableMap;
-import io.trino.plugin.hive.containers.HiveMinioDataLake;
-import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.metastore.HiveMetastore;
+import io.trino.plugin.hive.containers.Hive3MinioDataLake;
 import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
@@ -23,8 +22,6 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner;
 import static io.trino.plugin.hive.TestingThriftHiveMetastoreBuilder.testingThriftHiveMetastoreBuilder;
 import static io.trino.plugin.hive.containers.HiveHadoop.HIVE3_IMAGE;
 import static io.trino.testing.TestingNames.randomNameSuffix;
@@ -42,19 +39,18 @@ public class TestDeltaLakeFlushMetadataCacheProcedure
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        HiveMinioDataLake hiveMinioDataLake = closeAfterClass(new HiveMinioDataLake(bucketName, HIVE3_IMAGE));
+        Hive3MinioDataLake hiveMinioDataLake = closeAfterClass(new Hive3MinioDataLake(bucketName, HIVE3_IMAGE));
         hiveMinioDataLake.start();
         metastore = new BridgingHiveMetastore(
                 testingThriftHiveMetastoreBuilder()
-                        .metastoreClient(hiveMinioDataLake.getHiveHadoop().getHiveMetastoreEndpoint())
-                        .build());
+                        .metastoreClient(hiveMinioDataLake.getHiveMetastoreEndpoint())
+                        .build(this::closeAfterClass));
 
-        return createS3DeltaLakeQueryRunner(
-                DELTA_CATALOG,
-                "default",
-                ImmutableMap.of("hive.metastore-cache-ttl", "10m"),
-                hiveMinioDataLake.getMinio().getMinioAddress(),
-                hiveMinioDataLake.getHiveHadoop());
+        return DeltaLakeQueryRunner.builder("default")
+                .addMetastoreProperties(hiveMinioDataLake.getHiveHadoop())
+                .addS3Properties(hiveMinioDataLake.getMinio(), bucketName)
+                .addDeltaProperty("hive.metastore-cache-ttl", "10m")
+                .build();
     }
 
     @AfterAll

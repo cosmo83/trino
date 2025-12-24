@@ -19,13 +19,13 @@ import com.google.errorprone.annotations.FormatMethod;
 import com.google.inject.Inject;
 import io.trino.FeaturesConfig;
 import io.trino.cache.NonEvictableCache;
+import io.trino.connector.CatalogHandle;
 import io.trino.connector.CatalogServiceProvider;
 import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.ValueBlock;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.function.AggregationImplementation;
 import io.trino.spi.function.BoundSignature;
@@ -100,21 +100,20 @@ public class FunctionManager
 
     private ScalarFunctionImplementation getScalarFunctionImplementationInternal(ResolvedFunction resolvedFunction, InvocationConvention invocationConvention)
     {
-        FunctionDependencies functionDependencies = getFunctionDependencies(resolvedFunction);
-
         ScalarFunctionImplementation scalarFunctionImplementation;
-        if (isTrinoSqlLanguageFunction(resolvedFunction.getFunctionId())) {
-            scalarFunctionImplementation = languageFunctionProvider.specialize(this, resolvedFunction, functionDependencies, invocationConvention);
+        if (isTrinoSqlLanguageFunction(resolvedFunction.functionId())) {
+            scalarFunctionImplementation = languageFunctionProvider.specialize(resolvedFunction.functionId(), invocationConvention, this);
         }
         else {
+            FunctionDependencies functionDependencies = getFunctionDependencies(resolvedFunction);
             scalarFunctionImplementation = getFunctionProvider(resolvedFunction).getScalarFunctionImplementation(
-                    resolvedFunction.getFunctionId(),
-                    resolvedFunction.getSignature(),
+                    resolvedFunction.functionId(),
+                    resolvedFunction.signature(),
                     functionDependencies,
                     invocationConvention);
         }
 
-        verifyMethodHandleSignature(resolvedFunction.getSignature(), scalarFunctionImplementation, invocationConvention);
+        verifyMethodHandleSignature(resolvedFunction.signature(), scalarFunctionImplementation, invocationConvention);
         return scalarFunctionImplementation;
     }
 
@@ -133,8 +132,8 @@ public class FunctionManager
     {
         FunctionDependencies functionDependencies = getFunctionDependencies(resolvedFunction);
         return getFunctionProvider(resolvedFunction).getAggregationImplementation(
-                resolvedFunction.getFunctionId(),
-                resolvedFunction.getSignature(),
+                resolvedFunction.functionId(),
+                resolvedFunction.signature(),
                 functionDependencies);
     }
 
@@ -153,14 +152,14 @@ public class FunctionManager
     {
         FunctionDependencies functionDependencies = getFunctionDependencies(resolvedFunction);
         return getFunctionProvider(resolvedFunction).getWindowFunctionSupplier(
-                resolvedFunction.getFunctionId(),
-                resolvedFunction.getSignature(),
+                resolvedFunction.functionId(),
+                resolvedFunction.signature(),
                 functionDependencies);
     }
 
     public TableFunctionProcessorProvider getTableFunctionProcessorProvider(TableFunctionHandle tableFunctionHandle)
     {
-        CatalogHandle catalogHandle = tableFunctionHandle.getCatalogHandle();
+        CatalogHandle catalogHandle = tableFunctionHandle.catalogHandle();
 
         FunctionProvider provider;
         if (catalogHandle.equals(GlobalSystemConnector.CATALOG_HANDLE)) {
@@ -171,23 +170,21 @@ public class FunctionManager
             checkArgument(provider != null, "No function provider for catalog: '%s'", catalogHandle);
         }
 
-        return provider.getTableFunctionProcessorProvider(tableFunctionHandle.getFunctionHandle());
+        return provider.getTableFunctionProcessorProviderFactory(tableFunctionHandle.functionHandle()).createTableFunctionProcessorProvider();
     }
 
     private FunctionDependencies getFunctionDependencies(ResolvedFunction resolvedFunction)
     {
-        return new InternalFunctionDependencies(this::getScalarFunctionImplementation, resolvedFunction.getTypeDependencies(), resolvedFunction.getFunctionDependencies());
+        return new InternalFunctionDependencies(this::getScalarFunctionImplementation, resolvedFunction.typeDependencies(), resolvedFunction.functionDependencies());
     }
 
     private FunctionProvider getFunctionProvider(ResolvedFunction resolvedFunction)
     {
-        if (resolvedFunction.getCatalogHandle().equals(GlobalSystemConnector.CATALOG_HANDLE)) {
+        if (resolvedFunction.catalogHandle().equals(GlobalSystemConnector.CATALOG_HANDLE)) {
             return globalFunctionCatalog;
         }
 
-        FunctionProvider functionProvider = functionProviders.getService(resolvedFunction.getCatalogHandle());
-        checkArgument(functionProvider != null, "No function provider for catalog: '%s' (function '%s')", resolvedFunction.getCatalogHandle(), resolvedFunction.getSignature().getName());
-        return functionProvider;
+        return functionProviders.getService(resolvedFunction.catalogHandle());
     }
 
     private static void verifyMethodHandleSignature(BoundSignature boundSignature, ScalarFunctionImplementation scalarFunctionImplementation, InvocationConvention convention)
@@ -256,8 +253,9 @@ public class FunctionManager
                 case FLAT:
                     verifyFunctionSignature(parameterType.equals(byte[].class) &&
                                     methodType.parameterType(parameterIndex + 1).equals(int.class) &&
-                                    methodType.parameterType(parameterIndex + 2).equals(byte[].class),
-                            "Expected FLAT argument types to be byte[], int, byte[]");
+                                    methodType.parameterType(parameterIndex + 2).equals(byte[].class) &&
+                                    methodType.parameterType(parameterIndex + 3).equals(int.class),
+                            "Expected FLAT argument types to be byte[], int, byte[], int");
                     break;
                 case IN_OUT:
                     verifyFunctionSignature(parameterType.equals(InOut.class), "Expected IN_OUT argument type to be InOut");
@@ -276,7 +274,7 @@ public class FunctionManager
 
         Type returnType = boundSignature.getReturnType();
         switch (convention.getReturnConvention()) {
-            case FAIL_ON_NULL:
+            case DEFAULT_ON_NULL, FAIL_ON_NULL:
                 verifyFunctionSignature(methodType.returnType().isAssignableFrom(returnType.getJavaType()),
                         "Expected return type to be %s, but is %s", returnType.getJavaType(), methodType.returnType());
                 break;

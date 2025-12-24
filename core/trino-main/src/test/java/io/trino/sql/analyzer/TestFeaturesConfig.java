@@ -13,6 +13,7 @@
  */
 package io.trino.sql.analyzer;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
 import io.trino.FeaturesConfig;
@@ -47,24 +48,25 @@ public class TestFeaturesConfig
                 .setRe2JDfaRetries(5)
                 .setSpillEnabled(false)
                 .setAggregationOperatorUnspillMemoryLimit(DataSize.valueOf("4MB"))
-                .setSpillerSpillPaths("")
-                .setSpillerThreads(4)
+                .setSpillerSpillPaths(ImmutableList.of())
+                .setSpillerThreads("4")
                 .setSpillMaxUsedSpaceThreshold(0.9)
                 .setMemoryRevokingThreshold(0.9)
                 .setMemoryRevokingTarget(0.5)
                 .setExchangeCompressionCodec(NONE)
+                .setExchangeVectorizedSerdeEnabled(true)
                 .setExchangeDataIntegrityVerification(DataIntegrityVerification.ABORT)
                 .setPagesIndexEagerCompactionEnabled(false)
                 .setFilterAndProjectMinOutputPageSize(DataSize.of(500, KILOBYTE))
                 .setFilterAndProjectMinOutputPageRowCount(256)
                 .setMaxRecursionDepth(10)
                 .setMaxGroupingSets(2048)
-                .setOmitDateTimeTypePrecision(false)
                 .setLegacyCatalogRoles(false)
                 .setIncrementalHashArrayLoadFactorEnabled(true)
-                .setLegacyMaterializedViewGracePeriod(false)
                 .setHideInaccessibleColumns(false)
                 .setForceSpillingJoin(false)
+                .setColumnarFilterEvaluationEnabled(true)
+                .setLegacyArithmeticDecimalOperators(false)
                 .setFaultTolerantExecutionExchangeEncryptionEnabled(true));
     }
 
@@ -87,19 +89,20 @@ public class TestFeaturesConfig
                 .put("memory-revoking-threshold", "0.2")
                 .put("memory-revoking-target", "0.8")
                 .put("exchange.compression-codec", "ZSTD")
+                .put("exchange.experimental.vectorized-serde.enabled", "false")
                 .put("exchange.data-integrity-verification", "RETRY")
                 .put("pages-index.eager-compaction-enabled", "true")
                 .put("filter-and-project-min-output-page-size", "1MB")
                 .put("filter-and-project-min-output-page-row-count", "2048")
                 .put("max-recursion-depth", "8")
                 .put("analyzer.max-grouping-sets", "2047")
-                .put("deprecated.omit-datetime-type-precision", "true")
                 .put("deprecated.legacy-catalog-roles", "true")
                 .put("incremental-hash-array-load-factor.enabled", "false")
-                .put("legacy.materialized-view-grace-period", "true")
                 .put("hide-inaccessible-columns", "true")
                 .put("force-spilling-join-operator", "true")
-                .put("fault-tolerant-execution.exchange-encryption-enabled", "false")
+                .put("experimental.columnar-filter-evaluation.enabled", "false")
+                .put("deprecated.legacy-arithmetic-decimal-operators", "true")
+                .put("fault-tolerant-execution-exchange-encryption-enabled", "false")
                 .buildOrThrow();
 
         FeaturesConfig expected = new FeaturesConfig()
@@ -112,24 +115,25 @@ public class TestFeaturesConfig
                 .setRe2JDfaRetries(42)
                 .setSpillEnabled(true)
                 .setAggregationOperatorUnspillMemoryLimit(DataSize.valueOf("100MB"))
-                .setSpillerSpillPaths("/tmp/custom/spill/path1,/tmp/custom/spill/path2")
-                .setSpillerThreads(42)
+                .setSpillerSpillPaths(ImmutableList.of("/tmp/custom/spill/path1", "/tmp/custom/spill/path2"))
+                .setSpillerThreads("42")
                 .setSpillMaxUsedSpaceThreshold(0.8)
                 .setMemoryRevokingThreshold(0.2)
                 .setMemoryRevokingTarget(0.8)
                 .setExchangeCompressionCodec(ZSTD)
+                .setExchangeVectorizedSerdeEnabled(false)
                 .setExchangeDataIntegrityVerification(DataIntegrityVerification.RETRY)
                 .setPagesIndexEagerCompactionEnabled(true)
                 .setFilterAndProjectMinOutputPageSize(DataSize.of(1, MEGABYTE))
                 .setFilterAndProjectMinOutputPageRowCount(2048)
                 .setMaxRecursionDepth(8)
                 .setMaxGroupingSets(2047)
-                .setOmitDateTimeTypePrecision(true)
                 .setLegacyCatalogRoles(true)
                 .setIncrementalHashArrayLoadFactorEnabled(false)
-                .setLegacyMaterializedViewGracePeriod(true)
                 .setHideInaccessibleColumns(true)
                 .setForceSpillingJoin(true)
+                .setColumnarFilterEvaluationEnabled(false)
+                .setLegacyArithmeticDecimalOperators(true)
                 .setFaultTolerantExecutionExchangeEncryptionEnabled(false);
         assertFullMapping(properties, expected);
     }

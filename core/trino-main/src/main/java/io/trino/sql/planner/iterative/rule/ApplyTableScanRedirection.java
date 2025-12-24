@@ -60,10 +60,12 @@ public class ApplyTableScanRedirection
             .matching(node -> !node.isUpdateTarget());
 
     private final PlannerContext plannerContext;
+    private final DomainTranslator domainTranslator;
 
     public ApplyTableScanRedirection(PlannerContext plannerContext)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
+        this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
     }
 
     @Override
@@ -114,7 +116,7 @@ public class ApplyTableScanRedirection
             }
 
             // insert ts if redirected types don't match source types
-            Type sourceType = assignment.getKey().getType();
+            Type sourceType = assignment.getKey().type();
             Type redirectedType = plannerContext.getMetadata().getColumnMetadata(context.getSession(), destinationTableHandle, destinationColumnHandle).getType();
             if (!sourceType.equals(redirectedType)) {
                 Symbol redirectedSymbol = context.getSymbolAllocator().newSymbol(destinationColumn, redirectedType);
@@ -136,7 +138,7 @@ public class ApplyTableScanRedirection
 
         TupleDomain<String> requiredFilter = tableScanRedirectApplicationResult.get().getFilter();
         if (requiredFilter.isAll()) {
-            ImmutableMap<Symbol, ColumnHandle> newAssignments = newAssignmentsBuilder.buildOrThrow();
+            Map<Symbol, ColumnHandle> newAssignments = newAssignmentsBuilder.buildOrThrow();
             return Result.ofPlanNode(applyProjection(
                     context.getIdAllocator(),
                     ImmutableSet.copyOf(scanNode.getOutputSymbols()),
@@ -207,7 +209,6 @@ public class ApplyTableScanRedirection
                 scanNode.isUpdateTarget(),
                 Optional.empty());
 
-        DomainTranslator domainTranslator = new DomainTranslator();
         FilterNode filterNode = new FilterNode(
                 context.getIdAllocator().getNextId(),
                 applyProjection(
@@ -267,9 +268,6 @@ public class ApplyTableScanRedirection
                     sourceType));
         }
 
-        return new Cast(
-                destinationSymbol.toSymbolReference(),
-                sourceType,
-                false);
+        return new Cast(destinationSymbol.toSymbolReference(), sourceType);
     }
 }

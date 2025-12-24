@@ -1,4 +1,3 @@
-
 /*
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,7 +35,7 @@ public class TestLdapAuthenticatorConfig
                 .setUserBindSearchPatterns(" : ")
                 .setUserBaseDistinguishedName(null)
                 .setGroupAuthorizationSearchPattern(null)
-                .setBindDistingushedName(null)
+                .setBindDistinguishedName(null)
                 .setBindPassword(null)
                 .setLdapCacheTtl(new Duration(1, TimeUnit.HOURS)));
     }
@@ -57,7 +56,7 @@ public class TestLdapAuthenticatorConfig
                 .setUserBindSearchPatterns(ImmutableList.of("uid=${USER},ou=org,dc=test,dc=com", "uid=${USER},ou=alt"))
                 .setUserBaseDistinguishedName("dc=test,dc=com")
                 .setGroupAuthorizationSearchPattern("&(objectClass=user)(memberOf=cn=group)(user=username)")
-                .setBindDistingushedName("CN=User Name,OU=CITY_OU,OU=STATE_OU,DC=domain,DC=domain_root")
+                .setBindDistinguishedName("CN=User Name,OU=CITY_OU,OU=STATE_OU,DC=domain,DC=domain_root")
                 .setBindPassword("password1234")
                 .setLdapCacheTtl(new Duration(2, TimeUnit.MINUTES));
 

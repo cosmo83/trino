@@ -13,7 +13,6 @@
  */
 package io.trino.operator;
 
-import com.google.common.base.Suppliers;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
 import io.trino.memory.context.MemoryTrackingContext;
@@ -65,7 +64,6 @@ public class WorkProcessorSourceOperatorAdapter
                         operatorContext.getDriverContext().getYieldSignal(),
                         WorkProcessor.create(splitBuffer));
         this.pages = sourceOperator.getOutputPages()
-                .map(Page::getLoadedPage)
                 .withProcessStateMonitor(state -> updateOperatorStats())
                 .finishWhen(() -> operatorFinishing);
         operatorContext.setInfoSupplier(() -> sourceOperator.getOperatorInfo().orElse(null));
@@ -82,11 +80,6 @@ public class WorkProcessorSourceOperatorAdapter
     {
         if (operatorFinishing) {
             return;
-        }
-
-        Object splitInfo = split.getInfo();
-        if (splitInfo != null) {
-            operatorContext.setInfoSupplier(Suppliers.ofInstance(new SplitOperatorInfo(split.getCatalogHandle(), splitInfo)));
         }
 
         splitBuffer.add(split);

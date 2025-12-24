@@ -34,14 +34,13 @@ import io.trino.sql.planner.plan.TopNRankingNode.RankingType;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.sql.planner.plan.WindowNode;
 
-import java.util.Optional;
 import java.util.OptionalInt;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.SystemSessionProperties.isOptimizeTopNRanking;
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.spi.predicate.Range.range;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.planner.iterative.rule.Util.toTopNRankingType;
 import static io.trino.sql.planner.plan.Patterns.filter;
@@ -58,19 +57,19 @@ import static java.util.Objects.requireNonNull;
  * TODO This rule should be removed as soon as WindowNode becomes capable of absorbing pruning projections (i.e. capable of pruning outputs).
  * <p>
  * Transforms:
- * <pre>
+ * <pre>{@code
  * - Filter (ranking <= 5 && a > 1)
  *     - Project (a, ranking)
  *         - Window ([row_number()|rank()] OVER (ORDER BY a))
  *             - source (a, b)
- * </pre>
+ * }</pre>
  * into:
- * <pre>
+ * <pre>{@code
  * - Filter (a > 1)
  *     - Project (a, ranking)
  *         - TopNRanking (type = [ROW_NUMBER|RANK], maxRankingPerPartition = 5, order by a)
  *             - source (a, b)
- * </pre>
+ * }</pre>
  */
 public class PushPredicateThroughProjectIntoWindow
         implements Rule<FilterNode>
@@ -80,6 +79,7 @@ public class PushPredicateThroughProjectIntoWindow
 
     private final PlannerContext plannerContext;
     private final Pattern<FilterNode> pattern;
+    private final DomainTranslator domainTranslator;
 
     public PushPredicateThroughProjectIntoWindow(PlannerContext plannerContext)
     {
@@ -91,6 +91,7 @@ public class PushPredicateThroughProjectIntoWindow
                         .with(source().matching(window()
                                 .matching(window -> toTopNRankingType(window).isPresent())
                                 .capturedAs(WINDOW)))));
+        this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
     }
 
     @Override
@@ -112,7 +113,7 @@ public class PushPredicateThroughProjectIntoWindow
         WindowNode window = captures.get(WINDOW);
 
         Symbol rankingSymbol = getOnlyElement(window.getWindowFunctions().keySet());
-        if (!project.getAssignments().getSymbols().contains(rankingSymbol)) {
+        if (!project.getAssignments().outputs().contains(rankingSymbol)) {
             return Result.empty();
         }
 
@@ -126,7 +127,7 @@ public class PushPredicateThroughProjectIntoWindow
             return Result.empty();
         }
         if (upperBound.getAsInt() <= 0) {
-            return Result.ofPlanNode(new ValuesNode(filter.getId(), filter.getOutputSymbols(), ImmutableList.of()));
+            return Result.ofPlanNode(new ValuesNode(filter.getId(), filter.getOutputSymbols()));
         }
         RankingType rankingType = toTopNRankingType(window).orElseThrow();
         project = (ProjectNode) project.replaceChildren(ImmutableList.of(new TopNRankingNode(
@@ -136,8 +137,7 @@ public class PushPredicateThroughProjectIntoWindow
                 rankingType,
                 rankingSymbol,
                 upperBound.getAsInt(),
-                false,
-                Optional.empty())));
+                false)));
         if (!allRankingValuesInDomain(tupleDomain, rankingSymbol, upperBound.getAsInt())) {
             return Result.ofPlanNode(filter.replaceChildren(ImmutableList.of(project)));
         }
@@ -145,8 +145,8 @@ public class PushPredicateThroughProjectIntoWindow
         TupleDomain<Symbol> newTupleDomain = tupleDomain.filter((symbol, domain) -> !symbol.equals(rankingSymbol));
         Expression newPredicate = combineConjuncts(
                 extractionResult.getRemainingExpression(),
-                new DomainTranslator().toPredicate(newTupleDomain));
-        if (newPredicate.equals(TRUE_LITERAL)) {
+                domainTranslator.toPredicate(newTupleDomain));
+        if (newPredicate.equals(TRUE)) {
             return Result.ofPlanNode(project);
         }
         return Result.ofPlanNode(new FilterNode(filter.getId(), project, newPredicate));

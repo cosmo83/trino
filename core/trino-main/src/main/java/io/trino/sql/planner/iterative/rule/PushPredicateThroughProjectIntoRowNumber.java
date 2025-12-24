@@ -37,7 +37,7 @@ import java.util.OptionalInt;
 
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.spi.predicate.Range.range;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.planner.plan.Patterns.filter;
 import static io.trino.sql.planner.plan.Patterns.project;
@@ -53,19 +53,19 @@ import static java.util.Objects.requireNonNull;
  * TODO This rule should be removed as soon as RowNumberNode becomes capable of absorbing pruning projections (i.e. capable of pruning outputs).
  * <p>
  * Transforms:
- * <pre>
+ * <pre>{@code
  * - Filter (rowNumber <= 5 && a > 1)
  *     - Project (a, rowNumber)
  *         - RowNumber (maxRowCountPerPartition = 10)
  *             - source (a, b)
- * </pre>
+ * }</pre>
  * into:
- * <pre>
+ * <pre>{@code
  * - Filter (a > 1)
  *     - Project (a, rowNumber)
  *         - RowNumber (maxRowCountPerPartition = 5)
  *             - source (a, b)
- * </pre>
+ * }</pre>
  */
 public class PushPredicateThroughProjectIntoRowNumber
         implements Rule<FilterNode>
@@ -81,10 +81,12 @@ public class PushPredicateThroughProjectIntoRowNumber
                             .capturedAs(ROW_NUMBER)))));
 
     private final PlannerContext plannerContext;
+    private final DomainTranslator domainTranslator;
 
     public PushPredicateThroughProjectIntoRowNumber(PlannerContext plannerContext)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
+        this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
     }
 
     @Override
@@ -100,7 +102,7 @@ public class PushPredicateThroughProjectIntoRowNumber
         RowNumberNode rowNumber = captures.get(ROW_NUMBER);
 
         Symbol rowNumberSymbol = rowNumber.getRowNumberSymbol();
-        if (!project.getAssignments().getSymbols().contains(rowNumberSymbol)) {
+        if (!project.getAssignments().outputs().contains(rowNumberSymbol)) {
             return Result.empty();
         }
 
@@ -114,7 +116,7 @@ public class PushPredicateThroughProjectIntoRowNumber
             return Result.empty();
         }
         if (upperBound.getAsInt() <= 0) {
-            return Result.ofPlanNode(new ValuesNode(filter.getId(), filter.getOutputSymbols(), ImmutableList.of()));
+            return Result.ofPlanNode(new ValuesNode(filter.getId(), filter.getOutputSymbols()));
         }
         boolean updatedMaxRowCountPerPartition = false;
         if (rowNumber.getMaxRowCountPerPartition().isEmpty() || rowNumber.getMaxRowCountPerPartition().get() > upperBound.getAsInt()) {
@@ -124,8 +126,7 @@ public class PushPredicateThroughProjectIntoRowNumber
                     rowNumber.getPartitionBy(),
                     rowNumber.isOrderSensitive(),
                     rowNumber.getRowNumberSymbol(),
-                    Optional.of(upperBound.getAsInt()),
-                    rowNumber.getHashSymbol());
+                    Optional.of(upperBound.getAsInt()));
             project = (ProjectNode) project.replaceChildren(ImmutableList.of(rowNumber));
             updatedMaxRowCountPerPartition = true;
         }
@@ -139,8 +140,8 @@ public class PushPredicateThroughProjectIntoRowNumber
         TupleDomain<Symbol> newTupleDomain = tupleDomain.filter((symbol, domain) -> !symbol.equals(rowNumberSymbol));
         Expression newPredicate = combineConjuncts(
                 extractionResult.getRemainingExpression(),
-                new DomainTranslator().toPredicate(newTupleDomain));
-        if (newPredicate.equals(TRUE_LITERAL)) {
+                domainTranslator.toPredicate(newTupleDomain));
+        if (newPredicate.equals(TRUE)) {
             return Result.ofPlanNode(project);
         }
         return Result.ofPlanNode(new FilterNode(filter.getId(), project, newPredicate));

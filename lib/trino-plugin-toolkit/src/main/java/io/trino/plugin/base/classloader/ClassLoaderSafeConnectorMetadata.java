@@ -15,6 +15,7 @@ package io.trino.plugin.base.classloader;
 
 import com.google.inject.Inject;
 import io.airlift.slice.Slice;
+import io.trino.spi.RefreshType;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
@@ -22,6 +23,8 @@ import io.trino.spi.connector.BeginTableExecuteResult;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnPosition;
+import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorAnalyzeMetadata;
 import io.trino.spi.connector.ConnectorInsertTableHandle;
 import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
@@ -43,7 +46,6 @@ import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.JoinApplicationResult;
-import io.trino.spi.connector.JoinCondition;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.LimitApplicationResult;
@@ -76,6 +78,7 @@ import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.function.SchemaFunctionName;
 import io.trino.spi.function.table.ConnectorTableFunctionHandle;
+import io.trino.spi.metrics.Metrics;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.GrantInfo;
 import io.trino.spi.security.Privilege;
@@ -114,23 +117,23 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<ConnectorPartitioningHandle> getCommonPartitioningHandle(ConnectorSession session, ConnectorPartitioningHandle left, ConnectorPartitioningHandle right)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getCommonPartitioningHandle(session, left, right);
         }
     }
 
     @Override
-    public ConnectorTableHandle makeCompatiblePartitioning(ConnectorSession session, ConnectorTableHandle tableHandle, ConnectorPartitioningHandle partitioningHandle)
+    public Optional<ConnectorTableHandle> applyPartitioning(ConnectorSession session, ConnectorTableHandle tableHandle, Optional<ConnectorPartitioningHandle> partitioningHandle, List<ColumnHandle> columns)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.makeCompatiblePartitioning(session, tableHandle, partitioningHandle);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.applyPartitioning(session, tableHandle, partitioningHandle, columns);
         }
     }
 
     @Override
     public Optional<ConnectorTableLayout> getNewTableLayout(ConnectorSession session, ConnectorTableMetadata tableMetadata)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getNewTableLayout(session, tableMetadata);
         }
     }
@@ -138,7 +141,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<Type> getSupportedType(ConnectorSession session, Map<String, Object> tableProperties, Type type)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getSupportedType(session, tableProperties, type);
         }
     }
@@ -146,23 +149,23 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<ConnectorTableLayout> getInsertLayout(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getInsertLayout(session, tableHandle);
         }
     }
 
     @Override
-    public TableStatisticsMetadata getStatisticsCollectionMetadataForWrite(ConnectorSession session, ConnectorTableMetadata tableMetadata)
+    public TableStatisticsMetadata getStatisticsCollectionMetadataForWrite(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean tableReplace)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.getStatisticsCollectionMetadataForWrite(session, tableMetadata);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getStatisticsCollectionMetadataForWrite(session, tableMetadata, tableReplace);
         }
     }
 
     @Override
     public ConnectorAnalyzeMetadata getStatisticsCollectionMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, Map<String, Object> analyzeProperties)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getStatisticsCollectionMetadata(session, tableHandle, analyzeProperties);
         }
     }
@@ -170,7 +173,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public ConnectorTableHandle beginStatisticsCollection(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.beginStatisticsCollection(session, tableHandle);
         }
     }
@@ -178,7 +181,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void finishStatisticsCollection(ConnectorSession session, ConnectorTableHandle tableHandle, Collection<ComputedStatistics> computedStatistics)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.finishStatisticsCollection(session, tableHandle, computedStatistics);
         }
     }
@@ -186,7 +189,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public boolean schemaExists(ConnectorSession session, String schemaName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.schemaExists(session, schemaName);
         }
     }
@@ -194,39 +197,31 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public List<String> listSchemaNames(ConnectorSession session)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listSchemaNames(session);
         }
     }
 
     @Override
-    public ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName)
+    public Optional<ConnectorTableExecuteHandle> getTableHandleForExecute(ConnectorSession session, ConnectorAccessControl accessControl, ConnectorTableHandle tableHandle, String procedureName, Map<String, Object> executeProperties, RetryMode retryMode)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.getTableHandle(session, tableName);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getTableHandleForExecute(session, accessControl, tableHandle, procedureName, executeProperties, retryMode);
         }
     }
 
     @Override
-    public Optional<ConnectorTableExecuteHandle> getTableHandleForExecute(ConnectorSession session, ConnectorTableHandle tableHandle, String procedureName, Map<String, Object> executeProperties, RetryMode retryMode)
+    public Map<String, Long> executeTableExecute(ConnectorSession session, ConnectorTableExecuteHandle tableExecuteHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.getTableHandleForExecute(session, tableHandle, procedureName, executeProperties, retryMode);
-        }
-    }
-
-    @Override
-    public void executeTableExecute(ConnectorSession session, ConnectorTableExecuteHandle tableExecuteHandle)
-    {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            delegate.executeTableExecute(session, tableExecuteHandle);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.executeTableExecute(session, tableExecuteHandle);
         }
     }
 
     @Override
     public Optional<ConnectorTableLayout> getLayoutForTableExecute(ConnectorSession session, ConnectorTableExecuteHandle tableExecuteHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getLayoutForTableExecute(session, tableExecuteHandle);
         }
     }
@@ -234,7 +229,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public BeginTableExecuteResult<ConnectorTableExecuteHandle, ConnectorTableHandle> beginTableExecute(ConnectorSession session, ConnectorTableExecuteHandle tableExecuteHandle, ConnectorTableHandle updatedSourceTableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.beginTableExecute(session, tableExecuteHandle, updatedSourceTableHandle);
         }
     }
@@ -242,7 +237,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void finishTableExecute(ConnectorSession session, ConnectorTableExecuteHandle tableExecuteHandle, Collection<Slice> fragments, List<Object> tableExecuteState)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.finishTableExecute(session, tableExecuteHandle, fragments, tableExecuteState);
         }
     }
@@ -250,7 +245,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<SystemTable> getSystemTable(ConnectorSession session, SchemaTableName tableName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getSystemTable(session, tableName);
         }
     }
@@ -258,7 +253,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public SchemaTableName getTableName(ConnectorSession session, ConnectorTableHandle table)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getTableName(session, table);
         }
     }
@@ -266,7 +261,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public ConnectorTableSchema getTableSchema(ConnectorSession session, ConnectorTableHandle table)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getTableSchema(session, table);
         }
     }
@@ -274,23 +269,31 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public ConnectorTableMetadata getTableMetadata(ConnectorSession session, ConnectorTableHandle table)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getTableMetadata(session, table);
         }
     }
 
     @Override
-    public Optional<Object> getInfo(ConnectorTableHandle table)
+    public Optional<Object> getInfo(ConnectorSession session, ConnectorTableHandle table)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.getInfo(table);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getInfo(session, table);
+        }
+    }
+
+    @Override
+    public Metrics getMetrics(ConnectorSession session)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getMetrics(session);
         }
     }
 
     @Override
     public List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listTables(session, schemaName);
         }
     }
@@ -298,7 +301,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Map<SchemaTableName, RelationType> getRelationTypes(ConnectorSession session, Optional<String> schemaName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getRelationTypes(session, schemaName);
         }
     }
@@ -306,7 +309,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Map<String, ColumnHandle> getColumnHandles(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getColumnHandles(session, tableHandle);
         }
     }
@@ -314,7 +317,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public ColumnMetadata getColumnMetadata(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getColumnMetadata(session, tableHandle, columnHandle);
         }
     }
@@ -322,7 +325,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Map<SchemaTableName, List<ColumnMetadata>> listTableColumns(ConnectorSession session, SchemaTablePrefix prefix)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listTableColumns(session, prefix);
         }
     }
@@ -330,7 +333,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public ClassLoaderSafeIterator<TableColumnsMetadata> streamTableColumns(ConnectorSession session, SchemaTablePrefix prefix)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return new ClassLoaderSafeIterator<>(delegate.streamTableColumns(session, prefix), classLoader);
         }
     }
@@ -341,7 +344,7 @@ public class ClassLoaderSafeConnectorMetadata
             Optional<String> schemaName,
             UnaryOperator<Set<SchemaTableName>> relationFilter)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return new ClassLoaderSafeIterator<>(delegate.streamRelationColumns(session, schemaName, relationFilter), classLoader);
         }
     }
@@ -349,7 +352,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public ClassLoaderSafeIterator<RelationCommentMetadata> streamRelationComments(ConnectorSession session, Optional<String> schemaName, UnaryOperator<Set<SchemaTableName>> relationFilter)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return new ClassLoaderSafeIterator<>(delegate.streamRelationComments(session, schemaName, relationFilter), classLoader);
         }
     }
@@ -357,31 +360,47 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getTableStatistics(session, tableHandle);
         }
     }
 
     @Override
-    public void addColumn(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnMetadata column)
+    public void addColumn(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnMetadata column, ColumnPosition position)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            delegate.addColumn(session, tableHandle, column);
+            delegate.addColumn(session, tableHandle, column, position);
         }
     }
 
     @Override
     public void addField(ConnectorSession session, ConnectorTableHandle tableHandle, List<String> parentPath, String fieldName, Type type, boolean ignoreExisting)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.addField(session, tableHandle, parentPath, fieldName, type, ignoreExisting);
+        }
+    }
+
+    @Override
+    public void setDefaultValue(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column, String defaultValue)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.setDefaultValue(session, tableHandle, column, defaultValue);
+        }
+    }
+
+    @Override
+    public void dropDefaultValue(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle columnHandle)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.dropDefaultValue(session, tableHandle, columnHandle);
         }
     }
 
     @Override
     public void setColumnType(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column, Type type)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setColumnType(session, tableHandle, column, type);
         }
     }
@@ -389,7 +408,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void setFieldType(ConnectorSession session, ConnectorTableHandle tableHandle, List<String> fieldPath, Type type)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setFieldType(session, tableHandle, fieldPath, type);
         }
     }
@@ -397,7 +416,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void dropNotNullConstraint(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.dropNotNullConstraint(session, tableHandle, column);
         }
     }
@@ -405,7 +424,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void setTableAuthorization(ConnectorSession session, SchemaTableName table, TrinoPrincipal principal)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setTableAuthorization(session, table, principal);
         }
     }
@@ -413,7 +432,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void createSchema(ConnectorSession session, String schemaName, Map<String, Object> properties, TrinoPrincipal owner)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.createSchema(session, schemaName, properties, owner);
         }
     }
@@ -421,7 +440,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void dropSchema(ConnectorSession session, String schemaName, boolean cascade)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.dropSchema(session, schemaName, cascade);
         }
     }
@@ -429,7 +448,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void renameSchema(ConnectorSession session, String source, String target)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.renameSchema(session, source, target);
         }
     }
@@ -437,23 +456,15 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void setSchemaAuthorization(ConnectorSession session, String schemaName, TrinoPrincipal principal)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setSchemaAuthorization(session, schemaName, principal);
-        }
-    }
-
-    @Override
-    public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean ignoreExisting)
-    {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            delegate.createTable(session, tableMetadata, ignoreExisting);
         }
     }
 
     @Override
     public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, SaveMode saveMode)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.createTable(session, tableMetadata, saveMode);
         }
     }
@@ -461,7 +472,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void dropTable(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.dropTable(session, tableHandle);
         }
     }
@@ -469,7 +480,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void truncateTable(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.truncateTable(session, tableHandle);
         }
     }
@@ -477,7 +488,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void renameColumn(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle source, String target)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.renameColumn(session, tableHandle, source, target);
         }
     }
@@ -485,7 +496,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void renameField(ConnectorSession session, ConnectorTableHandle tableHandle, List<String> fieldPath, String target)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.renameField(session, tableHandle, fieldPath, target);
         }
     }
@@ -493,7 +504,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void dropColumn(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.dropColumn(session, tableHandle, column);
         }
     }
@@ -501,7 +512,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void dropField(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column, List<String> fieldPath)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.dropField(session, tableHandle, column, fieldPath);
         }
     }
@@ -509,7 +520,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void renameTable(ConnectorSession session, ConnectorTableHandle tableHandle, SchemaTableName newTableName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.renameTable(session, tableHandle, newTableName);
         }
     }
@@ -517,7 +528,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void setTableProperties(ConnectorSession session, ConnectorTableHandle tableHandle, Map<String, Optional<Object>> properties)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setTableProperties(session, tableHandle, properties);
         }
     }
@@ -525,7 +536,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void setTableComment(ConnectorSession session, ConnectorTableHandle tableHandle, Optional<String> comment)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setTableComment(session, tableHandle, comment);
         }
     }
@@ -533,7 +544,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void setViewComment(ConnectorSession session, SchemaTableName viewName, Optional<String> comment)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setViewComment(session, viewName, comment);
         }
     }
@@ -541,7 +552,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void setViewColumnComment(ConnectorSession session, SchemaTableName viewName, String columnName, Optional<String> comment)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setViewColumnComment(session, viewName, columnName, comment);
         }
     }
@@ -549,7 +560,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void setMaterializedViewColumnComment(ConnectorSession session, SchemaTableName viewName, String columnName, Optional<String> comment)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setMaterializedViewColumnComment(session, viewName, columnName, comment);
         }
     }
@@ -557,23 +568,15 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void setColumnComment(ConnectorSession session, ConnectorTableHandle tableHandle, ColumnHandle column, Optional<String> comment)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setColumnComment(session, tableHandle, column, comment);
-        }
-    }
-
-    @Override
-    public ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, Optional<ConnectorTableLayout> layout, RetryMode retryMode)
-    {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.beginCreateTable(session, tableMetadata, layout, retryMode);
         }
     }
 
     @Override
     public ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, Optional<ConnectorTableLayout> layout, RetryMode retryMode, boolean replace)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.beginCreateTable(session, tableMetadata, layout, retryMode, replace);
         }
     }
@@ -581,7 +584,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<ConnectorOutputMetadata> finishCreateTable(ConnectorSession session, ConnectorOutputTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.finishCreateTable(session, tableHandle, fragments, computedStatistics);
         }
     }
@@ -589,7 +592,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void beginQuery(ConnectorSession session)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.beginQuery(session);
         }
     }
@@ -597,7 +600,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void cleanupQuery(ConnectorSession session)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.cleanupQuery(session);
         }
     }
@@ -605,7 +608,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public ConnectorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle, List<ColumnHandle> columns, RetryMode retryMode)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.beginInsert(session, tableHandle, columns, retryMode);
         }
     }
@@ -613,23 +616,15 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public boolean supportsMissingColumnsOnInsert()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.supportsMissingColumnsOnInsert();
-        }
-    }
-
-    @Override
-    public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
-    {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.finishInsert(session, insertHandle, fragments, computedStatistics);
         }
     }
 
     @Override
     public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, List<ConnectorTableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.finishInsert(session, insertHandle, sourceTableHandles, fragments, computedStatistics);
         }
     }
@@ -637,7 +632,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public boolean delegateMaterializedViewRefreshToConnector(ConnectorSession session, SchemaTableName viewName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.delegateMaterializedViewRefreshToConnector(session, viewName);
         }
     }
@@ -645,53 +640,39 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public CompletableFuture<?> refreshMaterializedView(ConnectorSession session, SchemaTableName viewName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.refreshMaterializedView(session, viewName);
         }
     }
 
     @Override
-    public ConnectorInsertTableHandle beginRefreshMaterializedView(ConnectorSession session, ConnectorTableHandle tableHandle, List<ConnectorTableHandle> sourceTableHandles, RetryMode retryMode)
+    public ConnectorInsertTableHandle beginRefreshMaterializedView(ConnectorSession session, ConnectorTableHandle tableHandle, List<ConnectorTableHandle> sourceTableHandles, boolean hasForeignSourceTables, RetryMode retryMode, RefreshType refreshType)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.beginRefreshMaterializedView(session, tableHandle, sourceTableHandles, retryMode);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.beginRefreshMaterializedView(session, tableHandle, sourceTableHandles, hasForeignSourceTables, retryMode, refreshType);
         }
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishRefreshMaterializedView(
-            ConnectorSession session,
-            ConnectorTableHandle tableHandle,
-            ConnectorInsertTableHandle insertHandle,
-            Collection<Slice> fragments,
-            Collection<ComputedStatistics> computedStatistics,
-            List<ConnectorTableHandle> sourceTableHandles,
-            List<String> sourceTableFunctions)
+    public Optional<ConnectorOutputMetadata> finishRefreshMaterializedView(ConnectorSession session, ConnectorTableHandle tableHandle, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics, List<ConnectorTableHandle> sourceTableHandles, boolean hasForeignSourceTables, boolean hasSourceTableFunctions)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.finishRefreshMaterializedView(
-                    session,
-                    tableHandle,
-                    insertHandle,
-                    fragments,
-                    computedStatistics,
-                    sourceTableHandles,
-                    sourceTableFunctions);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.finishRefreshMaterializedView(session, tableHandle, insertHandle, fragments, computedStatistics, sourceTableHandles, hasForeignSourceTables, hasSourceTableFunctions);
         }
     }
 
     @Override
-    public void createView(ConnectorSession session, SchemaTableName viewName, ConnectorViewDefinition definition, boolean replace)
+    public void createView(ConnectorSession session, SchemaTableName viewName, ConnectorViewDefinition definition, Map<String, Object> viewProperties, boolean replace)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            delegate.createView(session, viewName, definition, replace);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.createView(session, viewName, definition, viewProperties, replace);
         }
     }
 
     @Override
     public void renameView(ConnectorSession session, SchemaTableName source, SchemaTableName target)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.renameView(session, source, target);
         }
     }
@@ -699,15 +680,23 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void setViewAuthorization(ConnectorSession session, SchemaTableName viewName, TrinoPrincipal principal)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setViewAuthorization(session, viewName, principal);
+        }
+    }
+
+    @Override
+    public void refreshView(ConnectorSession session, SchemaTableName viewName, ConnectorViewDefinition viewDefinition)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.refreshView(session, viewName, viewDefinition);
         }
     }
 
     @Override
     public void dropView(ConnectorSession session, SchemaTableName viewName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.dropView(session, viewName);
         }
     }
@@ -715,7 +704,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public List<SchemaTableName> listViews(ConnectorSession session, Optional<String> schemaName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listViews(session, schemaName);
         }
     }
@@ -723,7 +712,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Map<SchemaTableName, ConnectorViewDefinition> getViews(ConnectorSession session, Optional<String> schemaName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getViews(session, schemaName);
         }
     }
@@ -731,8 +720,24 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<ConnectorViewDefinition> getView(ConnectorSession session, SchemaTableName viewName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getView(session, viewName);
+        }
+    }
+
+    @Override
+    public boolean isView(ConnectorSession session, SchemaTableName viewName)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.isView(session, viewName);
+        }
+    }
+
+    @Override
+    public Map<String, Object> getViewProperties(ConnectorSession session, SchemaTableName viewName)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.getViewProperties(session, viewName);
         }
     }
 
@@ -751,7 +756,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<ConnectorTableHandle> applyUpdate(ConnectorSession session, ConnectorTableHandle handle, Map<ColumnHandle, Constant> assignments)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applyUpdate(session, handle, assignments);
         }
     }
@@ -759,7 +764,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public OptionalLong executeUpdate(ConnectorSession session, ConnectorTableHandle handle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.executeUpdate(session, handle);
         }
     }
@@ -767,7 +772,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<ConnectorTableHandle> applyDelete(ConnectorSession session, ConnectorTableHandle handle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applyDelete(session, handle);
         }
     }
@@ -775,7 +780,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public OptionalLong executeDelete(ConnectorSession session, ConnectorTableHandle handle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.executeDelete(session, handle);
         }
     }
@@ -783,7 +788,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<ConnectorResolvedIndex> resolveIndex(ConnectorSession session, ConnectorTableHandle tableHandle, Set<ColumnHandle> indexableColumns, Set<ColumnHandle> outputColumns, TupleDomain<ColumnHandle> tupleDomain)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.resolveIndex(session, tableHandle, indexableColumns, outputColumns, tupleDomain);
         }
     }
@@ -791,7 +796,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Collection<FunctionMetadata> listFunctions(ConnectorSession session, String schemaName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listFunctions(session, schemaName);
         }
     }
@@ -799,7 +804,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Collection<FunctionMetadata> getFunctions(ConnectorSession session, SchemaFunctionName name)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getFunctions(session, name);
         }
     }
@@ -807,7 +812,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public FunctionMetadata getFunctionMetadata(ConnectorSession session, FunctionId functionId)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getFunctionMetadata(session, functionId);
         }
     }
@@ -816,7 +821,7 @@ public class ClassLoaderSafeConnectorMetadata
     public AggregationFunctionMetadata getAggregationFunctionMetadata(ConnectorSession session,
             FunctionId functionId)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getAggregationFunctionMetadata(session, functionId);
         }
     }
@@ -825,7 +830,7 @@ public class ClassLoaderSafeConnectorMetadata
     public FunctionDependencyDeclaration getFunctionDependencies(ConnectorSession session,
             FunctionId functionId, BoundSignature boundSignature)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getFunctionDependencies(session, functionId, boundSignature);
         }
     }
@@ -833,7 +838,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Collection<LanguageFunction> listLanguageFunctions(ConnectorSession session, String schemaName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listLanguageFunctions(session, schemaName);
         }
     }
@@ -841,7 +846,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Collection<LanguageFunction> getLanguageFunctions(ConnectorSession session, SchemaFunctionName name)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getLanguageFunctions(session, name);
         }
     }
@@ -849,7 +854,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public boolean languageFunctionExists(ConnectorSession session, SchemaFunctionName name, String signatureToken)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.languageFunctionExists(session, name, signatureToken);
         }
     }
@@ -857,7 +862,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void createLanguageFunction(ConnectorSession session, SchemaFunctionName name, LanguageFunction function, boolean replace)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.createLanguageFunction(session, name, function, replace);
         }
     }
@@ -865,15 +870,55 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void dropLanguageFunction(ConnectorSession session, SchemaFunctionName name, String signatureToken)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.dropLanguageFunction(session, name, signatureToken);
+        }
+    }
+
+    @Override
+    public void createBranch(ConnectorSession session, ConnectorTableHandle tableHandle, String branch, Optional<String> fromBranch, SaveMode saveMode, Map<String, Object> properties)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.createBranch(session, tableHandle, branch, fromBranch, saveMode, properties);
+        }
+    }
+
+    @Override
+    public void dropBranch(ConnectorSession session, ConnectorTableHandle tableHandle, String branch)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.dropBranch(session, tableHandle, branch);
+        }
+    }
+
+    @Override
+    public void fastForwardBranch(ConnectorSession session, ConnectorTableHandle tableHandle, String sourceBranch, String targetBranch)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.fastForwardBranch(session, tableHandle, sourceBranch, targetBranch);
+        }
+    }
+
+    @Override
+    public Collection<String> listBranches(ConnectorSession session, SchemaTableName tableName)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.listBranches(session, tableName);
+        }
+    }
+
+    @Override
+    public boolean branchExists(ConnectorSession session, SchemaTableName tableName, String branch)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.branchExists(session, tableName, branch);
         }
     }
 
     @Override
     public boolean roleExists(ConnectorSession session, String role)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.roleExists(session, role);
         }
     }
@@ -881,7 +926,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void createRole(ConnectorSession session, String role, Optional<TrinoPrincipal> grantor)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.createRole(session, role, grantor);
         }
     }
@@ -889,7 +934,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void dropRole(ConnectorSession session, String role)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.dropRole(session, role);
         }
     }
@@ -897,7 +942,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Set<String> listRoles(ConnectorSession session)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listRoles(session);
         }
     }
@@ -905,7 +950,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Set<RoleGrant> listRoleGrants(ConnectorSession session, TrinoPrincipal principal)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listRoleGrants(session, principal);
         }
     }
@@ -913,7 +958,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void grantRoles(ConnectorSession connectorSession, Set<String> roles, Set<TrinoPrincipal> grantees, boolean adminOption, Optional<TrinoPrincipal> grantor)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.grantRoles(connectorSession, roles, grantees, adminOption, grantor);
         }
     }
@@ -921,7 +966,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void revokeRoles(ConnectorSession connectorSession, Set<String> roles, Set<TrinoPrincipal> grantees, boolean adminOption, Optional<TrinoPrincipal> grantor)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.revokeRoles(connectorSession, roles, grantees, adminOption, grantor);
         }
     }
@@ -929,7 +974,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Set<RoleGrant> listApplicableRoles(ConnectorSession session, TrinoPrincipal principal)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listApplicableRoles(session, principal);
         }
     }
@@ -937,7 +982,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Set<String> listEnabledRoles(ConnectorSession session)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listEnabledRoles(session);
         }
     }
@@ -945,7 +990,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void grantSchemaPrivileges(ConnectorSession session, String schemaName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.grantSchemaPrivileges(session, schemaName, privileges, grantee, grantOption);
         }
     }
@@ -953,7 +998,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void denySchemaPrivileges(ConnectorSession session, String schemaName, Set<Privilege> privileges, TrinoPrincipal grantee)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.denySchemaPrivileges(session, schemaName, privileges, grantee);
         }
     }
@@ -961,7 +1006,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void revokeSchemaPrivileges(ConnectorSession session, String schemaName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.revokeSchemaPrivileges(session, schemaName, privileges, grantee, grantOption);
         }
     }
@@ -969,7 +1014,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void grantTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.grantTablePrivileges(session, tableName, privileges, grantee, grantOption);
         }
     }
@@ -977,7 +1022,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void denyTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, TrinoPrincipal grantee)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.denyTablePrivileges(session, tableName, privileges, grantee);
         }
     }
@@ -985,7 +1030,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void revokeTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.revokeTablePrivileges(session, tableName, privileges, grantee, grantOption);
         }
     }
@@ -993,15 +1038,39 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public List<GrantInfo> listTablePrivileges(ConnectorSession session, SchemaTablePrefix prefix)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listTablePrivileges(session, prefix);
+        }
+    }
+
+    @Override
+    public void grantTableBranchPrivileges(ConnectorSession session, SchemaTableName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.grantTableBranchPrivileges(session, tableName, branchName, privileges, grantee, grantOption);
+        }
+    }
+
+    @Override
+    public void denyTableBranchPrivileges(ConnectorSession session, SchemaTableName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.denyTableBranchPrivileges(session, tableName, branchName, privileges, grantee);
+        }
+    }
+
+    @Override
+    public void revokeTableBranchPrivileges(ConnectorSession session, SchemaTableName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.revokeTableBranchPrivileges(session, tableName, branchName, privileges, grantee, grantOption);
         }
     }
 
     @Override
     public ConnectorTableProperties getTableProperties(ConnectorSession session, ConnectorTableHandle table)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getTableProperties(session, table);
         }
     }
@@ -1009,7 +1078,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<LimitApplicationResult<ConnectorTableHandle>> applyLimit(ConnectorSession session, ConnectorTableHandle table, long limit)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applyLimit(session, table, limit);
         }
     }
@@ -1017,7 +1086,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(ConnectorSession session, ConnectorTableHandle table, Constraint constraint)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applyFilter(session, table, constraint);
         }
     }
@@ -1025,7 +1094,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<ProjectionApplicationResult<ConnectorTableHandle>> applyProjection(ConnectorSession session, ConnectorTableHandle table, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applyProjection(session, table, projections, assignments);
         }
     }
@@ -1033,7 +1102,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<SampleApplicationResult<ConnectorTableHandle>> applySample(ConnectorSession session, ConnectorTableHandle table, SampleType sampleType, double sampleRatio)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applySample(session, table, sampleType, sampleRatio);
         }
     }
@@ -1046,7 +1115,7 @@ public class ClassLoaderSafeConnectorMetadata
             Map<String, ColumnHandle> assignments,
             List<List<ColumnHandle>> groupingSets)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applyAggregation(session, table, aggregates, assignments, groupingSets);
         }
     }
@@ -1062,24 +1131,8 @@ public class ClassLoaderSafeConnectorMetadata
             Map<String, ColumnHandle> rightAssignments,
             JoinStatistics statistics)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applyJoin(session, joinType, left, right, joinCondition, leftAssignments, rightAssignments, statistics);
-        }
-    }
-
-    @Override
-    public Optional<JoinApplicationResult<ConnectorTableHandle>> applyJoin(
-            ConnectorSession session,
-            JoinType joinType,
-            ConnectorTableHandle left,
-            ConnectorTableHandle right,
-            List<JoinCondition> joinConditions,
-            Map<String, ColumnHandle> leftAssignments,
-            Map<String, ColumnHandle> rightAssignments,
-            JoinStatistics statistics)
-    {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.applyJoin(session, joinType, left, right, joinConditions, leftAssignments, rightAssignments, statistics);
         }
     }
 
@@ -1091,7 +1144,7 @@ public class ClassLoaderSafeConnectorMetadata
             List<SortItem> sortItems,
             Map<String, ColumnHandle> assignments)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applyTopN(session, table, topNCount, sortItems, assignments);
         }
     }
@@ -1099,7 +1152,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<TableFunctionApplicationResult<ConnectorTableHandle>> applyTableFunction(ConnectorSession session, ConnectorTableFunctionHandle handle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applyTableFunction(session, handle);
         }
     }
@@ -1107,7 +1160,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void validateScan(ConnectorSession session, ConnectorTableHandle handle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.validateScan(session, handle);
         }
     }
@@ -1121,7 +1174,7 @@ public class ClassLoaderSafeConnectorMetadata
             boolean replace,
             boolean ignoreExisting)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.createMaterializedView(session, viewName, definition, properties, replace, ignoreExisting);
         }
     }
@@ -1129,7 +1182,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void dropMaterializedView(ConnectorSession session, SchemaTableName viewName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.dropMaterializedView(session, viewName);
         }
     }
@@ -1137,7 +1190,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public List<SchemaTableName> listMaterializedViews(ConnectorSession session, Optional<String> schemaName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.listMaterializedViews(session, schemaName);
         }
     }
@@ -1145,7 +1198,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Map<SchemaTableName, ConnectorMaterializedViewDefinition> getMaterializedViews(ConnectorSession session, Optional<String> schemaName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getMaterializedViews(session, schemaName);
         }
     }
@@ -1153,7 +1206,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<ConnectorMaterializedViewDefinition> getMaterializedView(ConnectorSession session, SchemaTableName viewName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getMaterializedView(session, viewName);
         }
     }
@@ -1161,7 +1214,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Map<String, Object> getMaterializedViewProperties(ConnectorSession session, SchemaTableName viewName, ConnectorMaterializedViewDefinition viewDefinition)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getMaterializedViewProperties(session, viewName, viewDefinition);
         }
     }
@@ -1169,7 +1222,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public MaterializedViewFreshness getMaterializedViewFreshness(ConnectorSession session, SchemaTableName name)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getMaterializedViewFreshness(session, name);
         }
     }
@@ -1177,15 +1230,23 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public void renameMaterializedView(ConnectorSession session, SchemaTableName source, SchemaTableName target)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.renameMaterializedView(session, source, target);
+        }
+    }
+
+    @Override
+    public void setMaterializedViewAuthorization(ConnectorSession session, SchemaTableName viewName, TrinoPrincipal principal)
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.setMaterializedViewAuthorization(session, viewName, principal);
         }
     }
 
     @Override
     public void setMaterializedViewProperties(ConnectorSession session, SchemaTableName viewName, Map<String, Optional<Object>> properties)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.setMaterializedViewProperties(session, viewName, properties);
         }
     }
@@ -1193,7 +1254,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public Optional<TableScanRedirectApplicationResult> applyTableScanRedirect(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.applyTableScanRedirect(session, tableHandle);
         }
     }
@@ -1201,7 +1262,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public ColumnHandle getMergeRowIdColumnHandle(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getMergeRowIdColumnHandle(session, tableHandle);
         }
     }
@@ -1213,25 +1274,25 @@ public class ClassLoaderSafeConnectorMetadata
     }
 
     @Override
-    public ConnectorMergeTableHandle beginMerge(ConnectorSession session, ConnectorTableHandle tableHandle, RetryMode retryMode)
+    public ConnectorMergeTableHandle beginMerge(ConnectorSession session, ConnectorTableHandle tableHandle, Map<Integer, Collection<ColumnHandle>> updateCaseColumns, RetryMode retryMode)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            return delegate.beginMerge(session, tableHandle, retryMode);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            return delegate.beginMerge(session, tableHandle, updateCaseColumns, retryMode);
         }
     }
 
     @Override
-    public void finishMerge(ConnectorSession session, ConnectorMergeTableHandle mergeTableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public void finishMerge(ConnectorSession session, ConnectorMergeTableHandle mergeTableHandle, List<ConnectorTableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
-            delegate.finishMerge(session, mergeTableHandle, fragments, computedStatistics);
+            delegate.finishMerge(session, mergeTableHandle, sourceTableHandles, fragments, computedStatistics);
         }
     }
 
     @Override
     public Optional<CatalogSchemaTableName> redirectTable(ConnectorSession session, SchemaTableName tableName)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.redirectTable(session, tableName);
         }
     }
@@ -1239,7 +1300,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public ConnectorTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName, Optional<ConnectorTableVersion> startVersion, Optional<ConnectorTableVersion> endVersion)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getTableHandle(session, tableName, startVersion, endVersion);
         }
     }
@@ -1247,7 +1308,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public RowChangeParadigm getRowChangeParadigm(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getRowChangeParadigm(session, tableHandle);
         }
     }
@@ -1255,15 +1316,23 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public OptionalInt getMaxWriterTasks(ConnectorSession session)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getMaxWriterTasks(session);
+        }
+    }
+
+    @Override
+    public boolean allowSplittingReadIntoMultipleSubQueries(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+            return delegate.allowSplittingReadIntoMultipleSubQueries(session, tableHandle);
         }
     }
 
     @Override
     public WriterScalingOptions getNewTableWriterScalingOptions(ConnectorSession session, SchemaTableName tableName, Map<String, Object> tableProperties)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getNewTableWriterScalingOptions(session, tableName, tableProperties);
         }
     }
@@ -1271,7 +1340,7 @@ public class ClassLoaderSafeConnectorMetadata
     @Override
     public WriterScalingOptions getInsertWriterScalingOptions(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.getInsertWriterScalingOptions(session, tableHandle);
         }
     }

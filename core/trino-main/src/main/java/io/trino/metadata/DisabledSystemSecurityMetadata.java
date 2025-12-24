@@ -16,15 +16,19 @@ package io.trino.metadata;
 import com.google.common.collect.ImmutableSet;
 import io.trino.Session;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.EntityKindAndName;
 import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.function.CatalogSchemaFunctionName;
+import io.trino.spi.security.FunctionAuthorization;
 import io.trino.spi.security.GrantInfo;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.Privilege;
 import io.trino.spi.security.RoleGrant;
+import io.trino.spi.security.SchemaAuthorization;
+import io.trino.spi.security.TableAuthorization;
 import io.trino.spi.security.TrinoPrincipal;
 
 import java.util.List;
@@ -120,25 +124,43 @@ public class DisabledSystemSecurityMetadata
     @Override
     public void grantTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
-        throw notSupportedException(tableName.getCatalogName());
+        throw notSupportedException(tableName.catalogName());
     }
 
     @Override
     public void denyTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee)
     {
-        throw notSupportedException(tableName.getCatalogName());
+        throw notSupportedException(tableName.catalogName());
     }
 
     @Override
     public void revokeTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
-        throw notSupportedException(tableName.getCatalogName());
+        throw notSupportedException(tableName.catalogName());
     }
 
     @Override
     public Set<GrantInfo> listTablePrivileges(Session session, QualifiedTablePrefix prefix)
     {
         return ImmutableSet.of();
+    }
+
+    @Override
+    public void grantTableBranchPrivileges(Session session, QualifiedObjectName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        throw notSupportedException(tableName.catalogName());
+    }
+
+    @Override
+    public void denyTableBranchPrivileges(Session session, QualifiedObjectName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee)
+    {
+        throw notSupportedException(tableName.catalogName());
+    }
+
+    @Override
+    public void revokeTableBranchPrivileges(Session session, QualifiedObjectName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        throw notSupportedException(tableName.catalogName());
     }
 
     @Override
@@ -166,27 +188,9 @@ public class DisabledSystemSecurityMetadata
     }
 
     @Override
-    public void setSchemaOwner(Session session, CatalogSchemaName schema, TrinoPrincipal principal)
-    {
-        throw notSupportedException(schema.getCatalogName());
-    }
-
-    @Override
-    public void setTableOwner(Session session, CatalogSchemaTableName table, TrinoPrincipal principal)
-    {
-        throw notSupportedException(table.getCatalogName());
-    }
-
-    @Override
     public Optional<Identity> getViewRunAsIdentity(Session session, CatalogSchemaTableName view)
     {
         return Optional.empty();
-    }
-
-    @Override
-    public void setViewOwner(Session session, CatalogSchemaTableName view, TrinoPrincipal principal)
-    {
-        throw notSupportedException(view.getCatalogName());
     }
 
     @Override
@@ -194,6 +198,18 @@ public class DisabledSystemSecurityMetadata
     {
         return Optional.empty();
     }
+
+    @Override
+    public void catalogCreated(Session session, CatalogName catalog) {}
+
+    @Override
+    public void catalogDropped(Session session, CatalogName catalog) {}
+
+    @Override
+    public void functionCreated(Session session, CatalogSchemaFunctionName function) {}
+
+    @Override
+    public void functionDropped(Session session, CatalogSchemaFunctionName function) {}
 
     @Override
     public void schemaCreated(Session session, CatalogSchemaName schema) {}
@@ -227,6 +243,30 @@ public class DisabledSystemSecurityMetadata
 
     @Override
     public void columnNotNullConstraintDropped(Session session, CatalogSchemaTableName table, String column) {}
+
+    @Override
+    public void setEntityOwner(Session session, EntityKindAndName entityKindAndName, TrinoPrincipal principal)
+    {
+        throw notSupportedException(entityKindAndName.name().get(0));
+    }
+
+    @Override
+    public Set<SchemaAuthorization> getSchemasAuthorizationInfo(Session session, QualifiedSchemaPrefix prefix)
+    {
+        return Set.of();
+    }
+
+    @Override
+    public Set<TableAuthorization> getTablesAuthorizationInfo(Session session, QualifiedTablePrefix prefix)
+    {
+        return Set.of();
+    }
+
+    @Override
+    public Set<FunctionAuthorization> getFunctionsAuthorizationInfo(Session session, QualifiedObjectPrefix prefix)
+    {
+        return Set.of();
+    }
 
     private static TrinoException notSupportedException(String catalogName)
     {

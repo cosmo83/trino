@@ -15,14 +15,12 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.IndexJoinNode.EquiJoinClause;
 import org.junit.jupiter.api.Test;
-
-import java.util.Optional;
 
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -49,21 +47,17 @@ public class TestPruneIndexJoinColumns
                                     INNER,
                                     p.values(a),
                                     p.values(b, c),
-                                    ImmutableList.of(new EquiJoinClause(a, b)),
-                                    Optional.empty(),
-                                    Optional.empty()));
+                                    ImmutableList.of(new EquiJoinClause(a, b))));
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a")), "b", expression(new SymbolReference(BIGINT, "b"))),
+                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a")), "b", expression(new Reference(BIGINT, "b"))),
                                 indexJoin(
                                         INNER,
                                         ImmutableList.of(indexJoinEquiClause("a", "b")),
-                                        Optional.empty(),
-                                        Optional.empty(),
                                         values("a"),
                                         strictProject(
-                                                ImmutableMap.of("b", expression(new SymbolReference(BIGINT, "b"))),
+                                                ImmutableMap.of("b", expression(new Reference(BIGINT, "b"))),
                                                 values("b", "c")))));
 
         tester().assertThat(new PruneIndexJoinColumns())
@@ -78,23 +72,19 @@ public class TestPruneIndexJoinColumns
                                     INNER,
                                     p.values(a, b),
                                     p.values(c, d),
-                                    ImmutableList.of(new EquiJoinClause(a, c)),
-                                    Optional.empty(),
-                                    Optional.empty()));
+                                    ImmutableList.of(new EquiJoinClause(a, c))));
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a")), "c", expression(new SymbolReference(BIGINT, "c"))),
+                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a")), "c", expression(new Reference(BIGINT, "c"))),
                                 indexJoin(
                                         INNER,
                                         ImmutableList.of(indexJoinEquiClause("a", "c")),
-                                        Optional.empty(),
-                                        Optional.empty(),
                                         strictProject(
-                                                ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a"))),
+                                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a"))),
                                                 values("a", "b")),
                                         strictProject(
-                                                ImmutableMap.of("c", expression(new SymbolReference(BIGINT, "c"))),
+                                                ImmutableMap.of("c", expression(new Reference(BIGINT, "c"))),
                                                 values("c", "d")))));
     }
 
@@ -111,30 +101,7 @@ public class TestPruneIndexJoinColumns
                                     INNER,
                                     p.values(a),
                                     p.values(b),
-                                    ImmutableList.of(new EquiJoinClause(a, b)),
-                                    Optional.empty(),
-                                    Optional.empty()));
-                })
-                .doesNotFire();
-    }
-
-    @Test
-    public void testDoNotPruneHashSymbol()
-    {
-        tester().assertThat(new PruneIndexJoinColumns())
-                .on(p -> {
-                    Symbol a = p.symbol("a");
-                    Symbol b = p.symbol("b");
-                    Symbol h = p.symbol("h");
-                    return p.project(
-                            Assignments.identity(a, b),
-                            p.indexJoin(
-                                    INNER,
-                                    p.values(a),
-                                    p.values(b, h),
-                                    ImmutableList.of(new EquiJoinClause(a, b)),
-                                    Optional.empty(),
-                                    Optional.of(h)));
+                                    ImmutableList.of(new EquiJoinClause(a, b))));
                 })
                 .doesNotFire();
     }
@@ -153,9 +120,7 @@ public class TestPruneIndexJoinColumns
                                     INNER,
                                     p.values(a),
                                     p.values(b, c),
-                                    ImmutableList.of(new EquiJoinClause(a, b)),
-                                    Optional.empty(),
-                                    Optional.empty()));
+                                    ImmutableList.of(new EquiJoinClause(a, b))));
                 })
                 .doesNotFire();
     }

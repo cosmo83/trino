@@ -31,7 +31,7 @@ import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TransactionBuilder;
-import io.trino.tests.tpch.TpchQueryRunnerBuilder;
+import io.trino.tests.tpch.TpchQueryRunner;
 import io.trino.tracing.TracingMetadata;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.AfterAll;
@@ -69,7 +69,7 @@ public class TestMetadataManager
     public void setUp()
             throws Exception
     {
-        queryRunner = TpchQueryRunnerBuilder.builder().build();
+        queryRunner = TpchQueryRunner.builder().build();
         queryRunner.installPlugin(new Plugin()
         {
             @Override
@@ -110,7 +110,7 @@ public class TestMetadataManager
         @Language("SQL") String sql = "SELECT * FROM nation";
         queryRunner.execute(sql);
 
-        assertThat(metadataManager.getActiveQueryIds().size()).isEqualTo(0);
+        assertThat(metadataManager.getActiveQueryIds()).isEmpty();
     }
 
     @Test
@@ -121,7 +121,7 @@ public class TestMetadataManager
                 .isInstanceOf(RuntimeException.class)
                 .hasMessage("Division by zero");
 
-        assertThat(metadataManager.getActiveQueryIds().size()).isEqualTo(0);
+        assertThat(metadataManager.getActiveQueryIds()).isEmpty();
     }
 
     @Test
@@ -165,7 +165,7 @@ public class TestMetadataManager
 
         // cancel query
         dispatchManager.cancelQuery(queryId);
-        assertThat(metadataManager.getActiveQueryIds().size()).isEqualTo(0);
+        assertThat(metadataManager.getActiveQueryIds()).isEmpty();
     }
 
     @Test

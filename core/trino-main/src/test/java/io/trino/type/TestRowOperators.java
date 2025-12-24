@@ -51,8 +51,8 @@ import static io.trino.spi.function.InvocationConvention.InvocationReturnConvent
 import static io.trino.spi.function.InvocationConvention.simpleConvention;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.XX_HASH_64;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -114,9 +114,9 @@ public class TestRowOperators
     public void testRowTypeLookup()
     {
         TypeSignature signature = RowType.from(ImmutableList.of(field("b", BIGINT))).getTypeSignature();
-        Type type = assertions.getQueryRunner().getPlannerContext().getTypeManager().getType(signature);
-        assertThat(type.getTypeSignature().getParameters().size()).isEqualTo(1);
-        assertThat(type.getTypeSignature().getParameters().get(0).getNamedTypeSignature().getName().get()).isEqualTo("b");
+        RowType type = (RowType) assertions.getQueryRunner().getPlannerContext().getTypeManager().getType(signature);
+        assertThat(type.getFields()).hasSize(1);
+        assertThat(type.getFields().get(0).getName().get()).isEqualTo("b");
     }
 
     @Test
@@ -461,13 +461,13 @@ public class TestRowOperators
         assertTrinoExceptionThrownBy(() -> assertions.expression("CAST(a as ROW(a BIGINT, b BIGINT))")
                 .binding("a", "unchecked_to_json('{\"a\":1,\"b\":2,\"a\":3}')")
                 .evaluate())
-                .hasMessage("Cannot cast to row(a bigint, b bigint). Duplicate field: a\n{\"a\":1,\"b\":2,\"a\":3}")
+                .hasMessage("Cannot cast to row(\"a\" bigint, \"b\" bigint). Duplicate field: a\n{\"a\":1,\"b\":2,\"a\":3}")
                 .hasErrorCode(INVALID_CAST_ARGUMENT);
 
         assertTrinoExceptionThrownBy(() -> assertions.expression("CAST(a as ARRAY(ROW(a BIGINT, b BIGINT)))")
                 .binding("a", "unchecked_to_json('[{\"a\":1,\"b\":2,\"a\":3}]')")
                 .evaluate())
-                .hasMessage("Cannot cast to array(row(a bigint, b bigint)). Duplicate field: a\n[{\"a\":1,\"b\":2,\"a\":3}]")
+                .hasMessage("Cannot cast to array(row(\"a\" bigint, \"b\" bigint)). Duplicate field: a\n[{\"a\":1,\"b\":2,\"a\":3}]")
                 .hasErrorCode(INVALID_CAST_ARGUMENT);
     }
 
@@ -613,43 +613,43 @@ public class TestRowOperators
     }
 
     @Test
-    public void testIsDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "CAST(NULL AS ROW(UNKNOWN))", "CAST(NULL AS ROW(UNKNOWN))"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(NULL)", "row(NULL)"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 'cat')", "row(1, 'cat')"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, ARRAY [1])", "row(1, ARRAY [1])"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, ARRAY [1, 2])", "row(1, ARRAY [1, NULL])"))
+        assertThat(assertions.operator(IDENTICAL, "CAST(NULL AS ROW(UNKNOWN))", "CAST(NULL AS ROW(UNKNOWN))"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))", "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))", "row(1, 2.0E0, TRUE, 'cat', from_unixtime(2))"))
+        assertThat(assertions.operator(IDENTICAL, "row(NULL)", "row(NULL)"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))", "row(1, 2.0E0, TRUE, 'cat', 2)"))
+        assertThat(assertions.operator(IDENTICAL, "row(1, 'cat')", "row(1, 'cat')"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))", "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, 'cat')", "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))"))
+        assertThat(assertions.operator(IDENTICAL, "row(1, ARRAY [1])", "row(1, ARRAY [1])"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))", "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))"))
+        assertThat(assertions.operator(IDENTICAL, "row(1, ARRAY [1, 2])", "row(1, ARRAY [1, NULL])"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[ROW(1)]", "ARRAY[ROW(1)]"))
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))", "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))", "row(1, 2.0E0, TRUE, 'cat', from_unixtime(2))"))
                 .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))", "row(1, 2.0E0, TRUE, 'cat', 2)"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))", "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, 'cat')", "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))", "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[ROW(1)]", "ARRAY[ROW(1)]"))
+                .isEqualTo(true);
     }
 
     @Test
@@ -676,19 +676,19 @@ public class TestRowOperators
 
         assertTrinoExceptionThrownBy(assertions.expression("CAST(row(CAST(CAST('' as varbinary) as hyperloglog)) as row(col0 hyperloglog)) = CAST(row(CAST(CAST('' as varbinary) as hyperloglog)) as row(col0 hyperloglog))")::evaluate)
                 .hasErrorCode(TYPE_MISMATCH)
-                .hasMessage("line 1:91: Cannot apply operator: row(col0 HyperLogLog) = row(col0 HyperLogLog)");
+                .hasMessage("line 1:91: Cannot apply operator: row(\"col0\" HyperLogLog) = row(\"col0\" HyperLogLog)");
 
         assertTrinoExceptionThrownBy(assertions.expression("CAST(row(CAST(CAST('' as varbinary) as hyperloglog)) as row(col0 hyperloglog)) > CAST(row(CAST(CAST('' as varbinary) as hyperloglog)) as row(col0 hyperloglog))")::evaluate)
                 .hasErrorCode(TYPE_MISMATCH)
-                .hasMessage("line 1:91: Cannot apply operator: row(col0 HyperLogLog) < row(col0 HyperLogLog)");
+                .hasMessage("line 1:91: Cannot apply operator: row(\"col0\" HyperLogLog) < row(\"col0\" HyperLogLog)");
 
         assertTrinoExceptionThrownBy(assertions.expression("CAST(row(CAST(CAST('' as varbinary) as qdigest(double))) as row(col0 qdigest(double))) = CAST(row(CAST(CAST('' as varbinary) as qdigest(double))) as row(col0 qdigest(double)))")::evaluate)
                 .hasErrorCode(TYPE_MISMATCH)
-                .hasMessage("line 1:99: Cannot apply operator: row(col0 qdigest(double)) = row(col0 qdigest(double))");
+                .hasMessage("line 1:99: Cannot apply operator: row(\"col0\" qdigest(double)) = row(\"col0\" qdigest(double))");
 
         assertTrinoExceptionThrownBy(assertions.expression("CAST(row(CAST(CAST('' as varbinary) as qdigest(double))) as row(col0 qdigest(double))) > CAST(row(CAST(CAST('' as varbinary) as qdigest(double))) as row(col0 qdigest(double)))")::evaluate)
                 .hasErrorCode(TYPE_MISMATCH)
-                .hasMessage("line 1:99: Cannot apply operator: row(col0 qdigest(double)) < row(col0 qdigest(double))");
+                .hasMessage("line 1:99: Cannot apply operator: row(\"col0\" qdigest(double)) < row(\"col0\" qdigest(double))");
 
         assertThat(assertions.operator(EQUAL, "row(TRUE, ARRAY [1], MAP(ARRAY[1, 3], ARRAY[2.0E0, 4.0E0]))", "row(TRUE, ARRAY [1, 2], MAP(ARRAY[1, 3], ARRAY[2.0E0, 4.0E0]))"))
                 .isEqualTo(false);

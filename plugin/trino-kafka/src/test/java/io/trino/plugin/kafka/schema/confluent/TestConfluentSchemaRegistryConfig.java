@@ -14,6 +14,7 @@
 package io.trino.plugin.kafka.schema.confluent;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import io.airlift.units.Duration;
 import org.junit.jupiter.api.Test;
 
@@ -22,8 +23,8 @@ import java.util.Map;
 import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
 import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
-import static io.trino.plugin.kafka.schema.confluent.AvroSchemaConverter.EmptyFieldStrategy.IGNORE;
-import static io.trino.plugin.kafka.schema.confluent.AvroSchemaConverter.EmptyFieldStrategy.MARK;
+import static io.trino.plugin.kafka.schema.confluent.EmptyFieldStrategy.IGNORE;
+import static io.trino.plugin.kafka.schema.confluent.EmptyFieldStrategy.MARK;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class TestConfluentSchemaRegistryConfig
@@ -32,7 +33,7 @@ public class TestConfluentSchemaRegistryConfig
     public void testDefaults()
     {
         assertRecordedDefaults(recordDefaults(ConfluentSchemaRegistryConfig.class)
-                .setConfluentSchemaRegistryUrls(null)
+                .setConfluentSchemaRegistryUrls(ImmutableSet.of())
                 .setConfluentSchemaRegistryClientCacheSize(1000)
                 .setEmptyFieldStrategy(IGNORE)
                 .setConfluentSubjectsCacheRefreshInterval(new Duration(1, SECONDS)));
@@ -49,7 +50,7 @@ public class TestConfluentSchemaRegistryConfig
                 .buildOrThrow();
 
         ConfluentSchemaRegistryConfig expected = new ConfluentSchemaRegistryConfig()
-                .setConfluentSchemaRegistryUrls("http://schema-registry-a:8081, http://schema-registry-b:8081")
+                .setConfluentSchemaRegistryUrls(ImmutableSet.of("http://schema-registry-a:8081", "http://schema-registry-b:8081"))
                 .setConfluentSchemaRegistryClientCacheSize(1500)
                 .setEmptyFieldStrategy(MARK)
                 .setConfluentSubjectsCacheRefreshInterval(new Duration(2, SECONDS));

@@ -25,6 +25,7 @@ import io.trino.grammar.type.TypeCalculationParser.NumericLiteralContext;
 import io.trino.grammar.type.TypeCalculationParser.ParenthesizedExpressionContext;
 import io.trino.grammar.type.TypeCalculationParser.TypeCalculationContext;
 import io.trino.sql.parser.ParsingException;
+import io.trino.sql.tree.NodeLocation;
 import org.antlr.v4.runtime.ANTLRErrorListener;
 import org.antlr.v4.runtime.BaseErrorListener;
 import org.antlr.v4.runtime.CharStreams;
@@ -70,7 +71,7 @@ public final class TypeCalculation
             return result.longValueExact();
         }
         catch (StackOverflowError e) {
-            throw new ParsingException("Type calculation is too large (stack overflow while parsing)");
+            throw new ParsingException("Type calculation is too large (stack overflow while parsing)", new NodeLocation(1, 1));
         }
     }
 
@@ -117,6 +118,29 @@ public final class TypeCalculation
         public BigInteger visitTypeCalculation(TypeCalculationContext ctx)
         {
             return visit(ctx.expression());
+        }
+
+        @Override
+        public BigInteger visitIfExpression(TypeCalculationParser.IfExpressionContext ctx)
+        {
+            BigInteger left = visit(ctx.left);
+            BigInteger right = visit(ctx.right);
+
+            boolean condition = switch (ctx.operator.getText()) {
+                case ">" -> left.compareTo(right) > 0;
+                case "<" -> left.compareTo(right) < 0;
+                case ">=" -> left.compareTo(right) >= 0;
+                case "<=" -> left.compareTo(right) <= 0;
+                case "=" -> left.equals(right);
+                case "!=" -> !left.equals(right);
+                default -> throw new IllegalStateException("Unsupported if operator " + ctx.operator.getText());
+            };
+
+            if (condition) {
+                return visit(ctx.ifTrue);
+            }
+
+            return visit(ctx.ifFalse);
         }
 
         @Override

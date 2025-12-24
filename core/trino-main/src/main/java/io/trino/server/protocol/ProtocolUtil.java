@@ -28,8 +28,10 @@ import io.trino.client.StatementStats;
 import io.trino.client.Warning;
 import io.trino.execution.BasicStageInfo;
 import io.trino.execution.BasicStageStats;
+import io.trino.execution.BasicStagesInfo;
 import io.trino.execution.ExecutionFailureInfo;
 import io.trino.execution.QueryState;
+import io.trino.execution.StageId;
 import io.trino.execution.TaskInfo;
 import io.trino.server.BasicQueryStats;
 import io.trino.server.ResultQueryInfo;
@@ -37,8 +39,8 @@ import io.trino.spi.ErrorCode;
 import io.trino.spi.TrinoWarning;
 import io.trino.spi.WarningCode;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeParameter;
 import io.trino.spi.type.TypeSignature;
-import io.trino.spi.type.TypeSignatureParameter;
 import io.trino.sql.ExpressionFormatter;
 import io.trino.sql.analyzer.TypeSignatureTranslator;
 import io.trino.sql.tree.DataType;
@@ -47,10 +49,10 @@ import io.trino.sql.tree.GenericDataType;
 import io.trino.sql.tree.IntervalDayTimeDataType;
 import io.trino.sql.tree.NumericParameter;
 import io.trino.sql.tree.RowDataType;
-import io.trino.sql.tree.TypeParameter;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -81,51 +83,47 @@ public final class ProtocolUtil
 
     private static String formatType(DataType type, boolean supportsParametricDateTime)
     {
-        if (type instanceof DateTimeDataType dataTimeType) {
-            if (!supportsParametricDateTime) {
-                if (dataTimeType.getType() == DateTimeDataType.Type.TIMESTAMP && dataTimeType.isWithTimeZone()) {
-                    return TIMESTAMP_WITH_TIME_ZONE;
+        return switch (type) {
+            case DateTimeDataType dataTimeType -> {
+                if (!supportsParametricDateTime) {
+                    if (dataTimeType.getType() == DateTimeDataType.Type.TIMESTAMP && dataTimeType.isWithTimeZone()) {
+                        yield TIMESTAMP_WITH_TIME_ZONE;
+                    }
+                    if (dataTimeType.getType() == DateTimeDataType.Type.TIMESTAMP && !dataTimeType.isWithTimeZone()) {
+                        yield TIMESTAMP;
+                    }
+                    if (dataTimeType.getType() == DateTimeDataType.Type.TIME && !dataTimeType.isWithTimeZone()) {
+                        yield TIME;
+                    }
+                    if (dataTimeType.getType() == DateTimeDataType.Type.TIME && dataTimeType.isWithTimeZone()) {
+                        yield TIME_WITH_TIME_ZONE;
+                    }
                 }
-                if (dataTimeType.getType() == DateTimeDataType.Type.TIMESTAMP && !dataTimeType.isWithTimeZone()) {
-                    return TIMESTAMP;
-                }
-                if (dataTimeType.getType() == DateTimeDataType.Type.TIME && !dataTimeType.isWithTimeZone()) {
-                    return TIME;
-                }
-                if (dataTimeType.getType() == DateTimeDataType.Type.TIME && dataTimeType.isWithTimeZone()) {
-                    return TIME_WITH_TIME_ZONE;
-                }
-            }
 
-            return ExpressionFormatter.formatExpression(type);
-        }
-        if (type instanceof RowDataType rowDataType) {
-            return rowDataType.getFields().stream()
+                yield ExpressionFormatter.formatExpression(type);
+            }
+            case RowDataType rowDataType -> rowDataType.getFields().stream()
                     .map(field -> field.getName().map(name -> name + " ").orElse("") + formatType(field.getType(), supportsParametricDateTime))
                     .collect(Collectors.joining(", ", ROW + "(", ")"));
-        }
-        if (type instanceof GenericDataType dataType) {
-            if (dataType.getArguments().isEmpty()) {
-                return dataType.getName().getValue();
+            case GenericDataType dataType -> {
+                if (dataType.getArguments().isEmpty()) {
+                    yield dataType.getName().getValue();
+                }
+
+                yield dataType.getArguments().stream()
+                        .map(parameter -> {
+                            if (parameter instanceof NumericParameter numericParameter) {
+                                return numericParameter.getValue();
+                            }
+                            if (parameter instanceof io.trino.sql.tree.TypeParameter typeParameter) {
+                                return formatType(typeParameter.getValue(), supportsParametricDateTime);
+                            }
+                            throw new IllegalArgumentException("Unsupported parameter type: " + parameter.getClass().getName());
+                        })
+                        .collect(Collectors.joining(", ", dataType.getName().getValue() + "(", ")"));
             }
-
-            return dataType.getArguments().stream()
-                    .map(parameter -> {
-                        if (parameter instanceof NumericParameter) {
-                            return ((NumericParameter) parameter).getValue();
-                        }
-                        if (parameter instanceof TypeParameter) {
-                            return formatType(((TypeParameter) parameter).getValue(), supportsParametricDateTime);
-                        }
-                        throw new IllegalArgumentException("Unsupported parameter type: " + parameter.getClass().getName());
-                    })
-                    .collect(Collectors.joining(", ", dataType.getName().getValue() + "(", ")"));
-        }
-        if (type instanceof IntervalDayTimeDataType) {
-            return ExpressionFormatter.formatExpression(type);
-        }
-
-        throw new IllegalArgumentException("Unsupported data type: " + type.getClass().getName());
+            case IntervalDayTimeDataType _ -> ExpressionFormatter.formatExpression(type);
+        };
     }
 
     private static ClientTypeSignature toClientTypeSignature(TypeSignature signature, boolean supportsParametricDateTime)
@@ -146,35 +144,33 @@ public final class ProtocolUtil
         }
 
         return new ClientTypeSignature(signature.getBase(), signature.getParameters().stream()
-                .map(parameter -> toClientTypeSignatureParameter(parameter, supportsParametricDateTime))
+                .map(parameter -> toClientTypeSignatureParameter(signature.getBase(), parameter, supportsParametricDateTime))
                 .collect(toImmutableList()));
     }
 
-    private static ClientTypeSignatureParameter toClientTypeSignatureParameter(TypeSignatureParameter parameter, boolean supportsParametricDateTime)
+    private static ClientTypeSignatureParameter toClientTypeSignatureParameter(String base, TypeParameter parameter, boolean supportsParametricDateTime)
     {
-        switch (parameter.getKind()) {
-            case TYPE:
-                return ClientTypeSignatureParameter.ofType(toClientTypeSignature(parameter.getTypeSignature(), supportsParametricDateTime));
-            case NAMED_TYPE:
-                return ClientTypeSignatureParameter.ofNamedType(new NamedClientTypeSignature(
-                        parameter.getNamedTypeSignature().getFieldName().map(value ->
-                                new RowFieldName(value.getName())),
-                        toClientTypeSignature(parameter.getNamedTypeSignature().getTypeSignature(), supportsParametricDateTime)));
-            case LONG:
-                return ClientTypeSignatureParameter.ofLong(parameter.getLongLiteral());
-            case VARIABLE:
-                // not expected here
-        }
-        throw new IllegalArgumentException("Unsupported kind: " + parameter.getKind());
+        return switch (parameter) {
+            case TypeParameter.Type(Optional<String> name, TypeSignature type) -> {
+                if (base.equalsIgnoreCase(ROW)) { // for backward compatibility with old clients, which expect NAMED_TYPE for row fields
+                    yield ClientTypeSignatureParameter.ofNamedType(new NamedClientTypeSignature(
+                            name.map(RowFieldName::new),
+                            toClientTypeSignature(type, supportsParametricDateTime)));
+                }
+                yield ClientTypeSignatureParameter.ofType(toClientTypeSignature(type, supportsParametricDateTime));
+            }
+            case TypeParameter.Numeric number -> ClientTypeSignatureParameter.ofLong(number.value());
+            case TypeParameter.Variable _ -> throw new IllegalArgumentException("Unsupported parameter kind: " + parameter);
+        };
     }
 
     public static StatementStats toStatementStats(ResultQueryInfo queryInfo)
     {
         BasicQueryStats queryStats = queryInfo.queryStats();
-        BasicStageInfo outputStage = queryInfo.outputStage().orElse(null);
+        BasicStagesInfo stages = queryInfo.stages().orElse(null);
 
         Set<String> globalUniqueNodes = new HashSet<>();
-        StageStats rootStageStats = toStageStats(outputStage, globalUniqueNodes);
+        StageStats rootStageStats = toStageStats(stages, globalUniqueNodes);
         return StatementStats.builder()
                 .setState(queryInfo.state().toString())
                 .setQueued(queryInfo.state() == QueryState.QUEUED)
@@ -186,31 +182,42 @@ public final class ProtocolUtil
                 .setQueuedSplits(queryStats.getQueuedDrivers())
                 .setRunningSplits(queryStats.getRunningDrivers() + queryStats.getBlockedDrivers())
                 .setCompletedSplits(queryStats.getCompletedDrivers())
+                .setPlanningTimeMillis(queryStats.getPlanningTime().toMillis())
+                .setAnalysisTimeMillis(queryStats.getAnalysisTime().toMillis())
                 .setCpuTimeMillis(queryStats.getTotalCpuTime().toMillis())
                 .setWallTimeMillis(queryStats.getTotalScheduledTime().toMillis())
                 .setQueuedTimeMillis(queryStats.getQueuedTime().toMillis())
                 .setElapsedTimeMillis(queryStats.getElapsedTime().toMillis())
-                .setProcessedRows(queryStats.getRawInputPositions())
-                .setProcessedBytes(queryStats.getRawInputDataSize().toBytes())
+                .setFinishingTimeMillis(queryStats.getFinishingTime().toMillis())
+                .setPhysicalInputTimeMillis(queryStats.getPhysicalInputReadTime().toMillis())
+                .setProcessedRows(queryStats.getProcessedInputPositions())
+                .setProcessedBytes(queryStats.getPhysicalInputDataSize().toBytes() + queryStats.getInternalNetworkInputDataSize().toBytes())
                 .setPhysicalInputBytes(queryStats.getPhysicalInputDataSize().toBytes())
                 .setPhysicalWrittenBytes(queryStats.getPhysicalWrittenDataSize().toBytes())
+                .setInternalNetworkInputBytes(queryStats.getInternalNetworkInputDataSize().toBytes())
                 .setPeakMemoryBytes(queryStats.getPeakUserMemoryReservation().toBytes())
                 .setSpilledBytes(queryStats.getSpilledDataSize().toBytes())
                 .setRootStage(rootStageStats)
                 .build();
     }
 
-    private static StageStats toStageStats(BasicStageInfo stageInfo, Set<String> globalUniqueNodes)
+    private static StageStats toStageStats(BasicStagesInfo stages, Set<String> globalUniqueNodes)
     {
-        if (stageInfo == null) {
+        if (stages == null) {
             return null;
         }
 
+        return toStageStats(stages.getOutputStageId(), stages, globalUniqueNodes);
+    }
+
+    private static StageStats toStageStats(StageId stageId, BasicStagesInfo stages, Set<String> globalUniqueNodes)
+    {
+        BasicStageInfo stageInfo = stages.getStagesById().get(stageId);
         BasicStageStats stageStats = stageInfo.getStageStats();
 
         // Store current stage details into a builder
         StageStats.Builder builder = StageStats.builder()
-                .setStageId(String.valueOf(stageInfo.getStageId().getId()))
+                .setStageId(String.valueOf(stageInfo.getStageId().id()))
                 .setState(stageInfo.getState().toString())
                 .setDone(stageInfo.getState().isDone())
                 .setTotalSplits(stageStats.getTotalDrivers())
@@ -219,22 +226,22 @@ public final class ProtocolUtil
                 .setCompletedSplits(stageStats.getCompletedDrivers())
                 .setCpuTimeMillis(stageStats.getTotalCpuTime().toMillis())
                 .setWallTimeMillis(stageStats.getTotalScheduledTime().toMillis())
-                .setProcessedRows(stageStats.getRawInputPositions())
-                .setProcessedBytes(stageStats.getRawInputDataSize().toBytes())
+                .setProcessedRows(stageStats.getProcessedInputPositions())
+                .setProcessedBytes(stageStats.getPhysicalInputDataSize().toBytes() + stageStats.getInternalNetworkInputDataSize().toBytes())
                 .setPhysicalInputBytes(stageStats.getPhysicalInputDataSize().toBytes())
                 .setFailedTasks(stageStats.getFailedTasks())
                 .setCoordinatorOnly(stageInfo.isCoordinatorOnly())
                 .setNodes(countStageAndAddGlobalUniqueNodes(stageInfo, globalUniqueNodes));
 
         // Recurse into child stages to create their StageStats
-        List<BasicStageInfo> subStages = stageInfo.getSubStages();
+        List<StageId> subStages = stageInfo.getSubStages();
         if (subStages.isEmpty()) {
             builder.setSubStages(ImmutableList.of());
         }
         else {
             ImmutableList.Builder<StageStats> subStagesBuilder = ImmutableList.builderWithExpectedSize(subStages.size());
-            for (BasicStageInfo subStage : subStages) {
-                subStagesBuilder.add(toStageStats(subStage, globalUniqueNodes));
+            for (StageId subStage : subStages) {
+                subStagesBuilder.add(toStageStats(subStage, stages, globalUniqueNodes));
             }
             builder.setSubStages(subStagesBuilder.build());
         }
@@ -247,7 +254,7 @@ public final class ProtocolUtil
         List<TaskInfo> tasks = stageInfo.getTasks();
         Set<String> stageUniqueNodes = Sets.newHashSetWithExpectedSize(tasks.size());
         for (TaskInfo task : tasks) {
-            String nodeId = task.getTaskStatus().getNodeId();
+            String nodeId = task.taskStatus().getNodeId();
             stageUniqueNodes.add(nodeId);
             globalUniqueNodes.add(nodeId);
         }

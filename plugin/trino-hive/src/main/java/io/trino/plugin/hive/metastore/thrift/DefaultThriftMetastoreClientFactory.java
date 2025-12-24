@@ -17,7 +17,7 @@ import com.google.common.net.HostAndPort;
 import com.google.inject.Inject;
 import io.airlift.units.Duration;
 import io.trino.plugin.hive.metastore.thrift.ThriftHiveMetastoreClient.TransportSupplier;
-import io.trino.spi.NodeManager;
+import io.trino.spi.Node;
 import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
 
@@ -45,10 +45,11 @@ public class DefaultThriftMetastoreClientFactory
     private final int readTimeoutMillis;
     private final HiveMetastoreAuthentication metastoreAuthentication;
     private final String hostname;
+    private final Optional<String> catalogName;
 
     private final MetastoreSupportsDateStatistics metastoreSupportsDateStatistics = new MetastoreSupportsDateStatistics();
-    private final AtomicInteger chosenGetTableMetaAlternative = new AtomicInteger(Integer.MAX_VALUE);
     private final AtomicInteger chosenGetTableAlternative = new AtomicInteger(Integer.MAX_VALUE);
+    private final AtomicInteger chosenTableParamAlternative = new AtomicInteger(Integer.MAX_VALUE);
     private final AtomicInteger chosenAlterTransactionalTableAlternative = new AtomicInteger(Integer.MAX_VALUE);
     private final AtomicInteger chosenAlterPartitionsAlternative = new AtomicInteger(Integer.MAX_VALUE);
 
@@ -58,7 +59,8 @@ public class DefaultThriftMetastoreClientFactory
             Duration connectTimeout,
             Duration readTimeout,
             HiveMetastoreAuthentication metastoreAuthentication,
-            String hostname)
+            String hostname,
+            Optional<String> catalogName)
     {
         this.sslContext = requireNonNull(sslContext, "sslContext is null");
         this.socksProxy = requireNonNull(socksProxy, "socksProxy is null");
@@ -66,13 +68,14 @@ public class DefaultThriftMetastoreClientFactory
         this.readTimeoutMillis = toIntExact(readTimeout.toMillis());
         this.metastoreAuthentication = requireNonNull(metastoreAuthentication, "metastoreAuthentication is null");
         this.hostname = requireNonNull(hostname, "hostname is null");
+        this.catalogName = requireNonNull(catalogName, "catalogName is null");
     }
 
     @Inject
     public DefaultThriftMetastoreClientFactory(
             ThriftMetastoreConfig config,
             HiveMetastoreAuthentication metastoreAuthentication,
-            NodeManager nodeManager)
+            Node currentNode)
     {
         this(
                 buildSslContext(
@@ -85,7 +88,8 @@ public class DefaultThriftMetastoreClientFactory
                 config.getConnectTimeout(),
                 config.getReadTimeout(),
                 metastoreAuthentication,
-                nodeManager.getCurrentNode().getHost());
+                currentNode.getHost(),
+                config.getCatalogName());
     }
 
     @Override
@@ -108,9 +112,10 @@ public class DefaultThriftMetastoreClientFactory
         return new ThriftHiveMetastoreClient(
                 transportSupplier,
                 hostname,
+                catalogName,
                 metastoreSupportsDateStatistics,
-                chosenGetTableMetaAlternative,
                 chosenGetTableAlternative,
+                chosenTableParamAlternative,
                 chosenAlterTransactionalTableAlternative,
                 chosenAlterPartitionsAlternative);
     }

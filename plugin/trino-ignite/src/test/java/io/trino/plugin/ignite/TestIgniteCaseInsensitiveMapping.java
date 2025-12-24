@@ -14,7 +14,6 @@
 package io.trino.plugin.ignite;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.jdbc.BaseCaseInsensitiveMappingTest;
 import io.trino.testing.MaterializedRow;
@@ -27,8 +26,7 @@ import java.util.List;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.trino.plugin.base.mapping.RuleBasedIdentifierMappingUtils.createRuleBasedIdentifierMappingFile;
-import static io.trino.plugin.ignite.IgniteQueryRunner.createIgniteQueryRunner;
+import static io.trino.plugin.base.mapping.testing.RuleBasedIdentifierMappingUtils.createRuleBasedIdentifierMappingFile;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,15 +46,11 @@ public class TestIgniteCaseInsensitiveMapping
     {
         mappingFile = createRuleBasedIdentifierMappingFile();
         igniteServer = closeAfterClass(TestingIgniteServer.getInstance()).get();
-        return createIgniteQueryRunner(
-                igniteServer,
-                ImmutableMap.of(),
-                ImmutableMap.<String, String>builder()
-                        .put("case-insensitive-name-matching", "true")
-                        .put("case-insensitive-name-matching.config-file", mappingFile.toFile().getAbsolutePath())
-                        .put("case-insensitive-name-matching.config-file.refresh-period", "1ms") // ~always refresh
-                        .buildOrThrow(),
-                ImmutableList.of());
+        return IgniteQueryRunner.builder(igniteServer)
+                .addConnectorProperty("case-insensitive-name-matching", "true")
+                .addConnectorProperty("case-insensitive-name-matching.config-file", mappingFile.toFile().getAbsolutePath())
+                .addConnectorProperty("case-insensitive-name-matching.config-file.refresh-period", "1ms") // ~always refresh
+                .build();
     }
 
     @Override

@@ -144,22 +144,22 @@ public class TestMathFunctions
                 .hasErrorCode(NUMERIC_VALUE_OUT_OF_RANGE);
 
         assertThat(assertions.function("abs", "DECIMAL '123.45'"))
-                .isEqualTo(decimal("12345", createDecimalType(5, 2)));
+                .isEqualTo(decimal("123.45", createDecimalType(5, 2)));
 
         assertThat(assertions.function("abs", "DECIMAL '-123.45'"))
-                .isEqualTo(decimal("12345", createDecimalType(5, 2)));
+                .isEqualTo(decimal("123.45", createDecimalType(5, 2)));
 
         assertThat(assertions.function("abs", "DECIMAL '1234567890123456.78'"))
-                .isEqualTo(decimal("123456789012345678", createDecimalType(18, 2)));
+                .isEqualTo(decimal("1234567890123456.78", createDecimalType(18, 2)));
 
         assertThat(assertions.function("abs", "DECIMAL '-1234567890123456.78'"))
-                .isEqualTo(decimal("123456789012345678", createDecimalType(18, 2)));
+                .isEqualTo(decimal("1234567890123456.78", createDecimalType(18, 2)));
 
         assertThat(assertions.function("abs", "DECIMAL '12345678901234560.78'"))
-                .isEqualTo(decimal("1234567890123456078", createDecimalType(19, 2)));
+                .isEqualTo(decimal("12345678901234560.78", createDecimalType(19, 2)));
 
         assertThat(assertions.function("abs", "DECIMAL '-12345678901234560.78'"))
-                .isEqualTo(decimal("1234567890123456078", createDecimalType(19, 2)));
+                .isEqualTo(decimal("12345678901234560.78", createDecimalType(19, 2)));
 
         assertThat(assertions.function("abs", "CAST(NULL AS DECIMAL(1,0))"))
                 .isNull(createDecimalType(1, 0));
@@ -1067,7 +1067,7 @@ public class TestMathFunctions
     public void testMod()
     {
         assertThat(assertions.function("mod", "DECIMAL '0.0'", "DECIMAL '2.0'"))
-                .isEqualTo(decimal("0", createDecimalType(1, 1)));
+                .isEqualTo(decimal("0.0", createDecimalType(1, 1)));
 
         for (int left : intLefts) {
             for (int right : intRights) {
@@ -1139,7 +1139,7 @@ public class TestMathFunctions
                 .isNull(DOUBLE);
 
         assertThat(assertions.function("mod", "DECIMAL '0.0'", "DECIMAL '2.0'"))
-                .isEqualTo(decimal("0", createDecimalType(1, 1)));
+                .isEqualTo(decimal("0.0", createDecimalType(1, 1)));
 
         assertThat(assertions.function("mod", "DECIMAL '13.0'", "DECIMAL '5.0'"))
                 .isEqualTo(decimal("3.0", createDecimalType(2, 1)));
@@ -1166,7 +1166,7 @@ public class TestMathFunctions
                 .isEqualTo(decimal("2.4501", createDecimalType(5, 4)));
 
         assertThat(assertions.function("mod", "DECIMAL '123456789012345670'", "DECIMAL '123456789012345669'"))
-                .isEqualTo(decimal("0.01", createDecimalType(18)));
+                .isEqualTo(decimal("1", createDecimalType(18)));
 
         assertThat(assertions.function("mod", "DECIMAL '12345678901234567.90'", "DECIMAL '12345678901234567.89'"))
                 .isEqualTo(decimal("0.01", createDecimalType(19, 2)));
@@ -3458,6 +3458,25 @@ public class TestMathFunctions
     }
 
     @Test
+    public void testCosineDistance()
+    {
+        assertThat(assertions.function("cosine_distance", "map(ARRAY['a', 'b'], ARRAY[1.0E0, 2.0E0])", "map(ARRAY['c', 'b'], ARRAY[1.0E0, 3.0E0])"))
+                .isEqualTo(1 - (2 * 3 / (Math.sqrt(5) * Math.sqrt(10))));
+
+        assertThat(assertions.function("cosine_distance", "map(ARRAY['a', 'b', 'c'], ARRAY[1.0E0, 2.0E0, -1.0E0])", "map(ARRAY['c', 'b'], ARRAY[1.0E0, 3.0E0])"))
+                .isEqualTo(1 - ((2 * 3 + -1 * 1) / (Math.sqrt(1 + 4 + 1) * Math.sqrt(1 + 9))));
+
+        assertThat(assertions.function("cosine_distance", "map(ARRAY['a', 'b', 'c'], ARRAY[1.0E0, 2.0E0, -1.0E0])", "map(ARRAY['d', 'e'], ARRAY[1.0E0, 3.0E0])"))
+                .isEqualTo(1.0);
+
+        assertThat(assertions.function("cosine_distance", "null", "map(ARRAY['c', 'b'], ARRAY[1.0E0, 3.0E0])"))
+                .isNull();
+
+        assertThat(assertions.function("cosine_distance", "map(ARRAY['a', 'b'], ARRAY[1.0E0, null])", "map(ARRAY['c', 'b'], ARRAY[1.0E0, 3.0E0])"))
+                .isNull();
+    }
+
+    @Test
     public void testInverseNormalCdf()
     {
         assertThat(assertions.function("inverse_normal_cdf", "0", "1", "0.3"))
@@ -3545,6 +3564,33 @@ public class TestMathFunctions
 
         assertTrinoExceptionThrownBy(assertions.function("inverse_beta_cdf", "3", "5", "1.1")::evaluate)
                 .hasMessage("p must be 0 >= p >= 1");
+    }
+
+    @Test
+    public void testTDistribution()
+    {
+        assertThat(assertions.function("t_cdf", "60", "1"))
+                .isEqualTo(0.9946953263673767);
+        assertThat(assertions.function("t_cdf", "10", "1"))
+                .isEqualTo(0.9682744825694464);
+        assertThat(assertions.function("t_cdf", "1", "10"))
+                .isEqualTo(0.8295534338489701);
+        assertThat(assertions.function("t_cdf", "-1.98", "2"))
+                .isEqualTo(0.09312625192178954);
+        assertThat(assertions.function("t_cdf", "0", "1"))
+                .isEqualTo(0.5);
+        assertThat(assertions.function("t_cdf", "100", "10"))
+                .isEqualTo(0.9999999999999999);
+
+        assertThat(assertions.function("t_pdf", "8", "3"))
+                .isEqualTo(7.369065209469264E-4);
+        assertThat(assertions.function("t_pdf", "1", "10"))
+                .isEqualTo(0.2303619892291386);
+
+        assertTrinoExceptionThrownBy(assertions.function("t_cdf", "60", "0")::evaluate)
+                .hasMessage("degrees of freedom must be greater than or equal to 1");
+        assertTrinoExceptionThrownBy(assertions.function("t_pdf", "60", "0")::evaluate)
+                .hasMessage("degrees of freedom must be greater than or equal to 1");
     }
 
     @Test

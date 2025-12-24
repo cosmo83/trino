@@ -13,6 +13,7 @@
  */
 package io.trino.client;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.units.Duration;
@@ -20,6 +21,7 @@ import io.airlift.units.Duration;
 import java.net.URI;
 import java.nio.charset.CharsetEncoder;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -30,23 +32,26 @@ import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class ClientSession
 {
     private final URI server;
-    private final Optional<String> principal;
     private final Optional<String> user;
+    private final Optional<String> sessionUser;
     private final Optional<String> authorizationUser;
+    private final Set<ClientSelectedRole> originalRoles;
     private final String source;
     private final Optional<String> traceToken;
     private final Set<String> clientTags;
     private final String clientInfo;
     private final Optional<String> catalog;
     private final Optional<String> schema;
-    private final String path;
+    private final List<String> path;
     private final ZoneId timeZone;
     private final Locale locale;
     private final Map<String, String> resourceEstimates;
+    private final Map<String, String> extraHeaders;
     private final Map<String, String> properties;
     private final Map<String, String> preparedStatements;
     private final Map<String, ClientSelectedRole> roles;
@@ -54,6 +59,8 @@ public class ClientSession
     private final String transactionId;
     private final Duration clientRequestTimeout;
     private final boolean compressionDisabled;
+    private final Optional<String> encoding;
+    private final Duration heartbeatInterval;
 
     public static Builder builder()
     {
@@ -74,16 +81,18 @@ public class ClientSession
 
     private ClientSession(
             URI server,
-            Optional<String> principal,
             Optional<String> user,
+            Optional<String> sessionUser,
             Optional<String> authorizationUser,
+            Set<ClientSelectedRole> originalRoles,
             String source,
             Optional<String> traceToken,
             Set<String> clientTags,
+            Map<String, String> extraHeaders,
             String clientInfo,
             Optional<String> catalog,
             Optional<String> schema,
-            String path,
+            List<String> path,
             ZoneId timeZone,
             Locale locale,
             Map<String, String> resourceEstimates,
@@ -93,19 +102,23 @@ public class ClientSession
             Map<String, String> extraCredentials,
             String transactionId,
             Duration clientRequestTimeout,
-            boolean compressionDisabled)
+            boolean compressionDisabled,
+            Optional<String> encoding,
+            Duration heartbeatInterval)
     {
         this.server = requireNonNull(server, "server is null");
-        this.principal = requireNonNull(principal, "principal is null");
         this.user = requireNonNull(user, "user is null");
+        this.sessionUser = requireNonNull(sessionUser, "sessionUser is null");
         this.authorizationUser = requireNonNull(authorizationUser, "authorizationUser is null");
-        this.source = source;
+        this.originalRoles = ImmutableSet.copyOf(requireNonNull(originalRoles, "originalRoles is null"));
+        this.source = requireNonNull(source, "source is null");
         this.traceToken = requireNonNull(traceToken, "traceToken is null");
         this.clientTags = ImmutableSet.copyOf(requireNonNull(clientTags, "clientTags is null"));
+        this.extraHeaders = ImmutableMap.copyOf(requireNonNull(extraHeaders, "extraHeaders is null"));
         this.clientInfo = clientInfo;
         this.catalog = catalog;
         this.schema = schema;
-        this.path = path;
+        this.path = ImmutableList.copyOf(requireNonNull(path, "path is null"));
         this.locale = locale;
         this.timeZone = requireNonNull(timeZone, "timeZone is null");
         this.transactionId = transactionId;
@@ -116,6 +129,8 @@ public class ClientSession
         this.extraCredentials = ImmutableMap.copyOf(requireNonNull(extraCredentials, "extraCredentials is null"));
         this.clientRequestTimeout = clientRequestTimeout;
         this.compressionDisabled = compressionDisabled;
+        this.encoding = requireNonNull(encoding, "encoding is null");
+        this.heartbeatInterval = requireNonNull(heartbeatInterval, "heartbeatInterval is null");
 
         for (String clientTag : clientTags) {
             checkArgument(!clientTag.contains(","), "client tag cannot contain ','");
@@ -151,19 +166,24 @@ public class ClientSession
         return server;
     }
 
-    public Optional<String> getPrincipal()
-    {
-        return principal;
-    }
-
     public Optional<String> getUser()
     {
         return user;
     }
 
+    public Optional<String> getSessionUser()
+    {
+        return sessionUser;
+    }
+
     public Optional<String> getAuthorizationUser()
     {
         return authorizationUser;
+    }
+
+    public Set<ClientSelectedRole> getOriginalRoles()
+    {
+        return originalRoles;
     }
 
     public String getSource()
@@ -181,6 +201,11 @@ public class ClientSession
         return clientTags;
     }
 
+    public Map<String, String> getExtraHeaders()
+    {
+        return extraHeaders;
+    }
+
     public String getClientInfo()
     {
         return clientInfo;
@@ -196,7 +221,7 @@ public class ClientSession
         return schema;
     }
 
-    public String getPath()
+    public List<String> getPath()
     {
         return path;
     }
@@ -259,15 +284,26 @@ public class ClientSession
         return compressionDisabled;
     }
 
+    public Optional<String> getEncoding()
+    {
+        return encoding;
+    }
+
+    public Duration getHeartbeatInterval()
+    {
+        return heartbeatInterval;
+    }
+
     @Override
     public String toString()
     {
         return toStringHelper(this)
                 .add("server", server)
-                .add("principal", principal)
                 .add("user", user)
+                .add("sessionUser", sessionUser)
                 .add("authorizationUser", authorizationUser)
                 .add("clientTags", clientTags)
+                .add("extraHeaders", extraHeaders)
                 .add("clientInfo", clientInfo)
                 .add("catalog", catalog)
                 .add("schema", schema)
@@ -277,6 +313,12 @@ public class ClientSession
                 .add("locale", locale)
                 .add("properties", properties)
                 .add("transactionId", transactionId)
+                .add("source", source)
+                .add("resourceEstimates", resourceEstimates)
+                .add("clientRequestTimeout", clientRequestTimeout)
+                .add("compressionDisabled", compressionDisabled)
+                .add("encoding", encoding)
+                .add("heartbeatInterval", heartbeatInterval)
                 .omitNullValues()
                 .toString();
     }
@@ -284,16 +326,18 @@ public class ClientSession
     public static final class Builder
     {
         private URI server;
-        private Optional<String> principal = Optional.empty();
         private Optional<String> user = Optional.empty();
+        private Optional<String> sessionUser = Optional.empty();
         private Optional<String> authorizationUser = Optional.empty();
+        private Set<ClientSelectedRole> originalRoles = ImmutableSet.of();
         private String source;
         private Optional<String> traceToken = Optional.empty();
         private Set<String> clientTags = ImmutableSet.of();
+        private Map<String, String> extraHeaders = ImmutableMap.of();
         private String clientInfo;
         private String catalog;
         private String schema;
-        private String path;
+        private List<String> path = ImmutableList.of();
         private ZoneId timeZone;
         private Locale locale;
         private Map<String, String> resourceEstimates = ImmutableMap.of();
@@ -304,6 +348,8 @@ public class ClientSession
         private String transactionId;
         private Duration clientRequestTimeout;
         private boolean compressionDisabled;
+        private Optional<String> encoding = Optional.empty();
+        private Duration heartbeatInterval = new Duration(30, SECONDS);
 
         private Builder() {}
 
@@ -311,12 +357,14 @@ public class ClientSession
         {
             requireNonNull(clientSession, "clientSession is null");
             server = clientSession.getServer();
-            principal = clientSession.getPrincipal();
             user = clientSession.getUser();
+            sessionUser = clientSession.getSessionUser();
             authorizationUser = clientSession.getAuthorizationUser();
+            originalRoles = clientSession.getOriginalRoles();
             source = clientSession.getSource();
             traceToken = clientSession.getTraceToken();
             clientTags = clientSession.getClientTags();
+            extraHeaders = clientSession.getExtraHeaders();
             clientInfo = clientSession.getClientInfo();
             catalog = clientSession.getCatalog().orElse(null);
             schema = clientSession.getSchema().orElse(null);
@@ -331,6 +379,7 @@ public class ClientSession
             transactionId = clientSession.getTransactionId();
             clientRequestTimeout = clientSession.getClientRequestTimeout();
             compressionDisabled = clientSession.isCompressionDisabled();
+            encoding = clientSession.getEncoding();
         }
 
         public Builder server(URI server)
@@ -345,15 +394,21 @@ public class ClientSession
             return this;
         }
 
+        public Builder sessionUser(Optional<String> sessionUser)
+        {
+            this.sessionUser = sessionUser;
+            return this;
+        }
+
         public Builder authorizationUser(Optional<String> authorizationUser)
         {
             this.authorizationUser = authorizationUser;
             return this;
         }
 
-        public Builder principal(Optional<String> principal)
+        public Builder originalRoles(Set<ClientSelectedRole> originalRoles)
         {
-            this.principal = principal;
+            this.originalRoles = originalRoles;
             return this;
         }
 
@@ -375,6 +430,12 @@ public class ClientSession
             return this;
         }
 
+        public Builder extraHeaders(Map<String, String> extraHeaders)
+        {
+            this.extraHeaders = extraHeaders;
+            return this;
+        }
+
         public Builder clientInfo(String clientInfo)
         {
             this.clientInfo = clientInfo;
@@ -393,7 +454,7 @@ public class ClientSession
             return this;
         }
 
-        public Builder path(String path)
+        public Builder path(List<String> path)
         {
             this.path = path;
             return this;
@@ -459,16 +520,30 @@ public class ClientSession
             return this;
         }
 
+        public Builder encoding(Optional<String> encoding)
+        {
+            this.encoding = encoding;
+            return this;
+        }
+
+        public Builder heartbeatInterval(Duration heartbeatInterval)
+        {
+            this.heartbeatInterval = heartbeatInterval;
+            return this;
+        }
+
         public ClientSession build()
         {
             return new ClientSession(
                     server,
-                    principal,
                     user,
+                    sessionUser,
                     authorizationUser,
+                    originalRoles,
                     source,
                     traceToken,
                     clientTags,
+                    extraHeaders,
                     clientInfo,
                     Optional.ofNullable(catalog),
                     Optional.ofNullable(schema),
@@ -482,7 +557,9 @@ public class ClientSession
                     credentials,
                     transactionId,
                     clientRequestTimeout,
-                    compressionDisabled);
+                    compressionDisabled,
+                    encoding,
+                    heartbeatInterval);
         }
     }
 }

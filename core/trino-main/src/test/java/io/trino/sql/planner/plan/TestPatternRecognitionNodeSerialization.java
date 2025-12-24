@@ -24,15 +24,14 @@ import io.trino.block.BlockJsonSerde;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TestingFunctionResolution;
 import io.trino.spi.block.Block;
-import io.trino.spi.block.TestingBlockEncodingSerde;
-import io.trino.spi.type.TestingTypeManager;
+import io.trino.spi.function.OperatorType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignature;
-import io.trino.sql.ir.ArithmeticNegation;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Constant;
-import io.trino.sql.ir.FunctionCall;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolKeyDeserializer;
 import io.trino.sql.planner.plan.PatternRecognitionNode.Measure;
@@ -54,25 +53,29 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
-import static io.trino.metadata.MetadataManager.createTestMetadataManager;
+import static io.trino.metadata.InternalBlockEncodingSerde.TESTING_BLOCK_ENCODING_SERDE;
+import static io.trino.metadata.TestMetadataManager.createTestMetadataManager;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
 import static io.trino.sql.ir.IrExpressions.ifExpression;
 import static io.trino.sql.planner.plan.FrameBoundType.CURRENT_ROW;
 import static io.trino.sql.planner.plan.FrameBoundType.UNBOUNDED_FOLLOWING;
 import static io.trino.sql.planner.plan.RowsPerMatch.WINDOW;
 import static io.trino.sql.planner.plan.SkipToPosition.LAST;
 import static io.trino.sql.planner.plan.WindowFrameType.ROWS;
+import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestPatternRecognitionNodeSerialization
 {
     private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
     private static final ResolvedFunction RANDOM = FUNCTIONS.resolveFunction("random", fromTypes());
+    private static final ResolvedFunction NEGATION_BIGINT = FUNCTIONS.resolveOperator(OperatorType.NEGATION, ImmutableList.of(BIGINT));
+    private static final ResolvedFunction NEGATION_INTEGER = FUNCTIONS.resolveOperator(OperatorType.NEGATION, ImmutableList.of(INTEGER));
 
     private static final JsonCodec<ValuePointer> VALUE_POINTER_CODEC;
     private static final JsonCodec<ExpressionAndValuePointers> EXPRESSION_AND_VALUE_POINTERS_CODEC;
@@ -83,15 +86,15 @@ public class TestPatternRecognitionNodeSerialization
         ObjectMapperProvider provider = new ObjectMapperProvider();
         provider.setKeyDeserializers(ImmutableMap.<Class<?>, KeyDeserializer>builder()
                 .put(TypeSignature.class, new TypeSignatureKeyDeserializer())
-                .put(Symbol.class, new SymbolKeyDeserializer(new TestingTypeManager()))
+                .put(Symbol.class, new SymbolKeyDeserializer(TESTING_TYPE_MANAGER))
                 .buildOrThrow());
 
         provider.setJsonDeserializers(ImmutableMap.of(
-                Type.class, new TypeDeserializer(new TestingTypeManager()),
-                Block.class, new BlockJsonSerde.Deserializer(new TestingBlockEncodingSerde())));
+                Type.class, new TypeDeserializer(TESTING_TYPE_MANAGER),
+                Block.class, new BlockJsonSerde.Deserializer(TESTING_BLOCK_ENCODING_SERDE)));
 
         provider.setJsonSerializers(ImmutableMap.of(
-                Block.class, new BlockJsonSerde.Serializer(new TestingBlockEncodingSerde())));
+                Block.class, new BlockJsonSerde.Serializer(TESTING_BLOCK_ENCODING_SERDE)));
 
         VALUE_POINTER_CODEC = new JsonCodecFactory(provider).jsonCodec(ValuePointer.class);
         EXPRESSION_AND_VALUE_POINTERS_CODEC = new JsonCodecFactory(provider).jsonCodec(ExpressionAndValuePointers.class);
@@ -138,9 +141,9 @@ public class TestPatternRecognitionNodeSerialization
 
         assertJsonRoundTrip(EXPRESSION_AND_VALUE_POINTERS_CODEC, new ExpressionAndValuePointers(
                 ifExpression(
-                        new ComparisonExpression(GREATER_THAN, new SymbolReference(VARCHAR, "classifier"), new SymbolReference(VARCHAR, "x")),
-                        new FunctionCall(RANDOM, ImmutableList.of()),
-                        new ArithmeticNegation(new SymbolReference(INTEGER, "match_number"))),
+                        new Comparison(GREATER_THAN, new Reference(VARCHAR, "classifier"), new Reference(VARCHAR, "x")),
+                        new Cast(new Call(RANDOM, ImmutableList.of()), INTEGER),
+                        new Call(NEGATION_INTEGER, ImmutableList.of(new Reference(INTEGER, "match_number")))),
                 ImmutableList.of(
                         new ExpressionAndValuePointers.Assignment(
                                 new Symbol(VARCHAR, "classifier"),
@@ -166,9 +169,9 @@ public class TestPatternRecognitionNodeSerialization
         assertJsonRoundTrip(MEASURE_CODEC, new Measure(
                 new ExpressionAndValuePointers(
                         ifExpression(
-                                new ComparisonExpression(GREATER_THAN, new SymbolReference(INTEGER, "match_number"), new SymbolReference(INTEGER, "x")),
+                                new Comparison(GREATER_THAN, new Reference(INTEGER, "match_number"), new Reference(INTEGER, "x")),
                                 new Constant(BIGINT, 10L),
-                                new ArithmeticNegation(new SymbolReference(INTEGER, "y"))),
+                                new Call(NEGATION_BIGINT, ImmutableList.of(new Reference(BIGINT, "y")))),
                         ImmutableList.of(
                                 new ExpressionAndValuePointers.Assignment(
                                         new Symbol(BIGINT, "match_number"),
@@ -197,7 +200,6 @@ public class TestPatternRecognitionNodeSerialization
                 new PlanNodeId("0"),
                 new ValuesNode(new PlanNodeId("1"), 1),
                 new DataOrganizationSpecification(ImmutableList.of(), Optional.empty()),
-                Optional.empty(),
                 ImmutableSet.of(),
                 0,
                 ImmutableMap.of(
@@ -205,7 +207,9 @@ public class TestPatternRecognitionNodeSerialization
                         new Function(
                                 rankFunction,
                                 ImmutableList.of(),
+                                Optional.empty(),
                                 new Frame(ROWS, CURRENT_ROW, Optional.empty(), Optional.empty(), UNBOUNDED_FOLLOWING, Optional.empty(), Optional.empty()),
+                                false,
                                 false)),
                 ImmutableMap.of(
                         new Symbol(BOOLEAN, "measure"),

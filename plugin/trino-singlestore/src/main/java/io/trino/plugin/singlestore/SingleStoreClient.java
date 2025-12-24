@@ -59,6 +59,7 @@ import io.trino.spi.type.VarcharType;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
@@ -131,6 +132,7 @@ import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_NANOSECOND;
 import static io.trino.spi.type.Timestamps.round;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
+import static io.trino.spi.type.VarcharType.UNBOUNDED_LENGTH;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
@@ -215,11 +217,13 @@ public class SingleStoreClient
     @Override
     public Collection<String> listSchemas(Connection connection)
     {
-        // for SingleStore, we need to list catalogs instead of schemas
-        try (ResultSet resultSet = connection.getMetaData().getCatalogs()) {
+        // Avoid using DatabaseMetaData.getCatalogs method because
+        // https://github.com/memsql/S2-JDBC-Connector/pull/9 causes the driver to return only the databases in the current workspace
+        try (PreparedStatement statement = connection.prepareStatement("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA");
+                ResultSet resultSet = statement.executeQuery()) {
             ImmutableSet.Builder<String> schemaNames = ImmutableSet.builder();
             while (resultSet.next()) {
-                String schemaName = resultSet.getString("TABLE_CAT");
+                String schemaName = resultSet.getString("SCHEMA_NAME");
                 // skip internal schemas
                 if (filterSchema(schemaName)) {
                     schemaNames.add(schemaName);
@@ -267,7 +271,7 @@ public class SingleStoreClient
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
-        String jdbcTypeName = typeHandle.getJdbcTypeName()
+        String jdbcTypeName = typeHandle.jdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
 
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
@@ -283,7 +287,7 @@ public class SingleStoreClient
             return Optional.of(jsonColumnMapping());
         }
 
-        switch (typeHandle.getJdbcType()) {
+        switch (typeHandle.jdbcType()) {
             case Types.BIT:
             case Types.BOOLEAN:
                 return Optional.of(booleanColumnMapping());
@@ -307,13 +311,21 @@ public class SingleStoreClient
                 return Optional.of(doubleColumnMapping());
             case Types.CHAR:
             case Types.NCHAR: // TODO it it is dummy copied from StandardColumnMappings, verify if it is proper mapping
-                return Optional.of(defaultCharColumnMapping(typeHandle.getRequiredColumnSize(), false));
+                return Optional.of(defaultCharColumnMapping(typeHandle.requiredColumnSize(), false));
             case Types.VARCHAR:
             case Types.LONGVARCHAR:
-                return Optional.of(checkNullUsingBytes(defaultVarcharColumnMapping(typeHandle.getRequiredColumnSize(), false)));
+                int columnSize = switch (jdbcTypeName) {
+                    case "TINYTEXT" -> 255;
+                    case "TEXT" -> 65535;
+                    case "MEDIUMTEXT" -> 16777215;
+                    case "LONGTEXT" -> UNBOUNDED_LENGTH;
+                    case "VARCHAR" -> typeHandle.requiredColumnSize();
+                    default -> throw new IllegalStateException("Unexpected type: " + jdbcTypeName);
+                };
+                return Optional.of(checkNullUsingBytes(defaultVarcharColumnMapping(columnSize, false)));
             case Types.DECIMAL:
-                int precision = typeHandle.getRequiredColumnSize();
-                int decimalDigits = typeHandle.getRequiredDecimalDigits();
+                int precision = typeHandle.requiredColumnSize();
+                int decimalDigits = typeHandle.requiredDecimalDigits();
                 if (getDecimalRounding(session) == ALLOW_OVERFLOW && precision > Decimals.MAX_PRECISION) {
                     int scale = min(decimalDigits, getDecimalDefaultScale(session));
                     return Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, scale), getDecimalRoundingMode(session)));
@@ -332,14 +344,14 @@ public class SingleStoreClient
                         dateReadFunctionUsingLocalDate(),
                         dateWriteFunction()));
             case Types.TIME:
-                TimeType timeType = createTimeType(getTimePrecision(typeHandle.getRequiredColumnSize()));
+                TimeType timeType = createTimeType(getTimePrecision(typeHandle.requiredColumnSize()));
                 return Optional.of(ColumnMapping.longMapping(
                         timeType,
                         singleStoreTimeReadFunction(timeType),
                         timeWriteFunction(timeType.getPrecision())));
             case Types.TIMESTAMP:
                 // TODO (https://github.com/trinodb/trino/issues/5450) Fix DST handling
-                TimestampType timestampType = createTimestampType(getTimestampPrecision(typeHandle.getRequiredColumnSize()));
+                TimestampType timestampType = createTimestampType(getTimestampPrecision(typeHandle.requiredColumnSize()));
                 return Optional.of(timestampColumnMapping(timestampType));
         }
 
@@ -352,7 +364,8 @@ public class SingleStoreClient
     private static ColumnMapping checkNullUsingBytes(ColumnMapping mapping)
     {
         if (mapping.getReadFunction() instanceof SliceReadFunction sliceReadFunction) {
-            SliceReadFunction wrapper = new SliceReadFunction() {
+            SliceReadFunction wrapper = new SliceReadFunction()
+            {
                 @Override
                 public Slice readSlice(ResultSet resultSet, int columnIndex)
                         throws SQLException
@@ -406,6 +419,19 @@ public class SingleStoreClient
                 null,
                 escapeObjectNameForMetadataQuery(tableName, metadata.getSearchStringEscape()).orElse(null),
                 getTableTypes().map(types -> types.toArray(String[]::new)).orElse(null));
+    }
+
+    @Override
+    protected ResultSet getAllTableColumns(Connection connection, Optional<String> remoteSchemaName)
+            throws SQLException
+    {
+        // SingleStore maps their "database" to SQL catalogs and does not have schemas
+        DatabaseMetaData metadata = connection.getMetaData();
+        return metadata.getColumns(
+                remoteSchemaName.orElse(null),
+                null,
+                null,
+                null);
     }
 
     @Override
@@ -558,7 +584,7 @@ public class SingleStoreClient
     public boolean supportsTopN(ConnectorSession session, JdbcTableHandle handle, List<JdbcSortItem> sortOrder)
     {
         for (JdbcSortItem sortItem : sortOrder) {
-            Type sortItemType = sortItem.getColumn().getColumnType();
+            Type sortItemType = sortItem.column().getColumnType();
             if (sortItemType instanceof CharType || sortItemType instanceof VarcharType) {
                 // Remote database can be case insensitive.
                 return false;
@@ -573,26 +599,15 @@ public class SingleStoreClient
         return Optional.of((query, sortItems, limit) -> {
             String orderBy = sortItems.stream()
                     .flatMap(sortItem -> {
-                        String ordering = sortItem.getSortOrder().isAscending() ? "ASC" : "DESC";
-                        String columnSorting = format("%s %s", quoted(sortItem.getColumn().getColumnName()), ordering);
+                        String ordering = sortItem.sortOrder().isAscending() ? "ASC" : "DESC";
+                        String columnSorting = format("%s %s", quoted(sortItem.column().getColumnName()), ordering);
 
-                        switch (sortItem.getSortOrder()) {
-                            case ASC_NULLS_FIRST:
-                                // In SingleStore ASC implies NULLS FIRST
-                            case DESC_NULLS_LAST:
-                                // In SingleStore DESC implies NULLS LAST
-                                return Stream.of(columnSorting);
-
-                            case ASC_NULLS_LAST:
-                                return Stream.of(
-                                        format("ISNULL(%s) ASC", quoted(sortItem.getColumn().getColumnName())),
-                                        columnSorting);
-                            case DESC_NULLS_FIRST:
-                                return Stream.of(
-                                        format("ISNULL(%s) DESC", quoted(sortItem.getColumn().getColumnName())),
-                                        columnSorting);
-                        }
-                        throw new UnsupportedOperationException("Unsupported sort order: " + sortItem.getSortOrder());
+                        return switch (sortItem.sortOrder()) {
+                            // In SingleStore ASC implies NULLS FIRST, DESC implies NULLS LAST
+                            case ASC_NULLS_FIRST, DESC_NULLS_LAST -> Stream.of(columnSorting);
+                            case ASC_NULLS_LAST -> Stream.of(format("ISNULL(%s) ASC", quoted(sortItem.column().getColumnName())), columnSorting);
+                            case DESC_NULLS_FIRST -> Stream.of(format("ISNULL(%s) DESC", quoted(sortItem.column().getColumnName())), columnSorting);
+                        };
                     })
                     .collect(joining(", "));
             return format("%s ORDER BY %s LIMIT %s", query, orderBy, limit);
@@ -650,7 +665,7 @@ public class SingleStoreClient
     @Override
     protected boolean isSupportedJoinCondition(ConnectorSession session, JdbcJoinCondition joinCondition)
     {
-        if (joinCondition.getOperator() == JoinCondition.Operator.IS_DISTINCT_FROM) {
+        if (joinCondition.getOperator() == JoinCondition.Operator.IDENTICAL) {
             // Not supported in SingleStore
             return false;
         }
@@ -663,13 +678,13 @@ public class SingleStoreClient
 
     private static Optional<ColumnMapping> getUnsignedMapping(JdbcTypeHandle typeHandle)
     {
-        if (typeHandle.getJdbcTypeName().isEmpty()) {
+        if (typeHandle.jdbcTypeName().isEmpty()) {
             return Optional.empty();
         }
 
-        String typeName = typeHandle.getJdbcTypeName().get();
+        String typeName = typeHandle.jdbcTypeName().get();
         if (UNSIGNED_TYPE_REGEX.matcher(typeName).matches()) {
-            switch (typeHandle.getJdbcType()) {
+            switch (typeHandle.jdbcType()) {
                 case Types.BIT:
                     return Optional.of(booleanColumnMapping());
 
@@ -694,21 +709,35 @@ public class SingleStoreClient
     {
         requireNonNull(timeType, "timeType is null");
         checkArgument(timeType.getPrecision() <= 9, "Unsupported type precision: %s", timeType);
-        return (resultSet, columnIndex) -> {
-            // SingleStore JDBC driver wraps time to be within LocalTime range, which results in values which differ from what is stored, so we verify them
-            String timeString = resultSet.getString(columnIndex);
-            try {
-                long nanosOfDay = LocalTime.from(ISO_LOCAL_TIME.parse(timeString)).toNanoOfDay();
-                verify(nanosOfDay < NANOSECONDS_PER_DAY, "Invalid value of nanosOfDay: %s", nanosOfDay);
-                long picosOfDay = nanosOfDay * PICOSECONDS_PER_NANOSECOND;
-                long rounded = round(picosOfDay, 12 - timeType.getPrecision());
-                if (rounded == PICOSECONDS_PER_DAY) {
-                    rounded = 0;
-                }
-                return rounded;
+        return new LongReadFunction()
+        {
+            @Override
+            public boolean isNull(ResultSet resultSet, int columnIndex)
+                    throws SQLException
+            {
+                // Singlestore driver 1.2.9 will throw an exception if incorrect time are read using getObject()
+                resultSet.getString(columnIndex);
+                return resultSet.wasNull();
             }
-            catch (DateTimeParseException e) {
-                throw new IllegalStateException(format("Supported Trino TIME type range is between 00:00:00 and 23:59:59.999999 but got %s", timeString), e);
+
+            @Override
+            public long readLong(ResultSet resultSet, int columnIndex)
+                    throws SQLException
+            {
+                String timeString = resultSet.getString(columnIndex);
+                try {
+                    long nanosOfDay = LocalTime.from(ISO_LOCAL_TIME.parse(timeString)).toNanoOfDay();
+                    verify(nanosOfDay < NANOSECONDS_PER_DAY, "Invalid value of nanosOfDay: %s", nanosOfDay);
+                    long picosOfDay = nanosOfDay * PICOSECONDS_PER_NANOSECOND;
+                    long rounded = round(picosOfDay, 12 - timeType.getPrecision());
+                    if (rounded == PICOSECONDS_PER_DAY) {
+                        rounded = 0;
+                    }
+                    return rounded;
+                }
+                catch (DateTimeParseException e) {
+                    throw new IllegalStateException(format("Supported Trino TIME type range is between 00:00:00 and 23:59:59.999999 but got %s", timeString), e);
+                }
             }
         };
     }

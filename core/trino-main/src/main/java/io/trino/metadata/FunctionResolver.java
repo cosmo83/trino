@@ -18,19 +18,20 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import io.trino.Session;
+import io.trino.connector.CatalogHandle;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.FunctionBinder.CatalogFunctionBinding;
 import io.trino.security.AccessControl;
 import io.trino.security.SecurityContext;
 import io.trino.spi.TrinoException;
 import io.trino.spi.TrinoWarning;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.function.FunctionDependencyDeclaration;
 import io.trino.spi.function.FunctionDependencyDeclaration.CastDependency;
 import io.trino.spi.function.FunctionDependencyDeclaration.FunctionDependency;
 import io.trino.spi.function.FunctionDependencyDeclaration.OperatorDependency;
+import io.trino.spi.function.FunctionId;
 import io.trino.spi.function.FunctionKind;
 import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.type.Type;
@@ -120,7 +121,7 @@ public class FunctionResolver
                 catalogSchemaFunctionName -> metadata.getFunctions(session, catalogSchemaFunctionName),
                 accessControl);
 
-        FunctionMetadata functionMetadata = catalogFunctionBinding.functionMetadata();
+        FunctionMetadata functionMetadata = catalogFunctionBinding.boundFunctionMetadata();
         if (functionMetadata.isDeprecated()) {
             warningCollector.add(new TrinoWarning(DEPRECATED_FUNCTION, "Use of deprecated function: %s: %s".formatted(name, functionMetadata.getDescription())));
         }
@@ -131,22 +132,20 @@ public class FunctionResolver
     private ResolvedFunction resolve(Session session, CatalogFunctionBinding functionBinding, AccessControl accessControl)
     {
         if (isTrinoSqlLanguageFunction(functionBinding.functionBinding().getFunctionId())) {
-            Set<ResolvedFunction> dependencies = languageFunctionManager.getDependencies(session, functionBinding.functionBinding().getFunctionId(), accessControl);
+            FunctionId resolvedFunctionId = languageFunctionManager.analyzeAndPlan(
+                    session,
+                    functionBinding.functionBinding().getFunctionId(),
+                    accessControl);
 
-            ResolvedFunction resolvedFunction = new ResolvedFunction(
+            return new ResolvedFunction(
                     functionBinding.functionBinding().getBoundSignature(),
                     functionBinding.catalogHandle(),
-                    functionBinding.functionBinding().getFunctionId(),
-                    functionBinding.functionMetadata().getKind(),
-                    functionBinding.functionMetadata().isDeterministic(),
-                    functionBinding.functionMetadata().getFunctionNullability(),
+                    resolvedFunctionId,
+                    functionBinding.boundFunctionMetadata().getKind(),
+                    functionBinding.boundFunctionMetadata().isDeterministic(),
+                    functionBinding.boundFunctionMetadata().getFunctionNullability(),
                     ImmutableMap.of(),
-                    dependencies);
-
-            // For SQL language functions, register the resolved function with the function manager,
-            // allowing the resolved function to be used later to retrieve the implementation.
-            languageFunctionManager.registerResolvedFunction(session, resolvedFunction);
-            return resolvedFunction;
+                    ImmutableSet.of());
         }
 
         FunctionDependencyDeclaration dependencies = metadata.getFunctionDependencies(
@@ -161,7 +160,7 @@ public class FunctionResolver
                 functionBinder,
                 functionBinding.catalogHandle(),
                 functionBinding.functionBinding(),
-                functionBinding.functionMetadata(),
+                functionBinding.boundFunctionMetadata(),
                 dependencies,
                 catalogSchemaFunctionName -> metadata.getFunctions(session, catalogSchemaFunctionName),
                 catalogFunctionBinding -> resolve(session, catalogFunctionBinding, accessControl));

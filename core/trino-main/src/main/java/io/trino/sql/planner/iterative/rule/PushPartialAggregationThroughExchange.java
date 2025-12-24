@@ -14,6 +14,7 @@
 package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
@@ -23,7 +24,7 @@ import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.LambdaExpression;
+import io.trino.sql.ir.Lambda;
 import io.trino.sql.planner.Partitioning;
 import io.trino.sql.planner.PartitioningScheme;
 import io.trino.sql.planner.Symbol;
@@ -37,7 +38,6 @@ import io.trino.sql.planner.plan.ProjectNode;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -128,11 +128,6 @@ public class PushPartialAggregationThroughExchange
             }
         }
 
-        // currently, we only support plans that don't use pre-computed hash functions
-        if (aggregationNode.getHashSymbol().isPresent() || exchangeNode.getPartitioningScheme().getHashColumn().isPresent()) {
-            return Result.empty();
-        }
-
         return switch (aggregationNode.getStep()) {
             case SINGLE -> Result.ofPlanNode(split(aggregationNode, context)); // Split it into a FINAL on top of a PARTIAL and
             case PARTIAL -> Result.ofPlanNode(pushPartial(aggregationNode, exchangeNode, context)); // Push it underneath each branch of the exchange
@@ -157,6 +152,9 @@ public class PushPartialAggregationThroughExchange
 
             SymbolMapper symbolMapper = mappingsBuilder.build();
             AggregationNode mappedPartial = symbolMapper.map(aggregation, source, context.getIdAllocator().getNextId());
+            mappedPartial = AggregationNode.builderFrom(mappedPartial)
+                    .setIsInputReducingAggregation(true)
+                    .build();
 
             Assignments.Builder assignments = Assignments.builder();
 
@@ -176,9 +174,9 @@ public class PushPartialAggregationThroughExchange
         PartitioningScheme partitioning = new PartitioningScheme(
                 exchange.getPartitioningScheme().getPartitioning(),
                 aggregation.getOutputSymbols(),
-                exchange.getPartitioningScheme().getHashColumn(),
                 exchange.getPartitioningScheme().isReplicateNullsAndAny(),
                 exchange.getPartitioningScheme().getBucketToPartition(),
+                exchange.getPartitioningScheme().getBucketCount(),
                 exchange.getPartitioningScheme().getPartitionCount());
 
         return new ExchangeNode(
@@ -194,8 +192,8 @@ public class PushPartialAggregationThroughExchange
     private PlanNode split(AggregationNode node, Context context)
     {
         // otherwise, add a partial and final with an exchange in between
-        Map<Symbol, AggregationNode.Aggregation> intermediateAggregation = new HashMap<>();
-        Map<Symbol, AggregationNode.Aggregation> finalAggregation = new HashMap<>();
+        ImmutableMap.Builder<Symbol, AggregationNode.Aggregation> intermediateAggregation = ImmutableMap.builder();
+        ImmutableMap.Builder<Symbol, AggregationNode.Aggregation> finalAggregation = ImmutableMap.builder();
         for (Map.Entry<Symbol, AggregationNode.Aggregation> entry : node.getAggregations().entrySet()) {
             AggregationNode.Aggregation originalAggregation = entry.getValue();
             ResolvedFunction resolvedFunction = originalAggregation.getResolvedFunction();
@@ -204,7 +202,7 @@ public class PushPartialAggregationThroughExchange
                     .map(plannerContext.getTypeManager()::getType)
                     .collect(toImmutableList());
             Type intermediateType = intermediateTypes.size() == 1 ? intermediateTypes.get(0) : RowType.anonymous(intermediateTypes);
-            Symbol intermediateSymbol = context.getSymbolAllocator().newSymbol(resolvedFunction.getSignature().getName().getFunctionName(), intermediateType);
+            Symbol intermediateSymbol = context.getSymbolAllocator().newSymbol(resolvedFunction.signature().getName().getFunctionName(), intermediateType);
 
             checkState(originalAggregation.getOrderingScheme().isEmpty(), "Aggregate with ORDER BY does not support partial aggregation");
             intermediateAggregation.put(
@@ -225,7 +223,7 @@ public class PushPartialAggregationThroughExchange
                             ImmutableList.<Expression>builder()
                                     .add(intermediateSymbol.toSymbolReference())
                                     .addAll(originalAggregation.getArguments().stream()
-                                            .filter(LambdaExpression.class::isInstance)
+                                            .filter(Lambda.class::isInstance)
                                             .collect(toImmutableList()))
                                     .build(),
                             false,
@@ -237,25 +235,23 @@ public class PushPartialAggregationThroughExchange
         PlanNode partial = new AggregationNode(
                 context.getIdAllocator().getNextId(),
                 node.getSource(),
-                intermediateAggregation,
+                intermediateAggregation.buildOrThrow(),
                 node.getGroupingSets(),
                 // preGroupedSymbols reflect properties of the input. Splitting the aggregation and pushing partial aggregation
                 // through the exchange may or may not preserve these properties. Hence, it is safest to drop preGroupedSymbols here.
                 ImmutableList.of(),
                 PARTIAL,
-                node.getHashSymbol(),
                 node.getGroupIdSymbol());
 
         return new AggregationNode(
                 node.getId(),
                 partial,
-                finalAggregation,
+                finalAggregation.buildOrThrow(),
                 node.getGroupingSets(),
                 // preGroupedSymbols reflect properties of the input. Splitting the aggregation and pushing partial aggregation
                 // through the exchange may or may not preserve these properties. Hence, it is safest to drop preGroupedSymbols here.
                 ImmutableList.of(),
                 FINAL,
-                node.getHashSymbol(),
                 node.getGroupIdSymbol());
     }
 }

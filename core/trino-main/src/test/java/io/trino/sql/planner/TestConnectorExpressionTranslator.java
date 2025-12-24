@@ -18,11 +18,11 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import io.trino.Session;
 import io.trino.metadata.Metadata;
-import io.trino.metadata.MetadataManager;
+import io.trino.metadata.ResolvedFunction;
+import io.trino.metadata.TestMetadataManager;
 import io.trino.metadata.TestingFunctionResolution;
 import io.trino.operator.scalar.JsonPath;
 import io.trino.security.AllowAllAccessControl;
-import io.trino.spi.expression.Call;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.expression.FieldDereference;
 import io.trino.spi.expression.FunctionName;
@@ -30,45 +30,59 @@ import io.trino.spi.expression.StandardFunctions;
 import io.trino.spi.expression.Variable;
 import io.trino.spi.function.OperatorType;
 import io.trino.spi.type.ArrayType;
+import io.trino.spi.type.MapType;
+import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
-import io.trino.sql.ir.ArithmeticNegation;
-import io.trino.sql.ir.BetweenPredicate;
+import io.trino.sql.ir.Between;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Cast;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.FunctionCall;
-import io.trino.sql.ir.InPredicate;
-import io.trino.sql.ir.IsNullPredicate;
-import io.trino.sql.ir.LogicalExpression;
-import io.trino.sql.ir.NotExpression;
-import io.trino.sql.ir.NullIfExpression;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.In;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.Logical;
+import io.trino.sql.ir.NullIf;
+import io.trino.sql.ir.Reference;
 import io.trino.testing.TestingSession;
 import io.trino.transaction.TestingTransactionManager;
 import io.trino.transaction.TransactionManager;
 import io.trino.type.LikeFunctions;
 import org.junit.jupiter.api.Test;
 
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.operator.scalar.JoniRegexpCasts.joniRegexp;
+import static io.trino.operator.scalar.JsonStringToArrayCast.JSON_STRING_TO_ARRAY_NAME;
+import static io.trino.operator.scalar.JsonStringToMapCast.JSON_STRING_TO_MAP_NAME;
+import static io.trino.operator.scalar.JsonStringToRowCast.JSON_STRING_TO_ROW_NAME;
+import static io.trino.spi.expression.StandardFunctions.ADD_FUNCTION_NAME;
 import static io.trino.spi.expression.StandardFunctions.AND_FUNCTION_NAME;
 import static io.trino.spi.expression.StandardFunctions.ARRAY_CONSTRUCTOR_FUNCTION_NAME;
 import static io.trino.spi.expression.StandardFunctions.CAST_FUNCTION_NAME;
+import static io.trino.spi.expression.StandardFunctions.DIVIDE_FUNCTION_NAME;
 import static io.trino.spi.expression.StandardFunctions.GREATER_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME;
 import static io.trino.spi.expression.StandardFunctions.IS_NULL_FUNCTION_NAME;
 import static io.trino.spi.expression.StandardFunctions.LESS_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME;
+import static io.trino.spi.expression.StandardFunctions.MODULUS_FUNCTION_NAME;
+import static io.trino.spi.expression.StandardFunctions.MULTIPLY_FUNCTION_NAME;
 import static io.trino.spi.expression.StandardFunctions.NEGATE_FUNCTION_NAME;
 import static io.trino.spi.expression.StandardFunctions.NOT_FUNCTION_NAME;
 import static io.trino.spi.expression.StandardFunctions.NULLIF_FUNCTION_NAME;
+import static io.trino.spi.expression.StandardFunctions.SUBTRACT_FUNCTION_NAME;
+import static io.trino.spi.function.OperatorType.ADD;
+import static io.trino.spi.function.OperatorType.DIVIDE;
+import static io.trino.spi.function.OperatorType.MODULUS;
+import static io.trino.spi.function.OperatorType.MULTIPLY;
+import static io.trino.spi.function.OperatorType.SUBTRACT;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DecimalType.createDecimalType;
@@ -82,9 +96,11 @@ import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
 import static io.trino.spi.type.VarcharType.createVarcharType;
+import static io.trino.sql.ir.IrExpressions.not;
 import static io.trino.sql.planner.ConnectorExpressionTranslator.translate;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
 import static io.trino.testing.TransactionBuilder.transaction;
+import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static io.trino.type.JoniRegexpType.JONI_REGEXP;
 import static io.trino.type.JsonPathType.JSON_PATH;
 import static io.trino.type.LikeFunctions.likePattern;
@@ -99,7 +115,11 @@ public class TestConnectorExpressionTranslator
     private static final VarcharType VARCHAR_TYPE = createUnboundedVarcharType();
     private static final ArrayType VARCHAR_ARRAY_TYPE = new ArrayType(VARCHAR_TYPE);
 
+    private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
+    private static final ResolvedFunction NEGATION_DOUBLE = FUNCTIONS.resolveOperator(OperatorType.NEGATION, ImmutableList.of(DOUBLE));
+
     private static final Map<Symbol, Type> symbols = ImmutableMap.<Symbol, Type>builder()
+            .put(new Symbol(BIGINT, "bigint_symbol"), BIGINT)
             .put(new Symbol(DOUBLE, "double_symbol_1"), DOUBLE)
             .put(new Symbol(DOUBLE, "double_symbol_2"), DOUBLE)
             .put(new Symbol(ROW_TYPE, "row_symbol_1"), ROW_TYPE)
@@ -108,7 +128,7 @@ public class TestConnectorExpressionTranslator
             .buildOrThrow();
 
     private static final Map<String, Symbol> variableMappings = symbols.entrySet().stream()
-            .collect(toImmutableMap(entry -> entry.getKey().getName(), Map.Entry::getKey));
+            .collect(toImmutableMap(entry -> entry.getKey().name(), Map.Entry::getKey));
 
     @Test
     public void testTranslateConstant()
@@ -138,17 +158,16 @@ public class TestConnectorExpressionTranslator
     @Test
     public void testTranslateSymbol()
     {
-        assertTranslationRoundTrips(new SymbolReference(DOUBLE, "double_symbol_1"), new Variable("double_symbol_1", DOUBLE));
+        assertTranslationRoundTrips(new Reference(DOUBLE, "double_symbol_1"), new Variable("double_symbol_1", DOUBLE));
     }
 
     @Test
     public void testTranslateRowSubscript()
     {
         assertTranslationRoundTrips(
-                new SubscriptExpression(
-                        INTEGER,
-                        new SymbolReference(ROW_TYPE, "row_symbol_1"),
-                        new Constant(INTEGER, 1L)),
+                new FieldReference(
+                        new Reference(ROW_TYPE, "row_symbol_1"),
+                        0),
                 new FieldDereference(
                         INTEGER,
                         new Variable("row_symbol_1", ROW_TYPE),
@@ -158,22 +177,22 @@ public class TestConnectorExpressionTranslator
     @Test
     public void testTranslateLogicalExpression()
     {
-        for (LogicalExpression.Operator operator : LogicalExpression.Operator.values()) {
+        for (Logical.Operator operator : Logical.Operator.values()) {
             assertTranslationRoundTrips(
-                    new LogicalExpression(
+                    new Logical(
                             operator,
                             List.of(
-                                    new ComparisonExpression(ComparisonExpression.Operator.LESS_THAN, new SymbolReference(DOUBLE, "double_symbol_1"), new SymbolReference(DOUBLE, "double_symbol_2")),
-                                    new ComparisonExpression(ComparisonExpression.Operator.EQUAL, new SymbolReference(DOUBLE, "double_symbol_1"), new SymbolReference(DOUBLE, "double_symbol_2")))),
-                    new Call(
+                                    new Comparison(Comparison.Operator.LESS_THAN, new Reference(DOUBLE, "double_symbol_1"), new Reference(DOUBLE, "double_symbol_2")),
+                                    new Comparison(Comparison.Operator.EQUAL, new Reference(DOUBLE, "double_symbol_1"), new Reference(DOUBLE, "double_symbol_2")))),
+                    new io.trino.spi.expression.Call(
                             BOOLEAN,
-                            operator == LogicalExpression.Operator.AND ? StandardFunctions.AND_FUNCTION_NAME : StandardFunctions.OR_FUNCTION_NAME,
+                            operator == Logical.Operator.AND ? StandardFunctions.AND_FUNCTION_NAME : StandardFunctions.OR_FUNCTION_NAME,
                             List.of(
-                                    new Call(
+                                    new io.trino.spi.expression.Call(
                                             BOOLEAN,
                                             StandardFunctions.LESS_THAN_OPERATOR_FUNCTION_NAME,
                                             List.of(new Variable("double_symbol_1", DOUBLE), new Variable("double_symbol_2", DOUBLE))),
-                                    new Call(
+                                    new io.trino.spi.expression.Call(
                                             BOOLEAN,
                                             StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME,
                                             List.of(new Variable("double_symbol_1", DOUBLE), new Variable("double_symbol_2", DOUBLE))))));
@@ -181,12 +200,32 @@ public class TestConnectorExpressionTranslator
     }
 
     @Test
+    public void testTranslateTrivialLogicalExpression()
+    {
+        assertTranslationToConnectorExpression(
+                TEST_SESSION,
+                new Logical(
+                        Logical.Operator.AND,
+                        List.of(
+                                new Constant(BOOLEAN, true),
+                                new Comparison(Comparison.Operator.EQUAL, new Reference(DOUBLE, "double_symbol_1"), new Reference(DOUBLE, "double_symbol_2")))),
+                new io.trino.spi.expression.Call(
+                        BOOLEAN,
+                        StandardFunctions.AND_FUNCTION_NAME,
+                        List.of(
+                                new io.trino.spi.expression.Call(
+                                        BOOLEAN,
+                                        StandardFunctions.EQUAL_OPERATOR_FUNCTION_NAME,
+                                        List.of(new Variable("double_symbol_1", DOUBLE), new Variable("double_symbol_2", DOUBLE))))));
+    }
+
+    @Test
     public void testTranslateComparisonExpression()
     {
-        for (ComparisonExpression.Operator operator : ComparisonExpression.Operator.values()) {
+        for (Comparison.Operator operator : Comparison.Operator.values()) {
             assertTranslationRoundTrips(
-                    new ComparisonExpression(operator, new SymbolReference(DOUBLE, "double_symbol_1"), new SymbolReference(DOUBLE, "double_symbol_2")),
-                    new Call(
+                    new Comparison(operator, new Reference(DOUBLE, "double_symbol_1"), new Reference(DOUBLE, "double_symbol_2")),
+                    new io.trino.spi.expression.Call(
                             BOOLEAN,
                             ConnectorExpressionTranslator.functionNameForComparisonOperator(operator),
                             List.of(new Variable("double_symbol_1", DOUBLE), new Variable("double_symbol_2", DOUBLE))));
@@ -197,34 +236,36 @@ public class TestConnectorExpressionTranslator
     public void testTranslateArithmeticBinary()
     {
         TestingFunctionResolution resolver = new TestingFunctionResolution();
-        for (ArithmeticBinaryExpression.Operator operator : ArithmeticBinaryExpression.Operator.values()) {
+        for (OperatorType operator : EnumSet.of(ADD, SUBTRACT, MULTIPLY, DIVIDE, MODULUS)) {
             assertTranslationRoundTrips(
-                    new ArithmeticBinaryExpression(
-                            resolver.resolveOperator(
-                                    switch (operator) {
-                                        case ADD -> OperatorType.ADD;
-                                        case SUBTRACT -> OperatorType.SUBTRACT;
-                                        case MULTIPLY -> OperatorType.MULTIPLY;
-                                        case DIVIDE -> OperatorType.DIVIDE;
-                                        case MODULUS -> OperatorType.MODULUS;
-                                    },
-                                    ImmutableList.of(DOUBLE, DOUBLE)),
+                    new Call(resolver.resolveOperator(
                             operator,
-                            new SymbolReference(DOUBLE, "double_symbol_1"),
-                            new SymbolReference(DOUBLE, "double_symbol_2")),
-                    new Call(
+                            ImmutableList.of(DOUBLE, DOUBLE)), ImmutableList.of(new Reference(DOUBLE, "double_symbol_1"), new Reference(DOUBLE, "double_symbol_2"))),
+                    new io.trino.spi.expression.Call(
                             DOUBLE,
-                            ConnectorExpressionTranslator.functionNameForArithmeticBinaryOperator(operator),
+                            functionNameForArithmeticBinaryOperator(operator),
                             List.of(new Variable("double_symbol_1", DOUBLE), new Variable("double_symbol_2", DOUBLE))));
         }
+    }
+
+    private static FunctionName functionNameForArithmeticBinaryOperator(OperatorType operator)
+    {
+        return switch (operator) {
+            case ADD -> ADD_FUNCTION_NAME;
+            case SUBTRACT -> SUBTRACT_FUNCTION_NAME;
+            case MULTIPLY -> MULTIPLY_FUNCTION_NAME;
+            case DIVIDE -> DIVIDE_FUNCTION_NAME;
+            case MODULUS -> MODULUS_FUNCTION_NAME;
+            default -> throw new IllegalArgumentException("Unsupported operator: " + operator);
+        };
     }
 
     @Test
     public void testTranslateArithmeticUnaryMinus()
     {
         assertTranslationRoundTrips(
-                new ArithmeticNegation(new SymbolReference(DOUBLE, "double_symbol_1")),
-                new Call(DOUBLE, NEGATE_FUNCTION_NAME, List.of(new Variable("double_symbol_1", DOUBLE))));
+                new Call(NEGATION_DOUBLE, ImmutableList.of(new Reference(DOUBLE, "double_symbol_1"))),
+                new io.trino.spi.expression.Call(DOUBLE, NEGATE_FUNCTION_NAME, List.of(new Variable("double_symbol_1", DOUBLE))));
     }
 
     @Test
@@ -232,21 +273,21 @@ public class TestConnectorExpressionTranslator
     {
         assertTranslationToConnectorExpression(
                 TEST_SESSION,
-                new BetweenPredicate(
-                        new SymbolReference(DOUBLE, "double_symbol_1"),
+                new Between(
+                        new Reference(DOUBLE, "double_symbol_1"),
                         new Constant(DOUBLE, 1.2),
-                        new SymbolReference(DOUBLE, "double_symbol_2")),
-                new Call(
+                        new Reference(DOUBLE, "double_symbol_2")),
+                new io.trino.spi.expression.Call(
                         BOOLEAN,
                         AND_FUNCTION_NAME,
                         List.of(
-                                new Call(
+                                new io.trino.spi.expression.Call(
                                         BOOLEAN,
                                         GREATER_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME,
                                         List.of(
                                                 new Variable("double_symbol_1", DOUBLE),
                                                 new io.trino.spi.expression.Constant(1.2d, DOUBLE))),
-                                new Call(
+                                new io.trino.spi.expression.Call(
                                         BOOLEAN,
                                         LESS_THAN_OR_EQUAL_OPERATOR_FUNCTION_NAME,
                                         List.of(
@@ -258,8 +299,8 @@ public class TestConnectorExpressionTranslator
     public void testTranslateIsNull()
     {
         assertTranslationRoundTrips(
-                new IsNullPredicate(new SymbolReference(VARCHAR, "varchar_symbol_1")),
-                new Call(
+                new IsNull(new Reference(VARCHAR, "varchar_symbol_1")),
+                new io.trino.spi.expression.Call(
                         BOOLEAN,
                         IS_NULL_FUNCTION_NAME,
                         List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE))));
@@ -269,8 +310,8 @@ public class TestConnectorExpressionTranslator
     public void testTranslateNotExpression()
     {
         assertTranslationRoundTrips(
-                new NotExpression(new SymbolReference(BOOLEAN, "boolean_symbol_1")),
-                new Call(
+                not(PLANNER_CONTEXT.getMetadata(), new Reference(BOOLEAN, "boolean_symbol_1")),
+                new io.trino.spi.expression.Call(
                         BOOLEAN,
                         NOT_FUNCTION_NAME,
                         List.of(new Variable("boolean_symbol_1", BOOLEAN))));
@@ -280,43 +321,34 @@ public class TestConnectorExpressionTranslator
     public void testTranslateIsNotNull()
     {
         assertTranslationRoundTrips(
-                new NotExpression(new IsNullPredicate(new SymbolReference(VARCHAR, "varchar_symbol_1"))),
-                new Call(
+                not(PLANNER_CONTEXT.getMetadata(), new IsNull(new Reference(VARCHAR, "varchar_symbol_1"))),
+                new io.trino.spi.expression.Call(
                         BOOLEAN,
                         NOT_FUNCTION_NAME,
-                        List.of(new Call(BOOLEAN, IS_NULL_FUNCTION_NAME, List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE))))));
+                        List.of(new io.trino.spi.expression.Call(BOOLEAN, IS_NULL_FUNCTION_NAME, List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE))))));
     }
 
     @Test
     public void testTranslateCast()
     {
         assertTranslationRoundTrips(
-                new Cast(new SymbolReference(VARCHAR, "varchar_symbol_1"), VARCHAR_TYPE),
-                new Call(
+                new Cast(new Reference(VARCHAR, "varchar_symbol_1"), VARCHAR_TYPE),
+                new io.trino.spi.expression.Call(
                         VARCHAR_TYPE,
                         CAST_FUNCTION_NAME,
                         List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE))));
-
-        // TRY_CAST is not translated
-        assertTranslationToConnectorExpression(
-                TEST_SESSION,
-                new Cast(
-                        new SymbolReference(VARCHAR, "varchar_symbol_1"),
-                        BIGINT,
-                        true),
-                Optional.empty());
     }
 
     @Test
     public void testTranslateLike()
     {
         TransactionManager transactionManager = new TestingTransactionManager();
-        Metadata metadata = MetadataManager.testMetadataManagerBuilder().withTransactionManager(transactionManager).build();
+        Metadata metadata = TestMetadataManager.builder().withTransactionManager(transactionManager).build();
         transaction(transactionManager, metadata, new AllowAllAccessControl())
                 .readOnly()
                 .execute(TEST_SESSION, transactionSession -> {
                     String pattern = "%pattern%";
-                    Call translated = new Call(BOOLEAN,
+                    io.trino.spi.expression.Call translated = new io.trino.spi.expression.Call(BOOLEAN,
                             StandardFunctions.LIKE_FUNCTION_NAME,
                             List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE),
                                     new io.trino.spi.expression.Constant(Slices.wrappedBuffer(pattern.getBytes(UTF_8)), createVarcharType(pattern.length()))));
@@ -324,7 +356,7 @@ public class TestConnectorExpressionTranslator
                     assertTranslationToConnectorExpression(
                             transactionSession,
                             BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
-                                    .setName(LikeFunctions.LIKE_FUNCTION_NAME).addArgument(VARCHAR_TYPE, new SymbolReference(VARCHAR_TYPE, "varchar_symbol_1"))
+                                    .setName(LikeFunctions.LIKE_FUNCTION_NAME).addArgument(VARCHAR_TYPE, new Reference(VARCHAR_TYPE, "varchar_symbol_1"))
                                     .addArgument(LIKE_PATTERN, new Constant(LIKE_PATTERN, likePattern(utf8Slice(pattern))))
                                     .build(),
                             Optional.of(translated));
@@ -333,16 +365,16 @@ public class TestConnectorExpressionTranslator
                             transactionSession,
                             translated,
                             BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
-                                    .setName(LikeFunctions.LIKE_FUNCTION_NAME).addArgument(VARCHAR_TYPE, new SymbolReference(VARCHAR_TYPE, "varchar_symbol_1"))
+                                    .setName(LikeFunctions.LIKE_FUNCTION_NAME).addArgument(VARCHAR_TYPE, new Reference(VARCHAR_TYPE, "varchar_symbol_1"))
                                     .addArgument(LIKE_PATTERN,
                                             BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
                                                     .setName(LikeFunctions.LIKE_PATTERN_FUNCTION_NAME)
-                                                    .addArgument(new Constant(createVarcharType(pattern.length()), utf8Slice(pattern)))
+                                                    .addArgument(VARCHAR, new Cast(new Constant(createVarcharType(pattern.length()), utf8Slice(pattern)), VARCHAR))
                                                     .build())
                                     .build());
 
                     String escape = "\\";
-                    translated = new Call(BOOLEAN,
+                    translated = new io.trino.spi.expression.Call(BOOLEAN,
                             StandardFunctions.LIKE_FUNCTION_NAME,
                             List.of(
                                     new Variable("varchar_symbol_1", VARCHAR_TYPE),
@@ -352,7 +384,7 @@ public class TestConnectorExpressionTranslator
                     assertTranslationToConnectorExpression(
                             transactionSession,
                             BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
-                                    .setName(LikeFunctions.LIKE_FUNCTION_NAME).addArgument(VARCHAR_TYPE, new SymbolReference(VARCHAR_TYPE, "varchar_symbol_1"))
+                                    .setName(LikeFunctions.LIKE_FUNCTION_NAME).addArgument(VARCHAR_TYPE, new Reference(VARCHAR_TYPE, "varchar_symbol_1"))
                                     .addArgument(LIKE_PATTERN, new Constant(LIKE_PATTERN, likePattern(utf8Slice(pattern), utf8Slice(escape))))
                                     .build(),
                             Optional.of(translated));
@@ -361,12 +393,12 @@ public class TestConnectorExpressionTranslator
                             transactionSession,
                             translated,
                             BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
-                                    .setName(LikeFunctions.LIKE_FUNCTION_NAME).addArgument(VARCHAR_TYPE, new SymbolReference(VARCHAR_TYPE, "varchar_symbol_1"))
+                                    .setName(LikeFunctions.LIKE_FUNCTION_NAME).addArgument(VARCHAR_TYPE, new Reference(VARCHAR_TYPE, "varchar_symbol_1"))
                                     .addArgument(LIKE_PATTERN,
                                             BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
                                                     .setName(LikeFunctions.LIKE_PATTERN_FUNCTION_NAME)
-                                                    .addArgument(createVarcharType(pattern.length()), new Constant(createVarcharType(9), utf8Slice(pattern)))
-                                                    .addArgument(createVarcharType(1), new Constant(createVarcharType(1), utf8Slice(escape)))
+                                                    .addArgument(VARCHAR, new Cast(new Constant(createVarcharType(9), utf8Slice(pattern)), VARCHAR))
+                                                    .addArgument(VARCHAR, new Cast(new Constant(createVarcharType(1), utf8Slice(escape)), VARCHAR))
                                                     .build())
                                     .build());
                 });
@@ -376,10 +408,10 @@ public class TestConnectorExpressionTranslator
     public void testTranslateNullIf()
     {
         assertTranslationRoundTrips(
-                new NullIfExpression(
-                        new SymbolReference(VARCHAR, "varchar_symbol_1"),
-                        new SymbolReference(VARCHAR, "varchar_symbol_1")),
-                new Call(
+                new NullIf(
+                        new Reference(VARCHAR, "varchar_symbol_1"),
+                        new Reference(VARCHAR, "varchar_symbol_1")),
+                new io.trino.spi.expression.Call(
                         VARCHAR_TYPE,
                         NULLIF_FUNCTION_NAME,
                         List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE),
@@ -387,19 +419,39 @@ public class TestConnectorExpressionTranslator
     }
 
     @Test
+    public void testTranslateTryCast()
+    {
+        TransactionManager transactionManager = new TestingTransactionManager();
+        Metadata metadata = TestMetadataManager.builder().withTransactionManager(transactionManager).build();
+        transaction(transactionManager, metadata, new AllowAllAccessControl())
+                .readOnly()
+                .execute(TEST_SESSION, transactionSession -> {
+                    assertTranslationRoundTrips(
+                            transactionSession,
+                            new Call(
+                                PLANNER_CONTEXT.getMetadata().getCoercion(builtinFunctionName("$try_cast"), BIGINT, VARCHAR_TYPE),
+                                ImmutableList.of(new Reference(BIGINT, "bigint_symbol"))),
+                            new io.trino.spi.expression.Call(
+                                    VARCHAR_TYPE,
+                                    new FunctionName("$try_cast"),
+                                    List.of(new Variable("bigint_symbol", BIGINT))));
+                });
+    }
+
+    @Test
     public void testTranslateResolvedFunction()
     {
         TransactionManager transactionManager = new TestingTransactionManager();
-        Metadata metadata = MetadataManager.testMetadataManagerBuilder().withTransactionManager(transactionManager).build();
+        Metadata metadata = TestMetadataManager.builder().withTransactionManager(transactionManager).build();
         transaction(transactionManager, metadata, new AllowAllAccessControl())
                 .readOnly()
                 .execute(TEST_SESSION, transactionSession -> {
                     assertTranslationRoundTrips(
                             transactionSession,
                             BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
-                                    .setName("lower").addArgument(VARCHAR_TYPE, new SymbolReference(VARCHAR_TYPE, "varchar_symbol_1"))
+                                    .setName("lower").addArgument(VARCHAR_TYPE, new Reference(VARCHAR_TYPE, "varchar_symbol_1"))
                                     .build(),
-                            new Call(VARCHAR_TYPE,
+                            new io.trino.spi.expression.Call(VARCHAR_TYPE,
                                     new FunctionName("lower"),
                                     List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE))));
                 });
@@ -412,22 +464,22 @@ public class TestConnectorExpressionTranslator
         // and are not exposed to connectors within ConnectorExpression. Instead, they are replaced with a varchar pattern.
 
         TransactionManager transactionManager = new TestingTransactionManager();
-        Metadata metadata = MetadataManager.testMetadataManagerBuilder().withTransactionManager(transactionManager).build();
+        Metadata metadata = TestMetadataManager.builder().withTransactionManager(transactionManager).build();
         transaction(transactionManager, metadata, new AllowAllAccessControl())
                 .readOnly()
                 .execute(TEST_SESSION, transactionSession -> {
-                    FunctionCall input = BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
-                            .setName("regexp_like").addArgument(VARCHAR_TYPE, new SymbolReference(VARCHAR_TYPE, "varchar_symbol_1"))
+                    Call input = BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
+                            .setName("regexp_like").addArgument(VARCHAR_TYPE, new Reference(VARCHAR_TYPE, "varchar_symbol_1"))
                             .addArgument(new Constant(JONI_REGEXP, joniRegexp(utf8Slice("a+"))))
                             .build();
-                    Call translated = new Call(
+                    io.trino.spi.expression.Call translated = new io.trino.spi.expression.Call(
                             BOOLEAN,
                             new FunctionName("regexp_like"),
                             List.of(
                                     new Variable("varchar_symbol_1", VARCHAR_TYPE),
                                     new io.trino.spi.expression.Constant(utf8Slice("a+"), createVarcharType(2))));
-                    FunctionCall translatedBack = BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
-                            .setName("regexp_like").addArgument(VARCHAR_TYPE, new SymbolReference(VARCHAR_TYPE, "varchar_symbol_1"))
+                    Call translatedBack = BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
+                            .setName("regexp_like").addArgument(VARCHAR_TYPE, new Reference(VARCHAR_TYPE, "varchar_symbol_1"))
                             // Note: The result is not an optimized expression
                             .addArgument(JONI_REGEXP, new Cast(new Constant(createVarcharType(2), utf8Slice("a+")), JONI_REGEXP))
                             .build();
@@ -440,7 +492,7 @@ public class TestConnectorExpressionTranslator
     @Test
     void testTranslateJsonPath()
     {
-        Call connectorExpression = new Call(
+        io.trino.spi.expression.Call connectorExpression = new io.trino.spi.expression.Call(
                 VARCHAR_TYPE,
                 new FunctionName("json_extract_scalar"),
                 List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE),
@@ -451,7 +503,7 @@ public class TestConnectorExpressionTranslator
         assertTranslationToConnectorExpression(
                 TEST_SESSION,
                 BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
-                        .setName("json_extract_scalar").addArgument(VARCHAR_TYPE, new SymbolReference(VARCHAR_TYPE, "varchar_symbol_1"))
+                        .setName("json_extract_scalar").addArgument(VARCHAR_TYPE, new Reference(VARCHAR_TYPE, "varchar_symbol_1"))
                         .addArgument(JSON_PATH, new Constant(JSON_PATH, new JsonPath("$.path")))
                         .build(),
                 Optional.of(connectorExpression));
@@ -460,7 +512,7 @@ public class TestConnectorExpressionTranslator
                 TEST_SESSION,
                 connectorExpression,
                 BuiltinFunctionCallBuilder.resolve(PLANNER_CONTEXT.getMetadata())
-                        .setName("json_extract_scalar").addArgument(VARCHAR_TYPE, new SymbolReference(VARCHAR_TYPE, "varchar_symbol_1"))
+                        .setName("json_extract_scalar").addArgument(VARCHAR_TYPE, new Reference(VARCHAR_TYPE, "varchar_symbol_1"))
                         .addArgument(JSON_PATH, new Cast(new Constant(createVarcharType(6), utf8Slice("$.path")), JSON_PATH))
                         .build());
     }
@@ -470,18 +522,58 @@ public class TestConnectorExpressionTranslator
     {
         String value = "value_1";
         assertTranslationRoundTrips(
-                new InPredicate(
-                        new SymbolReference(VARCHAR, "varchar_symbol_1"),
-                        List.of(new SymbolReference(VARCHAR, "varchar_symbol_1"), new Constant(VARCHAR, utf8Slice(value)))),
-                new Call(
+                new In(
+                        new Reference(VARCHAR, "varchar_symbol_1"),
+                        List.of(new Reference(VARCHAR, "varchar_symbol_1"), new Constant(VARCHAR, utf8Slice(value)))),
+                new io.trino.spi.expression.Call(
                     BOOLEAN,
                     StandardFunctions.IN_PREDICATE_FUNCTION_NAME,
                     List.of(
                             new Variable("varchar_symbol_1", VARCHAR_TYPE),
-                            new Call(VARCHAR_ARRAY_TYPE, ARRAY_CONSTRUCTOR_FUNCTION_NAME,
+                            new io.trino.spi.expression.Call(VARCHAR_ARRAY_TYPE, ARRAY_CONSTRUCTOR_FUNCTION_NAME,
                                     List.of(
                                             new Variable("varchar_symbol_1", VARCHAR_TYPE),
                                             new io.trino.spi.expression.Constant(Slices.wrappedBuffer(value.getBytes(UTF_8)), VARCHAR_TYPE))))));
+    }
+
+    @Test
+    public void testTranslateCastPlusJsonParse()
+    {
+        TransactionManager transactionManager = new TestingTransactionManager();
+        Metadata metadata = TestMetadataManager.builder().withTransactionManager(transactionManager).build();
+        transaction(transactionManager, metadata, new AllowAllAccessControl())
+                .readOnly()
+                .execute(TEST_SESSION, transactionSession -> {
+                    assertTranslationRoundTrips(
+                            transactionSession,
+                            new Call(
+                                    PLANNER_CONTEXT.getMetadata().getCoercion(builtinFunctionName(JSON_STRING_TO_ARRAY_NAME), VARCHAR, new ArrayType(VARCHAR_TYPE)),
+                                    ImmutableList.of(new Reference(VARCHAR_TYPE, "varchar_symbol_1"))),
+                            new io.trino.spi.expression.Call(
+                                    new ArrayType(VARCHAR_TYPE),
+                                    new FunctionName(JSON_STRING_TO_ARRAY_NAME),
+                                    List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE))));
+
+                    assertTranslationRoundTrips(
+                            transactionSession,
+                            new Call(
+                                    PLANNER_CONTEXT.getMetadata().getCoercion(builtinFunctionName(JSON_STRING_TO_MAP_NAME), VARCHAR, new MapType(VARCHAR_TYPE, VARCHAR_TYPE, TESTING_TYPE_MANAGER.getTypeOperators())),
+                                    ImmutableList.of(new Reference(VARCHAR_TYPE, "varchar_symbol_1"))),
+                            new io.trino.spi.expression.Call(
+                                    new MapType(VARCHAR_TYPE, VARCHAR_TYPE, TESTING_TYPE_MANAGER.getTypeOperators()),
+                                    new FunctionName(JSON_STRING_TO_MAP_NAME),
+                                    List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE))));
+
+                    assertTranslationRoundTrips(
+                            transactionSession,
+                            new Call(
+                                    PLANNER_CONTEXT.getMetadata().getCoercion(builtinFunctionName(JSON_STRING_TO_ROW_NAME), VARCHAR, RowType.anonymousRow(VARCHAR)),
+                                    ImmutableList.of(new Reference(VARCHAR_TYPE, "varchar_symbol_1"))),
+                            new io.trino.spi.expression.Call(
+                                    RowType.anonymousRow(VARCHAR),
+                                    new FunctionName(JSON_STRING_TO_ROW_NAME),
+                                    List.of(new Variable("varchar_symbol_1", VARCHAR_TYPE))));
+                });
     }
 
     private void assertTranslationRoundTrips(Expression expression, ConnectorExpression connectorExpression)

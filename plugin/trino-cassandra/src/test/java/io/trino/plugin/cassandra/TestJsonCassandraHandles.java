@@ -101,8 +101,6 @@ public class TestJsonCassandraHandles
             throws Exception
     {
         CassandraTableHandle tableHandle = new CassandraTableHandle(new CassandraNamedRelationHandle("cassandra_schema", "cassandra_table"));
-
-        assertThat(OBJECT_MAPPER.canSerialize(CassandraTableHandle.class)).isTrue();
         String json = OBJECT_MAPPER.writeValueAsString(tableHandle);
         testJsonEquals(json, TABLE_HANDLE_AS_MAP);
     }
@@ -112,7 +110,6 @@ public class TestJsonCassandraHandles
             throws Exception
     {
         CassandraTableHandle tableHandle = new CassandraTableHandle(new CassandraNamedRelationHandle("cassandra_schema", "cassandra_table", PARTITIONS, "clusteringKey1 = 33"));
-        assertThat(OBJECT_MAPPER.canSerialize(CassandraTableHandle.class)).isTrue();
         String json = OBJECT_MAPPER.writeValueAsString(tableHandle);
         testJsonEquals(json, TABLE2_HANDLE_AS_MAP);
     }
@@ -151,8 +148,6 @@ public class TestJsonCassandraHandles
             throws Exception
     {
         CassandraColumnHandle columnHandle = new CassandraColumnHandle("column", 42, CassandraTypes.BIGINT, false, true, false, false);
-
-        assertThat(OBJECT_MAPPER.canSerialize(CassandraColumnHandle.class)).isTrue();
         String json = OBJECT_MAPPER.writeValueAsString(columnHandle);
         testJsonEquals(json, COLUMN_HANDLE_AS_MAP);
     }
@@ -169,8 +164,6 @@ public class TestJsonCassandraHandles
                 false,
                 false,
                 false);
-
-        assertThat(OBJECT_MAPPER.canSerialize(CassandraColumnHandle.class)).isTrue();
         String json = OBJECT_MAPPER.writeValueAsString(columnHandle);
         testJsonEquals(json, COLUMN2_HANDLE_AS_MAP);
     }
@@ -183,11 +176,11 @@ public class TestJsonCassandraHandles
 
         CassandraColumnHandle columnHandle = OBJECT_MAPPER.readValue(json, CassandraColumnHandle.class);
 
-        assertThat(columnHandle.getName()).isEqualTo("column");
-        assertThat(columnHandle.getOrdinalPosition()).isEqualTo(42);
-        assertThat(columnHandle.getCassandraType()).isEqualTo(CassandraTypes.BIGINT);
-        assertThat(columnHandle.isPartitionKey()).isEqualTo(false);
-        assertThat(columnHandle.isClusteringKey()).isEqualTo(true);
+        assertThat(columnHandle.name()).isEqualTo("column");
+        assertThat(columnHandle.ordinalPosition()).isEqualTo(42);
+        assertThat(columnHandle.cassandraType()).isEqualTo(CassandraTypes.BIGINT);
+        assertThat(columnHandle.partitionKey()).isEqualTo(false);
+        assertThat(columnHandle.clusteringKey()).isEqualTo(true);
     }
 
     @Test
@@ -198,11 +191,11 @@ public class TestJsonCassandraHandles
 
         CassandraColumnHandle columnHandle = OBJECT_MAPPER.readValue(json, CassandraColumnHandle.class);
 
-        assertThat(columnHandle.getName()).isEqualTo("column2");
-        assertThat(columnHandle.getOrdinalPosition()).isEqualTo(0);
-        assertThat(columnHandle.getCassandraType()).isEqualTo(CassandraTypes.SET);
-        assertThat(columnHandle.isPartitionKey()).isEqualTo(false);
-        assertThat(columnHandle.isClusteringKey()).isEqualTo(false);
+        assertThat(columnHandle.name()).isEqualTo("column2");
+        assertThat(columnHandle.ordinalPosition()).isEqualTo(0);
+        assertThat(columnHandle.cassandraType()).isEqualTo(CassandraTypes.SET);
+        assertThat(columnHandle.partitionKey()).isEqualTo(false);
+        assertThat(columnHandle.clusteringKey()).isEqualTo(false);
     }
 
     private void testJsonEquals(String json, Map<String, Object> expectedMap)

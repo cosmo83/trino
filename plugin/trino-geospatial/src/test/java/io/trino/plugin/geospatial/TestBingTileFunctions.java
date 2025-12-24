@@ -37,7 +37,7 @@ import static io.trino.operator.scalar.ApplyFunction.APPLY_FUNCTION;
 import static io.trino.plugin.geospatial.BingTile.fromCoordinates;
 import static io.trino.plugin.geospatial.BingTileType.BING_TILE;
 import static io.trino.spi.function.OperatorType.EQUAL;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
@@ -554,6 +554,10 @@ public class TestBingTileFunctions
                     .binding("geometry", "ST_GeometryFromText('%s')".formatted(wkt))
                     .binding("zoom", Integer.toString(zoomLevel)))
                     .isEqualTo(tileCount);
+            assertThat(assertions.expression("ST_Within(geometry, geometry_union(transform(geometry_to_bing_tiles(geometry, zoom), bing_tile -> bing_tile_polygon(bing_tile))))")
+                    .binding("geometry", "ST_GeometryFromText('%s')".formatted(wkt))
+                    .binding("zoom", Integer.toString(zoomLevel)))
+                    .isEqualTo(true);
         }
     }
 
@@ -722,30 +726,30 @@ public class TestBingTileFunctions
     }
 
     @Test
-    public void testDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "null", "null"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile(3, 5, 3)", "null"))
+        assertThat(assertions.operator(IDENTICAL, "null", "null"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "null", "bing_tile(3, 5, 3)"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile(3, 5, 3)", "bing_tile(3, 5, 3)"))
+        assertThat(assertions.operator(IDENTICAL, "bing_tile(3, 5, 3)", "null"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile('213')", "bing_tile(3, 5, 3)"))
+        assertThat(assertions.operator(IDENTICAL, "null", "bing_tile(3, 5, 3)"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile('213')", "bing_tile('213')"))
+        assertThat(assertions.operator(IDENTICAL, "bing_tile(3, 5, 3)", "bing_tile(3, 5, 3)"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "bing_tile('213')", "bing_tile(3, 5, 3)"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "bing_tile('213')", "bing_tile('213')"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "bing_tile(3, 5, 3)", "bing_tile(3, 5, 4)"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile(3, 5, 3)", "bing_tile(3, 5, 4)"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile('213')", "bing_tile('2131')"))
-                .isEqualTo(true);
+        assertThat(assertions.operator(IDENTICAL, "bing_tile('213')", "bing_tile('2131')"))
+                .isEqualTo(false);
     }
 }

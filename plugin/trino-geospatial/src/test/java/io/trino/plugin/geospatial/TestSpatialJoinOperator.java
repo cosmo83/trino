@@ -51,6 +51,7 @@ import org.junit.jupiter.api.TestInstance;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.SynchronousQueue;
@@ -82,7 +83,7 @@ import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
 @TestInstance(PER_METHOD)
 public class TestSpatialJoinOperator
 {
-    private static final String KDB_TREE_JSON = KdbTreeUtils.toJson(
+    private static final Slice KDB_TREE_JSON = KdbTreeUtils.toJson(
             new KdbTree(newInternal(new Rectangle(-2, -2, 15, 15),
                     newInternal(new Rectangle(-2, -2, 6, 15),
                             newLeaf(new Rectangle(-2, -2, 6, 1), 1),
@@ -467,7 +468,7 @@ public class TestSpatialJoinOperator
         return buildIndex(driverContext, spatialRelationshipTest, radiusChannel, Optional.empty(), Optional.empty(), filterFunction, buildPages);
     }
 
-    private PagesSpatialIndexFactory buildIndex(DriverContext driverContext, SpatialPredicate spatialRelationshipTest, Optional<Integer> radiusChannel, Optional<Integer> partitionChannel, Optional<String> kdbTreeJson, Optional<InternalJoinFilterFunction> filterFunction, RowPagesBuilder buildPages)
+    private PagesSpatialIndexFactory buildIndex(DriverContext driverContext, SpatialPredicate spatialRelationshipTest, Optional<Integer> radiusChannel, Optional<Integer> partitionChannel, Optional<Slice> kdbTreeJson, Optional<InternalJoinFilterFunction> filterFunction, RowPagesBuilder buildPages)
     {
         Optional<JoinFilterFunctionCompiler.JoinFilterFunctionFactory> filterFunctionFactory = filterFunction
                 .map(function -> (session, addresses, pages) -> new StandardJoinFilterFunction(function, addresses, pages));
@@ -480,6 +481,7 @@ public class TestSpatialJoinOperator
                 Ints.asList(1),
                 0,
                 radiusChannel,
+                OptionalDouble.empty(),
                 partitionChannel,
                 spatialRelationshipTest,
                 kdbTreeJson,

@@ -25,6 +25,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.OptionalLong;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.trino.filesystem.azure.AzureUtils.handleAzureException;
 import static java.util.Objects.requireNonNull;
@@ -37,13 +38,14 @@ class AzureInputFile
     private final int readBlockSizeBytes;
 
     private OptionalLong length;
-    private Optional<Instant> lastModified = Optional.empty();
+    private Optional<Instant> lastModified;
 
-    public AzureInputFile(AzureLocation location, OptionalLong length, BlobClient blobClient, int readBlockSizeBytes)
+    public AzureInputFile(AzureLocation location, OptionalLong length, Optional<Instant> lastModified, BlobClient blobClient, int readBlockSizeBytes)
     {
         this.location = requireNonNull(location, "location is null");
         location.location().verifyValidFileLocation();
         this.length = requireNonNull(length, "length is null");
+        this.lastModified = requireNonNull(lastModified, "lastModified is null");
         this.blobClient = requireNonNull(blobClient, "blobClient is null");
         checkArgument(readBlockSizeBytes >= 0, "readBlockSizeBytes is negative");
         this.readBlockSizeBytes = readBlockSizeBytes;
@@ -73,7 +75,7 @@ class AzureInputFile
             throws IOException
     {
         try {
-            return new AzureInput(location, blobClient, readBlockSizeBytes, length);
+            return new AzureInput(location, blobClient, length);
         }
         catch (RuntimeException e) {
             throw handleAzureException(e, "opening file", location);
@@ -98,6 +100,16 @@ class AzureInputFile
             loadProperties();
         }
         return length.orElseThrow();
+    }
+
+    @Override
+    public String toString()
+    {
+        return toStringHelper(this)
+                .add("location", location)
+                .add("length", length)
+                .add("lastModified", lastModified)
+                .toString();
     }
 
     private void loadProperties()

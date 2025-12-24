@@ -16,6 +16,7 @@ package io.trino.operator.annotations;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import io.trino.spi.function.Constraint;
 import io.trino.spi.function.Description;
 import io.trino.spi.function.IsNull;
 import io.trino.spi.function.LiteralParameters;
@@ -24,13 +25,11 @@ import io.trino.spi.function.Signature;
 import io.trino.spi.function.Signature.Builder;
 import io.trino.spi.function.SqlNullable;
 import io.trino.spi.function.SqlType;
-import io.trino.spi.function.TypeParameter;
 import io.trino.spi.function.TypeParameterSpecialization;
 import io.trino.spi.function.TypeVariableConstraint;
 import io.trino.spi.function.TypeVariableConstraint.TypeVariableConstraintBuilder;
+import io.trino.spi.type.TypeParameter;
 import io.trino.spi.type.TypeSignature;
-import io.trino.spi.type.TypeSignatureParameter;
-import io.trino.type.Constraint;
 import jakarta.annotation.Nullable;
 
 import java.lang.annotation.Annotation;
@@ -58,8 +57,8 @@ import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_FIRST;
 import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_LAST;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.READ_VALUE;
@@ -69,7 +68,7 @@ import static java.lang.String.CASE_INSENSITIVE_ORDER;
 
 public final class FunctionsParserHelper
 {
-    private static final Set<OperatorType> COMPARABLE_TYPE_OPERATORS = ImmutableSet.of(EQUAL, HASH_CODE, XX_HASH_64, IS_DISTINCT_FROM, INDETERMINATE);
+    private static final Set<OperatorType> COMPARABLE_TYPE_OPERATORS = ImmutableSet.of(EQUAL, HASH_CODE, XX_HASH_64, IDENTICAL, INDETERMINATE);
     private static final Set<OperatorType> ORDERABLE_TYPE_OPERATORS = ImmutableSet.of(COMPARISON_UNORDERED_LAST, COMPARISON_UNORDERED_FIRST, LESS_THAN, LESS_THAN_OR_EQUAL);
 
     private FunctionsParserHelper()
@@ -85,10 +84,10 @@ public final class FunctionsParserHelper
         return containsAnnotation(annotations, ImplementationDependency::isImplementationDependencyAnnotation);
     }
 
-    public static List<TypeVariableConstraint> createTypeVariableConstraints(Collection<TypeParameter> typeParameters, List<ImplementationDependency> dependencies)
+    public static List<TypeVariableConstraint> createTypeVariableConstraints(Collection<io.trino.spi.function.TypeParameter> typeParameters, List<ImplementationDependency> dependencies)
     {
         Set<String> typeParameterNames = typeParameters.stream()
-                .map(TypeParameter::value)
+                .map(io.trino.spi.function.TypeParameter::value)
                 .collect(toImmutableSortedSet(CASE_INSENSITIVE_ORDER));
 
         Set<String> orderableRequired = new TreeSet<>(CASE_INSENSITIVE_ORDER);
@@ -176,19 +175,9 @@ public final class FunctionsParserHelper
     {
         checkArgument(!typeParameterNames.contains(typeSignature.getBase()), "Nested type variables are not allowed: %s", rootType);
 
-        for (TypeSignatureParameter parameter : typeSignature.getParameters()) {
-            switch (parameter.getKind()) {
-                case TYPE:
-                    verifyTypeSignatureDoesNotContainAnyTypeParameters(rootType, parameter.getTypeSignature(), typeParameterNames);
-                    break;
-                case NAMED_TYPE:
-                    verifyTypeSignatureDoesNotContainAnyTypeParameters(rootType, parameter.getNamedTypeSignature().getTypeSignature(), typeParameterNames);
-                    break;
-                case LONG:
-                case VARIABLE:
-                    break;
-                default:
-                    throw new UnsupportedOperationException();
+        for (TypeParameter parameter : typeSignature.getParameters()) {
+            if (parameter instanceof TypeParameter.Type(_, TypeSignature type)) {
+                verifyTypeSignatureDoesNotContainAnyTypeParameters(rootType, type, typeParameterNames);
             }
         }
     }
@@ -292,12 +281,12 @@ public final class FunctionsParserHelper
                 .forEach(annotation -> signatureBuilder.longVariable(annotation.variable(), annotation.expression()));
     }
 
-    public static Map<String, Class<?>> getDeclaredSpecializedTypeParameters(Method method, Set<TypeParameter> typeParameters)
+    public static Map<String, Class<?>> getDeclaredSpecializedTypeParameters(Method method, Set<io.trino.spi.function.TypeParameter> typeParameters)
     {
         Map<String, Class<?>> specializedTypeParameters = new HashMap<>();
         TypeParameterSpecialization[] typeParameterSpecializations = method.getAnnotationsByType(TypeParameterSpecialization.class);
-        ImmutableSet<String> typeParameterNames = typeParameters.stream()
-                .map(TypeParameter::value)
+        Set<String> typeParameterNames = typeParameters.stream()
+                .map(io.trino.spi.function.TypeParameter::value)
                 .collect(toImmutableSet());
         for (TypeParameterSpecialization specialization : typeParameterSpecializations) {
             checkArgument(typeParameterNames.contains(specialization.name()), "%s does not match any declared type parameters (%s) [%s]", specialization.name(), typeParameters, method);

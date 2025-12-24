@@ -16,8 +16,8 @@ package io.trino.metadata;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Ordering;
+import io.trino.connector.CatalogHandle;
 import io.trino.spi.TrinoException;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.function.BoundSignature;
 import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.function.FunctionMetadata;
@@ -135,10 +135,7 @@ class FunctionBinder
         if (!declaredSignature.getReturnType().getBase().equalsIgnoreCase(signature.getReturnType().getBase())) {
             return false;
         }
-        if (!declaredSignature.getArgumentTypes().get(0).getBase().equalsIgnoreCase(signature.getArgumentTypes().get(0).getBase())) {
-            return false;
-        }
-        return true;
+        return declaredSignature.getArgumentTypes().get(0).getBase().equalsIgnoreCase(signature.getArgumentTypes().get(0).getBase());
     }
 
     private Optional<CatalogFunctionBinding> matchFunctionExact(List<CatalogFunctionMetadata> candidates, List<TypeSignatureProvider> actualParameters)
@@ -394,7 +391,7 @@ class FunctionBinder
             int variableArgumentCount = signature.getArgumentTypes().size() - fixedArgumentNullability.size();
             argumentNullability = ImmutableList.<Boolean>builder()
                     .addAll(fixedArgumentNullability)
-                    .addAll(nCopies(variableArgumentCount, argumentNullability.get(argumentNullability.size() - 1)))
+                    .addAll(nCopies(variableArgumentCount, argumentNullability.getLast()))
                     .build();
         }
         newMetadata.argumentNullability(argumentNullability);
@@ -449,12 +446,19 @@ class FunctionBinder
         }
     }
 
-    record CatalogFunctionBinding(CatalogHandle catalogHandle, FunctionMetadata functionMetadata, FunctionBinding functionBinding)
+    /**
+     * Represents a function that has been bound to actual types.
+     *
+     * @param catalogHandle handle to the catalog containing the function
+     * @param boundFunctionMetadata metadata for the function with type parameters replaced with actual types
+     * @param functionBinding function binding containing function id, signature, and bound type parameters
+     */
+    record CatalogFunctionBinding(CatalogHandle catalogHandle, FunctionMetadata boundFunctionMetadata, FunctionBinding functionBinding)
     {
         CatalogFunctionBinding
         {
             requireNonNull(catalogHandle, "catalogHandle is null");
-            requireNonNull(functionMetadata, "functionMetadata is null");
+            requireNonNull(boundFunctionMetadata, "boundFunctionMetadata is null");
             requireNonNull(functionBinding, "functionBinding is null");
         }
     }

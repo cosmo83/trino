@@ -14,15 +14,12 @@
 package io.trino.faulttolerant.hive;
 
 import com.google.common.collect.ImmutableMap;
-import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.hive.HiveQueryRunner;
 import io.trino.testing.AbstractTestFaultTolerantExecutionWindowQueries;
 import io.trino.testing.FaultTolerantExecutionConnectorTestHelper;
 import io.trino.testing.QueryRunner;
 
 import java.util.Map;
-
-import static io.trino.tpch.TpchTable.getTables;
 
 public class TestHiveRuntimeAdaptivePartitioningFaultTolerantExecutionWindowQueries
         extends AbstractTestFaultTolerantExecutionWindowQueries
@@ -37,12 +34,8 @@ public class TestHiveRuntimeAdaptivePartitioningFaultTolerantExecutionWindowQuer
 
         return HiveQueryRunner.builder()
                 .setExtraProperties(extraPropertiesWithRuntimeAdaptivePartitioning.buildOrThrow())
-                .setAdditionalSetup(runner -> {
-                    runner.installPlugin(new FileSystemExchangePlugin());
-                    runner.loadExchangeManager("filesystem", ImmutableMap.of("exchange.base-directories",
-                            System.getProperty("java.io.tmpdir") + "/trino-local-file-system-exchange-manager"));
-                })
-                .setInitialTables(getTables())
+                .withExchange("filesystem")
+                .setInitialTables(REQUIRED_TPCH_TABLES)
                 .build();
     }
 }

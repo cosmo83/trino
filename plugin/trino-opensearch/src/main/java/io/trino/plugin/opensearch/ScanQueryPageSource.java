@@ -23,6 +23,7 @@ import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.PageBuilderStatus;
 import io.trino.spi.connector.ConnectorPageSource;
+import io.trino.spi.connector.SourcePage;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
@@ -76,7 +77,7 @@ public class ScanQueryPageSource
 
         // When the _source field is requested, we need to bypass column pruning when fetching the document
         boolean needAllFields = columns.stream()
-                .map(OpenSearchColumnHandle::getName)
+                .map(OpenSearchColumnHandle::name)
                 .anyMatch(isEqual(SOURCE.getName()));
 
         // Columns to fetch as doc_fields instead of pulling them out of the JSON source
@@ -88,19 +89,19 @@ public class ScanQueryPageSource
                 .collect(toImmutableList());
 
         columnBuilders = columns.stream()
-                .map(OpenSearchColumnHandle::getType)
+                .map(OpenSearchColumnHandle::type)
                 .map(type -> type.createBlockBuilder(null, 1))
                 .toArray(BlockBuilder[]::new);
 
         List<String> requiredFields = columns.stream()
-                .map(OpenSearchColumnHandle::getName)
+                .map(OpenSearchColumnHandle::name)
                 .filter(name -> !isBuiltinColumn(name))
                 .collect(toList());
 
         // sorting by _doc (index order) get special treatment in OpenSearch and is more efficient
         Optional<String> sort = Optional.of("_doc");
 
-        if (table.getQuery().isPresent()) {
+        if (table.query().isPresent()) {
             // However, if we're using a custom OpenSearch query, use default sorting.
             // Documents will be scored and returned based on relevance
             sort = Optional.empty();
@@ -108,15 +109,15 @@ public class ScanQueryPageSource
 
         long start = System.nanoTime();
         SearchResponse searchResponse = client.beginSearch(
-                split.getIndex(),
-                split.getShard(),
-                OpenSearchQueryBuilder.buildSearchQuery(table.getConstraint().transformKeys(OpenSearchColumnHandle.class::cast), table.getQuery(), table.getRegexes()),
+                split.index(),
+                split.shard(),
+                OpenSearchQueryBuilder.buildSearchQuery(table.constraint().transformKeys(OpenSearchColumnHandle.class::cast), table.query(), table.regexes()),
                 needAllFields ? Optional.empty() : Optional.of(requiredFields),
                 documentFields,
                 sort,
-                table.getLimit());
+                table.limit());
         readTimeNanos += System.nanoTime() - start;
-        this.iterator = new SearchHitIterator(client, () -> searchResponse, table.getLimit());
+        this.iterator = new SearchHitIterator(client, () -> searchResponse, table.limit());
     }
 
     @Override
@@ -150,7 +151,7 @@ public class ScanQueryPageSource
     }
 
     @Override
-    public Page getNextPage()
+    public SourcePage getNextSourcePage()
     {
         long size = 0;
         while (size < PageBuilderStatus.DEFAULT_MAX_PAGE_SIZE_IN_BYTES && iterator.hasNext()) {
@@ -158,8 +159,17 @@ public class ScanQueryPageSource
             Map<String, Object> document = hit.getSourceAsMap();
 
             for (int i = 0; i < decoders.size(); i++) {
-                String field = columns.get(i).getName();
-                decoders.get(i).decode(hit, () -> getField(document, field), columnBuilders[i]);
+                OpenSearchColumnHandle columnHandle = columns.get(i);
+                if (columnHandle.path().size() == 1) {
+                    decoders.get(i).decode(hit, () -> getField(document, columnHandle.path().getFirst()), columnBuilders[i]);
+                    continue;
+                }
+                Map<String, Object> resolvedField = resolveField(document, columnHandle);
+                decoders.get(i)
+                        .decode(
+                                hit,
+                                () -> resolvedField == null ? null : getField(resolvedField, columnHandle.path().getLast()),
+                                columnBuilders[i]);
             }
 
             if (hit.getSourceRef() != null) {
@@ -177,7 +187,24 @@ public class ScanQueryPageSource
             columnBuilders[i] = columnBuilders[i].newBlockBuilderLike(null);
         }
 
-        return new Page(blocks);
+        return SourcePage.create(new Page(blocks));
+    }
+
+    private static Map<String, Object> resolveField(Map<String, Object> document, OpenSearchColumnHandle columnHandle)
+    {
+        if (document == null) {
+            return null;
+        }
+        Map<String, Object> value = (Map<String, Object>) getField(document, columnHandle.path().getFirst());
+        if (value != null) {
+            for (int i = 1; i < columnHandle.path().size() - 1; i++) {
+                value = (Map<String, Object>) getField(value, columnHandle.path().get(i));
+                if (value == null) {
+                    break;
+                }
+            }
+        }
+        return value;
     }
 
     public static Object getField(Map<String, Object> document, String field)
@@ -206,7 +233,7 @@ public class ScanQueryPageSource
         Map<String, Type> result = new HashMap<>();
 
         for (OpenSearchColumnHandle column : columns) {
-            flattenFields(result, column.getName(), column.getType());
+            flattenFields(result, column.name(), column.type());
         }
 
         return result;
@@ -214,8 +241,8 @@ public class ScanQueryPageSource
 
     private void flattenFields(Map<String, Type> result, String fieldName, Type type)
     {
-        if (type instanceof RowType) {
-            for (RowType.Field field : ((RowType) type).getFields()) {
+        if (type instanceof RowType rowType) {
+            for (RowType.Field field : rowType.getFields()) {
                 flattenFields(result, appendPath(fieldName, field.getName().get()), field.getType());
             }
         }
@@ -227,7 +254,7 @@ public class ScanQueryPageSource
     private List<Decoder> createDecoders(List<OpenSearchColumnHandle> columns)
     {
         return columns.stream()
-                .map(OpenSearchColumnHandle::getDecoderDescriptor)
+                .map(OpenSearchColumnHandle::decoderDescriptor)
                 .map(DecoderDescriptor::createDecoder)
                 .collect(toImmutableList());
     }

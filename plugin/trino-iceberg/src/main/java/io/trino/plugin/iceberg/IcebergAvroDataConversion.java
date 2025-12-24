@@ -229,7 +229,7 @@ public final class IcebergAvroDataConversion
         if (type instanceof RowType rowType) {
             SqlRow sqlRow = rowType.getObject(block, position);
 
-            List<Type> fieldTypes = rowType.getTypeParameters();
+            List<Type> fieldTypes = rowType.getFieldTypes();
             checkArgument(fieldTypes.size() == sqlRow.getFieldCount(), "Expected row value field count does not match type field count");
             List<Types.NestedField> icebergFields = icebergType.asStructType().fields();
 
@@ -315,9 +315,9 @@ public final class IcebergAvroDataConversion
             type.writeSlice(builder, javaUuidToTrinoUuid((UUID) object));
             return;
         }
-        if (type instanceof ArrayType) {
+        if (type instanceof ArrayType arrayType) {
             Collection<?> array = (Collection<?>) object;
-            Type elementType = ((ArrayType) type).getElementType();
+            Type elementType = arrayType.getElementType();
             org.apache.iceberg.types.Type elementIcebergType = icebergType.asListType().elementType();
             ((ArrayBlockBuilder) builder).buildEntry(elementBuilder -> {
                 for (Object element : array) {
@@ -326,10 +326,10 @@ public final class IcebergAvroDataConversion
             });
             return;
         }
-        if (type instanceof MapType) {
+        if (type instanceof MapType mapType) {
             Map<?, ?> map = (Map<?, ?>) object;
-            Type keyType = ((MapType) type).getKeyType();
-            Type valueType = ((MapType) type).getValueType();
+            Type keyType = mapType.getKeyType();
+            Type valueType = mapType.getValueType();
             org.apache.iceberg.types.Type keyIcebergType = icebergType.asMapType().keyType();
             org.apache.iceberg.types.Type valueIcebergType = icebergType.asMapType().valueType();
             ((MapBlockBuilder) builder).buildEntry((keyBuilder, valueBuilder) -> {
@@ -340,9 +340,9 @@ public final class IcebergAvroDataConversion
             });
             return;
         }
-        if (type instanceof RowType) {
+        if (type instanceof RowType rowType) {
             Record record = (Record) object;
-            List<Type> typeParameters = type.getTypeParameters();
+            List<Type> typeParameters = rowType.getFieldTypes();
             List<Types.NestedField> icebergFields = icebergType.asStructType().fields();
             ((RowBlockBuilder) builder).buildEntry(fieldBuilders -> {
                 for (int i = 0; i < typeParameters.size(); i++) {

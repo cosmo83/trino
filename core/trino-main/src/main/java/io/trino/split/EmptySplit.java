@@ -15,7 +15,7 @@ package io.trino.split;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.trino.spi.connector.CatalogHandle;
+import io.trino.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorSplit;
 
 import static io.airlift.slice.SizeOf.instanceSize;
@@ -33,12 +33,6 @@ public class EmptySplit
             @JsonProperty("catalogHandle") CatalogHandle catalogHandle)
     {
         this.catalogHandle = requireNonNull(catalogHandle, "catalogHandle is null");
-    }
-
-    @Override
-    public Object getInfo()
-    {
-        return this;
     }
 
     @Override

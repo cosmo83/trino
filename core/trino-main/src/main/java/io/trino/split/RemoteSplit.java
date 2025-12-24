@@ -42,12 +42,6 @@ public class RemoteSplit
     }
 
     @Override
-    public Object getInfo()
-    {
-        return this;
-    }
-
-    @Override
     public String toString()
     {
         return toStringHelper(this)

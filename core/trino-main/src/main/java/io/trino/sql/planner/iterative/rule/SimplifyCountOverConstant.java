@@ -23,7 +23,7 @@ import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.AggregationNode;
@@ -103,16 +103,20 @@ public class SimplifyCountOverConstant
 
     private boolean isCountOverConstant(AggregationNode.Aggregation aggregation, Assignments inputs)
     {
-        BoundSignature signature = aggregation.getResolvedFunction().getSignature();
+        BoundSignature signature = aggregation.getResolvedFunction().signature();
         if (!signature.getName().equals(COUNT_NAME) || signature.getArgumentTypes().size() != 1) {
             return false;
         }
 
+        if (aggregation.isDistinct()) {
+            return false;
+        }
+
         Expression argument = aggregation.getArguments().get(0);
-        if (argument instanceof SymbolReference) {
+        if (argument instanceof Reference) {
             argument = inputs.get(Symbol.from(argument));
         }
 
-        return argument instanceof Constant constant && constant.getValue() != null;
+        return argument instanceof Constant constant && constant.value() != null;
     }
 }

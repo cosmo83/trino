@@ -16,9 +16,9 @@ package io.trino.sql.planner.planprinter;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Partitioning.ArgumentBinding;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.SubPlan;
@@ -72,8 +72,9 @@ import java.util.stream.Collectors;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Maps.immutableEnumMap;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.plan.ExchangeNode.Type.REPARTITION;
+import static io.trino.sql.planner.plan.JoinType.INNER;
 import static io.trino.sql.planner.planprinter.PlanPrinter.formatAggregation;
 import static java.lang.String.format;
 
@@ -256,7 +257,7 @@ public final class GraphvizPrinter
         @Override
         public Void visitSort(SortNode node, Void context)
         {
-            printNode(node, format("Sort[%s]", Joiner.on(", ").join(node.getOrderingScheme().getOrderBy())), NODE_COLORS.get(NodeType.SORT));
+            printNode(node, format("Sort[%s]", Joiner.on(", ").join(node.getOrderingScheme().orderBy())), NODE_COLORS.get(NodeType.SORT));
             return node.getSource().accept(this, context);
         }
 
@@ -273,7 +274,7 @@ public final class GraphvizPrinter
             printNode(node, "Window", format("partition by = %s|order by = %s",
                     Joiner.on(", ").join(node.getPartitionBy()),
                     node.getOrderingScheme()
-                            .map(orderingScheme -> Joiner.on(", ").join(orderingScheme.getOrderBy()))
+                            .map(orderingScheme -> Joiner.on(", ").join(orderingScheme.orderBy()))
                             .orElse("")),
                     NODE_COLORS.get(NodeType.WINDOW));
             return node.getSource().accept(this, context);
@@ -285,7 +286,7 @@ public final class GraphvizPrinter
             printNode(node, "PatternRecognition", format("partition by = %s|order by = %s",
                     Joiner.on(", ").join(node.getPartitionBy()),
                     node.getOrderingScheme()
-                            .map(orderingScheme -> Joiner.on(", ").join(orderingScheme.getOrderBy()))
+                            .map(orderingScheme -> Joiner.on(", ").join(orderingScheme.orderBy()))
                             .orElse("")),
                     NODE_COLORS.get(NodeType.WINDOW));
             return node.getSource().accept(this, context);
@@ -309,7 +310,7 @@ public final class GraphvizPrinter
                     format("type=%s|partition by = %s|order by = %s|n = %s",
                             node.getRankingType(),
                             Joiner.on(", ").join(node.getPartitionBy()),
-                            Joiner.on(", ").join(node.getOrderingScheme().getOrderBy()),
+                            Joiner.on(", ").join(node.getOrderingScheme().orderBy()),
                             node.getMaxRankingPerPartition()),
                     NODE_COLORS.get(NodeType.WINDOW));
             return node.getSource().accept(this, context);
@@ -390,8 +391,8 @@ public final class GraphvizPrinter
         {
             StringBuilder builder = new StringBuilder();
             for (Map.Entry<Symbol, Expression> entry : node.getAssignments().entrySet()) {
-                if ((entry.getValue() instanceof SymbolReference) &&
-                        ((SymbolReference) entry.getValue()).getName().equals(entry.getKey().getName())) {
+                if ((entry.getValue() instanceof Reference) &&
+                        ((Reference) entry.getValue()).name().equals(entry.getKey().name())) {
                     // skip identity assignments
                     continue;
                 }
@@ -406,11 +407,17 @@ public final class GraphvizPrinter
         public Void visitUnnest(UnnestNode node, Void context)
         {
             StringBuilder label = new StringBuilder();
-            if (!node.getReplicateSymbols().isEmpty()) {
-                label.append("CrossJoin Unnest");
+            if (node.getJoinType() == INNER) {
+                if (node.getReplicateSymbols().isEmpty()) {
+                    label.append("Unnest");
+                }
+                else {
+                    label.append("CrossJoin Unnest");
+                }
             }
             else {
-                label.append("Unnest");
+                label.append(node.getJoinType().getJoinLabel())
+                        .append(" Unnest on true");
             }
 
             List<Symbol> unnestInputs = node.getMappings().stream()
@@ -428,8 +435,8 @@ public final class GraphvizPrinter
         public Void visitTopN(TopNNode node, Void context)
         {
             String keys = node.getOrderingScheme()
-                    .getOrderBy().stream()
-                    .map(input -> input + " " + node.getOrderingScheme().getOrdering(input))
+                    .orderBy().stream()
+                    .map(input -> input + " " + node.getOrderingScheme().ordering(input))
                     .collect(Collectors.joining(", "));
 
             printNode(node, format("TopN[%s]", node.getCount()), keys, NODE_COLORS.get(NodeType.TOPN));
@@ -544,7 +551,7 @@ public final class GraphvizPrinter
         {
             String correlationSymbols = Joiner.on(",").join(node.getCorrelation());
             String filterExpression = "";
-            if (!node.getFilter().equals(TRUE_LITERAL)) {
+            if (!node.getFilter().equals(TRUE)) {
                 filterExpression = " " + node.getFilter().toString();
             }
 
@@ -568,7 +575,7 @@ public final class GraphvizPrinter
         {
             List<Expression> joinExpressions = new ArrayList<>();
             for (IndexJoinNode.EquiJoinClause clause : node.getCriteria()) {
-                joinExpressions.add(new ComparisonExpression(ComparisonExpression.Operator.EQUAL,
+                joinExpressions.add(new Comparison(Comparison.Operator.EQUAL,
                         clause.getProbe().toSymbolReference(),
                         clause.getIndex().toSymbolReference()));
             }

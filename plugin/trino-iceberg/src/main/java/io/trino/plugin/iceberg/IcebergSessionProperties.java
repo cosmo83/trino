@@ -19,7 +19,6 @@ import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.orc.OrcWriteValidation.OrcWriteValidationMode;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
-import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.orc.OrcReaderConfig;
 import io.trino.plugin.hive.orc.OrcWriterConfig;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
@@ -27,12 +26,17 @@ import io.trino.plugin.hive.parquet.ParquetWriterConfig;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.session.PropertyMetadata;
+import io.trino.spi.type.ArrayType;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.plugin.base.session.PropertyMetadataUtil.dataSizeProperty;
 import static io.trino.plugin.base.session.PropertyMetadataUtil.durationProperty;
 import static io.trino.plugin.base.session.PropertyMetadataUtil.validateMaxDataSize;
@@ -51,13 +55,15 @@ import static io.trino.spi.session.PropertyMetadata.doubleProperty;
 import static io.trino.spi.session.PropertyMetadata.enumProperty;
 import static io.trino.spi.session.PropertyMetadata.integerProperty;
 import static io.trino.spi.session.PropertyMetadata.stringProperty;
+import static io.trino.spi.type.VarcharType.VARCHAR;
 import static java.lang.String.format;
+import static java.util.Locale.ENGLISH;
+import static java.util.Objects.requireNonNull;
 
 public final class IcebergSessionProperties
         implements SessionPropertiesProvider
 {
     public static final String SPLIT_SIZE = "experimental_split_size";
-    private static final String COMPRESSION_CODEC = "compression_codec";
     private static final String USE_FILE_SIZE_FROM_METADATA = "use_file_size_from_metadata";
     private static final String ORC_BLOOM_FILTERS_ENABLED = "orc_bloom_filters_enabled";
     private static final String ORC_MAX_MERGE_DISTANCE = "orc_max_merge_distance";
@@ -73,12 +79,14 @@ public final class IcebergSessionProperties
     private static final String ORC_WRITER_MIN_STRIPE_SIZE = "orc_writer_min_stripe_size";
     private static final String ORC_WRITER_MAX_STRIPE_SIZE = "orc_writer_max_stripe_size";
     private static final String ORC_WRITER_MAX_STRIPE_ROWS = "orc_writer_max_stripe_rows";
+    private static final String ORC_WRITER_MAX_ROW_GROUP_ROWS = "orc_writer_max_row_group_rows";
     private static final String ORC_WRITER_MAX_DICTIONARY_MEMORY = "orc_writer_max_dictionary_memory";
     private static final String PARQUET_MAX_READ_BLOCK_SIZE = "parquet_max_read_block_size";
     private static final String PARQUET_USE_BLOOM_FILTER = "parquet_use_bloom_filter";
     private static final String PARQUET_MAX_READ_BLOCK_ROW_COUNT = "parquet_max_read_block_row_count";
     private static final String PARQUET_SMALL_FILE_THRESHOLD = "parquet_small_file_threshold";
     private static final String PARQUET_IGNORE_STATISTICS = "parquet_ignore_statistics";
+    private static final String PARQUET_VECTORIZED_DECODING_ENABLED = "parquet_vectorized_decoding_enabled";
     private static final String PARQUET_WRITER_BLOCK_SIZE = "parquet_writer_block_size";
     private static final String PARQUET_WRITER_PAGE_SIZE = "parquet_writer_page_size";
     private static final String PARQUET_WRITER_PAGE_VALUE_COUNT = "parquet_writer_page_value_count";
@@ -97,6 +105,11 @@ public final class IcebergSessionProperties
     private static final String MERGE_MANIFESTS_ON_WRITE = "merge_manifests_on_write";
     private static final String SORTED_WRITING_ENABLED = "sorted_writing_enabled";
     private static final String QUERY_PARTITION_FILTER_REQUIRED = "query_partition_filter_required";
+    private static final String QUERY_PARTITION_FILTER_REQUIRED_SCHEMAS = "query_partition_filter_required_schemas";
+    private static final String INCREMENTAL_REFRESH_ENABLED = "incremental_refresh_enabled";
+    public static final String BUCKET_EXECUTION_ENABLED = "bucket_execution_enabled";
+    public static final String FILE_BASED_CONFLICT_DETECTION_ENABLED = "file_based_conflict_detection_enabled";
+    private static final String MAX_PARTITIONS_PER_WRITER = "max_partitions_per_writer";
 
     private final List<PropertyMetadata<?>> sessionProperties;
 
@@ -116,12 +129,6 @@ public final class IcebergSessionProperties
                         // See https://github.com/trinodb/trino/issues/9018#issuecomment-1752929193 for further discussion.
                         null,
                         true))
-                .add(enumProperty(
-                        COMPRESSION_CODEC,
-                        "Compression codec to use when writing files",
-                        HiveCompressionCodec.class,
-                        icebergConfig.getCompressionCodec(),
-                        false))
                 .add(booleanProperty(
                         USE_FILE_SIZE_FROM_METADATA,
                         "Use file size stored in Iceberg metadata",
@@ -206,6 +213,11 @@ public final class IcebergSessionProperties
                         "ORC: Max stripe row count",
                         orcWriterConfig.getStripeMaxRowCount(),
                         false))
+                .add(integerProperty(
+                        ORC_WRITER_MAX_ROW_GROUP_ROWS,
+                        "ORC: Max number of rows in a row group",
+                        orcWriterConfig.getRowGroupMaxRowCount(),
+                        false))
                 .add(dataSizeProperty(
                         ORC_WRITER_MAX_DICTIONARY_MEMORY,
                         "ORC: Max dictionary memory",
@@ -243,6 +255,11 @@ public final class IcebergSessionProperties
                         PARQUET_IGNORE_STATISTICS,
                         "Ignore statistics from Parquet to allow querying files with corrupted or incorrect statistics",
                         parquetReaderConfig.isIgnoreStatistics(),
+                        false))
+                .add(booleanProperty(
+                        PARQUET_VECTORIZED_DECODING_ENABLED,
+                        "Enable using Java Vector API for faster decoding of parquet files",
+                        parquetReaderConfig.isVectorizedDecodingEnabled(),
                         false))
                 .add(dataSizeProperty(
                         PARQUET_WRITER_BLOCK_SIZE,
@@ -348,6 +365,50 @@ public final class IcebergSessionProperties
                         "Require filter on partition column",
                         icebergConfig.isQueryPartitionFilterRequired(),
                         false))
+                .add(new PropertyMetadata<>(
+                        QUERY_PARTITION_FILTER_REQUIRED_SCHEMAS,
+                        "List of schemas for which filter on partition column is enforced.",
+                        new ArrayType(VARCHAR),
+                        Set.class,
+                        icebergConfig.getQueryPartitionFilterRequiredSchemas(),
+                        false,
+                        object -> ((Collection<?>) object).stream()
+                                .map(String.class::cast)
+                                .peek(property -> {
+                                    if (isNullOrEmpty(property)) {
+                                        throw new TrinoException(INVALID_SESSION_PROPERTY, format("Invalid null or empty value in %s property", QUERY_PARTITION_FILTER_REQUIRED_SCHEMAS));
+                                    }
+                                })
+                                .map(schema -> schema.toLowerCase(ENGLISH))
+                                .collect(toImmutableSet()),
+                        value -> value))
+                .add(booleanProperty(
+                        INCREMENTAL_REFRESH_ENABLED,
+                        "Enable Incremental refresh for MVs backed by Iceberg tables, when possible.",
+                        icebergConfig.isIncrementalRefreshEnabled(),
+                        false))
+                .add(booleanProperty(
+                        BUCKET_EXECUTION_ENABLED,
+                        "Enable bucket-aware execution: use physical bucketing information to optimize queries",
+                        icebergConfig.isBucketExecutionEnabled(),
+                        false))
+                .add(booleanProperty(
+                        FILE_BASED_CONFLICT_DETECTION_ENABLED,
+                        "Enable file-based conflict detection: take partition information from the actual written files as a source for the conflict detection system",
+                        icebergConfig.isFileBasedConflictDetectionEnabled(),
+                        false))
+                .add(integerProperty(
+                        MAX_PARTITIONS_PER_WRITER,
+                        "Maximum number of partitions per writer",
+                        icebergConfig.getMaxPartitionsPerWriter(),
+                        value -> {
+                            if (value < 1 || value > icebergConfig.getMaxPartitionsPerWriter()) {
+                                throw new TrinoException(
+                                        INVALID_SESSION_PROPERTY,
+                                        format("%s must be between 1 and %s", MAX_PARTITIONS_PER_WRITER, icebergConfig.getMaxPartitionsPerWriter()));
+                            }
+                        },
+                        false))
                 .build();
     }
 
@@ -434,6 +495,11 @@ public final class IcebergSessionProperties
         return session.getProperty(ORC_WRITER_MAX_STRIPE_ROWS, Integer.class);
     }
 
+    public static int getOrcWriterMaxRowGroupRows(ConnectorSession session)
+    {
+        return session.getProperty(ORC_WRITER_MAX_ROW_GROUP_ROWS, Integer.class);
+    }
+
     public static DataSize getOrcWriterMaxDictionaryMemory(ConnectorSession session)
     {
         return session.getProperty(ORC_WRITER_MAX_DICTIONARY_MEMORY, DataSize.class);
@@ -442,11 +508,6 @@ public final class IcebergSessionProperties
     public static Optional<DataSize> getSplitSize(ConnectorSession session)
     {
         return Optional.ofNullable(session.getProperty(SPLIT_SIZE, DataSize.class));
-    }
-
-    public static HiveCompressionCodec getCompressionCodec(ConnectorSession session)
-    {
-        return session.getProperty(COMPRESSION_CODEC, HiveCompressionCodec.class);
     }
 
     public static boolean isUseFileSizeFromMetadata(ConnectorSession session)
@@ -472,6 +533,11 @@ public final class IcebergSessionProperties
     public static boolean isParquetIgnoreStatistics(ConnectorSession session)
     {
         return session.getProperty(PARQUET_IGNORE_STATISTICS, Boolean.class);
+    }
+
+    public static boolean isParquetVectorizedDecodingEnabled(ConnectorSession session)
+    {
+        return session.getProperty(PARQUET_VECTORIZED_DECODING_ENABLED, Boolean.class);
     }
 
     public static DataSize getParquetWriterPageSize(ConnectorSession session)
@@ -567,5 +633,33 @@ public final class IcebergSessionProperties
     public static boolean isQueryPartitionFilterRequired(ConnectorSession session)
     {
         return session.getProperty(QUERY_PARTITION_FILTER_REQUIRED, Boolean.class);
+    }
+
+    @SuppressWarnings("unchecked cast")
+    public static Set<String> getQueryPartitionFilterRequiredSchemas(ConnectorSession session)
+    {
+        Set<String> queryPartitionFilterRequiredSchemas = (Set<String>) session.getProperty(QUERY_PARTITION_FILTER_REQUIRED_SCHEMAS, Set.class);
+        requireNonNull(queryPartitionFilterRequiredSchemas, "queryPartitionFilterRequiredSchemas is null");
+        return queryPartitionFilterRequiredSchemas;
+    }
+
+    public static boolean isIncrementalRefreshEnabled(ConnectorSession session)
+    {
+        return session.getProperty(INCREMENTAL_REFRESH_ENABLED, Boolean.class);
+    }
+
+    public static boolean isBucketExecutionEnabled(ConnectorSession session)
+    {
+        return session.getProperty(BUCKET_EXECUTION_ENABLED, Boolean.class);
+    }
+
+    public static boolean isFileBasedConflictDetectionEnabled(ConnectorSession session)
+    {
+        return session.getProperty(FILE_BASED_CONFLICT_DETECTION_ENABLED, Boolean.class);
+    }
+
+    public static int maxPartitionsPerWriter(ConnectorSession session)
+    {
+        return session.getProperty(MAX_PARTITIONS_PER_WRITER, Integer.class);
     }
 }

@@ -22,6 +22,7 @@ import io.grpc.StatusRuntimeException;
 
 import java.util.Arrays;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 
 import static com.google.cloud.bigquery.TableDefinition.Type.TABLE;
@@ -50,11 +51,25 @@ public final class BigQueryUtil
     private static boolean isRetryableInternalError(Throwable t)
     {
         if (t instanceof StatusRuntimeException statusRuntimeException) {
-            return statusRuntimeException.getStatus().getCode() == Status.Code.INTERNAL &&
+            return (statusRuntimeException.getStatus().getCode() == Status.Code.INTERNAL &&
                     INTERNAL_ERROR_MESSAGES.stream()
-                            .anyMatch(message -> statusRuntimeException.getMessage().contains(message));
+                            .anyMatch(message -> statusRuntimeException.getMessage().contains(message))) ||
+                    // from Google documentation: UNAVAILABLE - This is most likely a transient condition, which can be corrected by retrying with a backoff.
+                    // https://docs.cloud.google.com/bigquery/docs/reference/datatransfer/rest/v1/Code
+                    statusRuntimeException.getStatus().getCode() == Status.Code.UNAVAILABLE;
         }
         return false;
+    }
+
+    public static String buildNativeQuery(String nativeQuery, Optional<String> filter, OptionalLong limit)
+    {
+        // projected column names can not be used for generating select sql because the query fails if it does not
+        // include a column name. eg: query => 'SELECT 1'
+        String queryString = filter.map(s -> "SELECT * FROM (" + nativeQuery + ") WHERE " + s).orElse(nativeQuery);
+        if (limit.isPresent()) {
+            return "SELECT * FROM (" + queryString + ") LIMIT " + limit.getAsLong();
+        }
+        return queryString;
     }
 
     public static BigQueryException convertToBigQueryException(BigQueryError error)
@@ -85,6 +100,6 @@ public final class BigQueryUtil
 
     public static String quoted(RemoteTableName table)
     {
-        return format("%s.%s.%s", quote(table.getProjectId()), quote(table.getDatasetName()), quote(table.getTableName()));
+        return format("%s.%s.%s", quote(table.projectId()), quote(table.datasetName()), quote(table.tableName()));
     }
 }

@@ -14,11 +14,13 @@
 package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.security.AllowAllAccessControl;
 import io.trino.sql.tree.DropTable;
+import io.trino.sql.tree.NodeLocation;
 import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
@@ -51,7 +53,7 @@ public class TestDropTableTask
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropTable(tableName, false)))
                 .hasErrorCode(TABLE_NOT_FOUND)
-                .hasMessage("Table '%s' does not exist", tableName);
+                .hasMessageContaining("Table '%s' does not exist", tableName);
     }
 
     @Test
@@ -85,22 +87,22 @@ public class TestDropTableTask
     public void testDropTableOnView()
     {
         QualifiedName viewName = qualifiedName("existing_view");
-        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), false);
+        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), ImmutableMap.of(), false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropTable(viewName, false)))
                 .hasErrorCode(GENERIC_USER_ERROR)
-                .hasMessage("Table '%s' does not exist, but a view with that name exists. Did you mean DROP VIEW %s?", viewName, viewName);
+                .hasMessageContaining("Table '%s' does not exist, but a view with that name exists. Did you mean DROP VIEW %s?", viewName, viewName);
     }
 
     @Test
     public void testDropTableIfExistsOnView()
     {
         QualifiedName viewName = qualifiedName("existing_view");
-        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), false);
+        metadata.createView(testSession, asQualifiedObjectName(viewName), someView(), ImmutableMap.of(), false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropTable(viewName, true)))
                 .hasErrorCode(GENERIC_USER_ERROR)
-                .hasMessage("Table '%s' does not exist, but a view with that name exists. Did you mean DROP VIEW %s?", viewName, viewName);
+                .hasMessageContaining("Table '%s' does not exist, but a view with that name exists. Did you mean DROP VIEW %s?", viewName, viewName);
     }
 
     @Test
@@ -111,7 +113,7 @@ public class TestDropTableTask
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropTable(viewName, false)))
                 .hasErrorCode(GENERIC_USER_ERROR)
-                .hasMessage("Table '%s' does not exist, but a materialized view with that name exists. Did you mean DROP MATERIALIZED VIEW %s?", viewName, viewName);
+                .hasMessageContaining("Table '%s' does not exist, but a materialized view with that name exists. Did you mean DROP MATERIALIZED VIEW %s?", viewName, viewName);
     }
 
     @Test
@@ -122,11 +124,11 @@ public class TestDropTableTask
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropTable(viewName, true)))
                 .hasErrorCode(GENERIC_USER_ERROR)
-                .hasMessage("Table '%s' does not exist, but a materialized view with that name exists. Did you mean DROP MATERIALIZED VIEW %s?", viewName, viewName);
+                .hasMessageContaining("Table '%s' does not exist, but a materialized view with that name exists. Did you mean DROP MATERIALIZED VIEW %s?", viewName, viewName);
     }
 
     private ListenableFuture<Void> executeDropTable(QualifiedName tableName, boolean exists)
     {
-        return new DropTableTask(metadata, new AllowAllAccessControl()).execute(new DropTable(tableName, exists), queryStateMachine, ImmutableList.of(), WarningCollector.NOOP);
+        return new DropTableTask(metadata, new AllowAllAccessControl()).execute(new DropTable(new NodeLocation(1, 1), tableName, exists), queryStateMachine, ImmutableList.of(), WarningCollector.NOOP);
     }
 }

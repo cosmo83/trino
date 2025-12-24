@@ -14,6 +14,7 @@
 package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.Session;
 import io.trino.matching.Capture;
@@ -27,13 +28,12 @@ import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Int128;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Case;
 import io.trino.sql.ir.Cast;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SearchedCaseExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.WhenClause;
-import io.trino.sql.planner.IrExpressionInterpreter;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolsExtractor;
 import io.trino.sql.planner.iterative.Rule;
@@ -63,7 +63,9 @@ import static io.trino.spi.type.SmallintType.SMALLINT;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.trino.sql.ir.IrExpressions.ifExpression;
+import static io.trino.sql.ir.IrExpressions.mayFail;
 import static io.trino.sql.ir.IrUtils.or;
+import static io.trino.sql.ir.optimizer.IrExpressionOptimizer.newOptimizer;
 import static io.trino.sql.planner.plan.AggregationNode.Step.SINGLE;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.trino.sql.planner.plan.Patterns.aggregation;
@@ -159,6 +161,11 @@ public class PreAggregateCaseAggregations
         }
 
         Map<PreAggregationKey, PreAggregation> preAggregations = getPreAggregations(aggregations, context);
+        if (preAggregations.size() == aggregations.size()) {
+            // Prevent rule execution if number of pre-aggregations is equal to number of case aggregations.
+            // In such case there is no gain in performance, and it could lead to infinite rule execution loop.
+            return Result.empty();
+        }
 
         Assignments.Builder preGroupingExpressionsBuilder = Assignments.builder();
         preGroupingExpressionsBuilder.putIdentities(extraGroupingKeys);
@@ -172,7 +179,7 @@ public class PreAggregateCaseAggregations
                 context);
         AggregationNode preAggregation = createPreAggregation(
                 preProjection,
-                preGroupingExpressions.getOutputs(),
+                preGroupingExpressions.outputs(),
                 preAggregations,
                 context);
         Map<CaseAggregation, Symbol> newProjectionSymbols = getNewProjectionSymbols(aggregations, context);
@@ -206,7 +213,6 @@ public class PreAggregateCaseAggregations
                 aggregationNode.getGroupingSets(),
                 aggregationNode.getPreGroupedSymbols(),
                 aggregationNode.getStep(),
-                aggregationNode.getHashSymbol(),
                 aggregationNode.getGroupIdSymbol());
     }
 
@@ -222,7 +228,7 @@ public class PreAggregateCaseAggregations
         assignments.putIdentities(aggregationNode.getGroupingKeys());
         newProjectionSymbols.forEach((aggregation, symbol) -> assignments.put(
                 symbol,
-                new SearchedCaseExpression(ImmutableList.of(
+                new Case(ImmutableList.of(
                         new WhenClause(
                                 aggregation.getOperand(),
                                 preAggregations.get(new PreAggregationKey(aggregation)).getAggregationSymbol().toSymbolReference())),
@@ -241,7 +247,7 @@ public class PreAggregateCaseAggregations
 
     private AggregationNode createPreAggregation(
             PlanNode source,
-            List<Symbol> groupingKeys,
+            Set<Symbol> groupingKeys,
             Map<PreAggregationKey, PreAggregation> preAggregations,
             Context context)
     {
@@ -291,21 +297,20 @@ public class PreAggregateCaseAggregations
                             // Cast pre-projection if needed to match aggregation input type.
                             // This is because entire "CASE WHEN" expression could be wrapped in CAST.
                             Type preProjectionType = getType(preProjection);
-                            Type aggregationInputType = getOnlyElement(key.getFunction().getSignature().getArgumentTypes());
+                            Type aggregationInputType = getOnlyElement(key.getFunction().signature().getArgumentTypes());
                             if (!preProjectionType.equals(aggregationInputType)) {
                                 preProjection = new Cast(preProjection, aggregationInputType);
-                                preProjectionType = aggregationInputType;
                             }
 
                             // Wrap the preProjection with IF to retain the conditional nature on the CASE aggregation(s) during pre-aggregation
-                            if (!(preProjection instanceof SymbolReference || preProjection instanceof Constant)) {
+                            if (mayFail(plannerContext, preProjection)) {
                                 Expression unionConditions = or(caseAggregations.stream()
                                         .map(CaseAggregation::getOperand)
                                         .collect(toImmutableSet()));
                                 preProjection = ifExpression(unionConditions, preProjection);
                             }
 
-                            Symbol preProjectionSymbol = context.getSymbolAllocator().newSymbol(preProjection, preProjectionType);
+                            Symbol preProjectionSymbol = context.getSymbolAllocator().newSymbol(preProjection);
                             Symbol preAggregationSymbol = context.getSymbolAllocator().newSymbol(caseAggregations.iterator().next().getAggregationSymbol());
                             return new PreAggregation(preAggregationSymbol, preProjection, preProjectionSymbol);
                         }));
@@ -331,7 +336,7 @@ public class PreAggregateCaseAggregations
     private Optional<CaseAggregation> extractCaseAggregation(Symbol aggregationSymbol, Aggregation aggregation, ProjectNode projectNode, Context context)
     {
         if (aggregation.getArguments().size() != 1
-                || !(aggregation.getArguments().get(0) instanceof SymbolReference)
+                || !(aggregation.getArguments().get(0) instanceof Reference)
                 || aggregation.isDistinct()
                 || aggregation.getFilter().isPresent()
                 || aggregation.getMask().isPresent()
@@ -341,7 +346,7 @@ public class PreAggregateCaseAggregations
         }
 
         ResolvedFunction resolvedFunction = aggregation.getResolvedFunction();
-        CatalogSchemaFunctionName name = resolvedFunction.getSignature().getName();
+        CatalogSchemaFunctionName name = resolvedFunction.signature().getName();
         if (!ALLOWED_FUNCTIONS.contains(name)) {
             // only cumulative aggregations (e.g. that can be split into aggregation of aggregations) are supported
             return Optional.empty();
@@ -351,22 +356,22 @@ public class PreAggregateCaseAggregations
         Expression projection = projectNode.getAssignments().get(projectionSymbol);
         Expression unwrappedProjection;
         // unwrap top-level cast
-        if (projection instanceof Cast) {
-            unwrappedProjection = ((Cast) projection).getExpression();
+        if (projection instanceof Cast cast) {
+            unwrappedProjection = cast.expression();
         }
         else {
             unwrappedProjection = projection;
         }
 
-        if (!(unwrappedProjection instanceof SearchedCaseExpression caseExpression)) {
+        if (!(unwrappedProjection instanceof Case caseExpression)) {
             return Optional.empty();
         }
 
-        if (caseExpression.getWhenClauses().size() != 1) {
+        if (caseExpression.whenClauses().size() != 1) {
             return Optional.empty();
         }
 
-        Type aggregationType = resolvedFunction.getSignature().getReturnType();
+        Type aggregationType = resolvedFunction.signature().getReturnType();
         ResolvedFunction cumulativeFunction;
         try {
             cumulativeFunction = plannerContext.getMetadata().resolveBuiltinFunction(name.getFunctionName(), fromTypes(aggregationType));
@@ -376,49 +381,45 @@ public class PreAggregateCaseAggregations
             return Optional.empty();
         }
 
-        if (!cumulativeFunction.getSignature().getReturnType().equals(aggregationType)) {
+        if (!cumulativeFunction.signature().getReturnType().equals(aggregationType)) {
             // aggregation type after rewrite must not change
             return Optional.empty();
         }
 
-        Optional<Expression> cumulativeAggregationDefaultValue = Optional.empty();
-        if (caseExpression.getDefaultValue().isPresent()) {
-            Type defaultType = getType(caseExpression.getDefaultValue().get());
-            Object defaultValue = optimizeExpression(caseExpression.getDefaultValue().get(), context);
-            if (defaultValue != null) {
+        Expression defaultValue = optimizeExpression(caseExpression.defaultValue(), context);
+        if (defaultValue instanceof Constant(Type type, Object value)) {
+            if (value != null) {
                 if (!name.equals(SUM)) {
                     return Optional.empty();
                 }
 
                 // sum aggregation is only supported if default value is null or 0, otherwise it wouldn't be cumulative
-                if (defaultType instanceof BigintType
-                        || defaultType == INTEGER
-                        || defaultType == SMALLINT
-                        || defaultType == TINYINT
-                        || defaultType == DOUBLE
-                        || defaultType == REAL
-                        || defaultType instanceof DecimalType) {
-                    if (!defaultValue.equals(0L) && !defaultValue.equals(0.0d) && !defaultValue.equals(Int128.ZERO)) {
-                        return Optional.empty();
-                    }
+                if (!value.equals(0L) && !value.equals(0.0d) && !value.equals(Int128.ZERO)) {
+                    return Optional.empty();
                 }
-                else {
+
+                if (!(type instanceof BigintType)
+                        && type != INTEGER
+                        && type != SMALLINT
+                        && type != TINYINT
+                        && type != DOUBLE
+                        && type != REAL
+                        && !(type instanceof DecimalType)) {
                     return Optional.empty();
                 }
             }
 
-            // cumulative aggregation default value need to be CAST to cumulative aggregation input type
-            cumulativeAggregationDefaultValue = Optional.of(new Cast(caseExpression.getDefaultValue().get(), aggregationType));
+            return Optional.of(new CaseAggregation(
+                    aggregationSymbol,
+                    resolvedFunction,
+                    cumulativeFunction,
+                    name,
+                    caseExpression.whenClauses().get(0).getOperand(),
+                    caseExpression.whenClauses().get(0).getResult(),
+                    new Cast(caseExpression.defaultValue(), aggregationType)));
         }
 
-        return Optional.of(new CaseAggregation(
-                aggregationSymbol,
-                resolvedFunction,
-                cumulativeFunction,
-                name,
-                caseExpression.getWhenClauses().get(0).getOperand(),
-                caseExpression.getWhenClauses().get(0).getResult(),
-                cumulativeAggregationDefaultValue));
+        return Optional.empty();
     }
 
     private Type getType(Expression expression)
@@ -426,10 +427,9 @@ public class PreAggregateCaseAggregations
         return expression.type();
     }
 
-    private Object optimizeExpression(Expression expression, Context context)
+    private Expression optimizeExpression(Expression expression, Context context)
     {
-        IrExpressionInterpreter expressionInterpreter = new IrExpressionInterpreter(expression, plannerContext, context.getSession());
-        return expressionInterpreter.optimize(Symbol::toSymbolReference);
+        return newOptimizer(plannerContext).process(expression, context.getSession(), ImmutableMap.of()).orElse(expression);
     }
 
     private static class CaseAggregation
@@ -447,7 +447,7 @@ public class PreAggregateCaseAggregations
         // CASE expression only result expression
         private final Expression result;
         // default value of cumulative aggregation
-        private final Optional<Expression> cumulativeAggregationDefaultValue;
+        private final Expression cumulativeAggregationDefaultValue;
 
         public CaseAggregation(
                 Symbol aggregationSymbol,
@@ -456,7 +456,7 @@ public class PreAggregateCaseAggregations
                 CatalogSchemaFunctionName name,
                 Expression operand,
                 Expression result,
-                Optional<Expression> cumulativeAggregationDefaultValue)
+                Expression cumulativeAggregationDefaultValue)
         {
             this.aggregationSymbol = requireNonNull(aggregationSymbol, "aggregationSymbol is null");
             this.function = requireNonNull(function, "function is null");
@@ -497,7 +497,7 @@ public class PreAggregateCaseAggregations
             return result;
         }
 
-        public Optional<Expression> getCumulativeAggregationDefaultValue()
+        public Expression getCumulativeAggregationDefaultValue()
         {
             return cumulativeAggregationDefaultValue;
         }

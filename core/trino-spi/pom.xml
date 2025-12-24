@@ -5,15 +5,15 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>443</version>
+        <version>480-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-spi</artifactId>
+    <name>${project.artifactId}</name>
     <description>Trino - Service Provider Interface (SPI)</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
         <released-artifacts.dir>${project.build.directory}/released-artifacts</released-artifacts.dir>
         <trino.check.skip-revapi>${air.check.skip-basic}</trino.check.skip-revapi>
     </properties>
@@ -49,6 +49,18 @@
 
         <dependency>
             <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api-incubator</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-common</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-context</artifactId>
             <scope>runtime</scope>
         </dependency>
@@ -80,6 +92,7 @@
         <dependency>
             <groupId>com.google.inject</groupId>
             <artifactId>guice</artifactId>
+            <classifier>classes</classifier>
             <scope>test</scope>
         </dependency>
 
@@ -167,21 +180,11 @@
             <plugin>
                 <groupId>org.revapi</groupId>
                 <artifactId>revapi-maven-plugin</artifactId>
-                <version>0.15.0</version>
+                <version>0.15.1</version>
                 <configuration>
                     <skip>${trino.check.skip-revapi}</skip>
                     <ignoreSuggestionsFormat>xml</ignoreSuggestionsFormat>
                     <analysisConfiguration>
-                        <revapi.filter>
-                            <elements>
-                                <exclude>
-                                    <item>
-                                        <matcher>java</matcher>
-                                        <match>@io.trino.spi.Experimental(*) ^*;</match>
-                                    </item>
-                                </exclude>
-                            </elements>
-                        </revapi.filter>
                         <revapi.differences>
                             <ignore>true</ignore>
                             <differences>
@@ -214,236 +217,411 @@
                                 <!-- Backwards incompatible changes since the previous release -->
                                 <!-- Any exclusions below can be deleted after each release -->
                                 <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.varargOverloadsOnlyDifferInVarargParameter</code>
+                                    <old>method io.opentelemetry.api.common.AttributesBuilder io.opentelemetry.api.common.AttributesBuilder::put(java.lang.String, boolean[])</old>
+                                    <new>method io.opentelemetry.api.common.AttributesBuilder io.opentelemetry.api.common.AttributesBuilder::put(java.lang.String, boolean[])</new>
+                                    <justification>Revapi now detects new API changes to vararg args</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.varargOverloadsOnlyDifferInVarargParameter</code>
+                                    <old>method io.opentelemetry.api.common.AttributesBuilder io.opentelemetry.api.common.AttributesBuilder::put(java.lang.String, double[])</old>
+                                    <new>method io.opentelemetry.api.common.AttributesBuilder io.opentelemetry.api.common.AttributesBuilder::put(java.lang.String, double[])</new>
+                                    <justification>Revapi now detects new API changes to vararg args</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.varargOverloadsOnlyDifferInVarargParameter</code>
+                                    <old>method io.opentelemetry.api.common.AttributesBuilder io.opentelemetry.api.common.AttributesBuilder::put(java.lang.String, java.lang.String[])</old>
+                                    <new>method io.opentelemetry.api.common.AttributesBuilder io.opentelemetry.api.common.AttributesBuilder::put(java.lang.String, java.lang.String[])</new>
+                                    <justification>Revapi now detects new API changes to vararg args</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.varargOverloadsOnlyDifferInVarargParameter</code>
+                                    <old>method io.opentelemetry.api.common.AttributesBuilder io.opentelemetry.api.common.AttributesBuilder::put(java.lang.String, long[])</old>
+                                    <new>method io.opentelemetry.api.common.AttributesBuilder io.opentelemetry.api.common.AttributesBuilder::put(java.lang.String, long[])</new>
+                                    <justification>Revapi now detects new API changes to vararg args</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.varargOverloadsOnlyDifferInVarargParameter</code>
+                                    <old>method io.opentelemetry.api.common.Value&lt;java.util.List&lt;io.opentelemetry.api.common.KeyValue&gt;&gt; io.opentelemetry.api.common.Value&lt;T&gt;::of(io.opentelemetry.api.common.KeyValue[])</old>
+                                    <new>method io.opentelemetry.api.common.Value&lt;java.util.List&lt;io.opentelemetry.api.common.KeyValue&gt;&gt; io.opentelemetry.api.common.Value&lt;T&gt;::of(io.opentelemetry.api.common.KeyValue[])</new>
+                                    <justification>Revapi now detects new API changes to vararg args</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.varargOverloadsOnlyDifferInVarargParameter</code>
+                                    <old>method io.opentelemetry.api.common.Value&lt;java.util.List&lt;io.opentelemetry.api.common.Value&lt;?&gt;&gt;&gt; io.opentelemetry.api.common.Value&lt;T&gt;::of(io.opentelemetry.api.common.Value&lt;?&gt;[])</old>
+                                    <new>method io.opentelemetry.api.common.Value&lt;java.util.List&lt;io.opentelemetry.api.common.Value&lt;?&gt;&gt;&gt; io.opentelemetry.api.common.Value&lt;T&gt;::of(io.opentelemetry.api.common.Value&lt;?&gt;[])</new>
+                                    <justification>Revapi now detects new API changes to vararg args</justification>
+                                </item>
+                                <item>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.eventlistener.QueryStatistics::&lt;init&gt;(java.time.Duration, java.time.Duration, java.time.Duration, java.time.Duration, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, long, long, long, long, long, long, long, long, long, long, long, long, long, long, double, double, java.util.List&lt;io.trino.spi.eventlistener.StageGcStatistics&gt;, int, boolean, java.util.List&lt;io.trino.spi.eventlistener.StageCpuDistribution&gt;, java.util.List&lt;io.trino.spi.eventlistener.StageOutputBufferUtilization&gt;, java.util.List&lt;io.trino.spi.eventlistener.StageOutputBufferMetrics&gt;, java.util.List&lt;io.trino.spi.eventlistener.StageTaskStatistics&gt;, java.util.List&lt;io.trino.spi.eventlistener.DynamicFilterDomainStatistics&gt;, java.util.function.Supplier&lt;java.util.List&lt;java.lang.String&gt;&gt;, java.util.List&lt;io.trino.spi.eventlistener.QueryPlanOptimizerStatistics&gt;, java.util.Map&lt;java.lang.String, io.trino.spi.metrics.Metrics&gt;, java.util.Optional&lt;java.lang.String&gt;)</old>
+                                    <new>method void io.trino.spi.eventlistener.QueryStatistics::&lt;init&gt;(java.time.Duration, java.time.Duration, java.time.Duration, java.time.Duration, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, long, long, long, long, long, long, long, long, long, long, long, long, long, long, double, double, java.util.List&lt;io.trino.spi.eventlistener.StageGcStatistics&gt;, int, boolean, java.util.List&lt;io.trino.spi.eventlistener.StageCpuDistribution&gt;, java.util.List&lt;io.trino.spi.eventlistener.StageOutputBufferUtilization&gt;, java.util.List&lt;io.trino.spi.eventlistener.StageOutputBufferMetrics&gt;, java.util.List&lt;io.trino.spi.eventlistener.StageTaskStatistics&gt;, java.util.List&lt;io.trino.spi.eventlistener.DynamicFilterDomainStatistics&gt;, java.util.function.Supplier&lt;java.util.List&lt;java.lang.String&gt;&gt;, java.util.List&lt;io.trino.spi.eventlistener.QueryPlanOptimizerStatistics&gt;, java.util.Map&lt;java.lang.String, io.trino.spi.metrics.Metrics&gt;, java.util.Optional&lt;java.lang.String&gt;)</new>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.block.ArrayBlockEncoding::&lt;init&gt;()</old>
+                                    <new>method void io.trino.spi.block.ArrayBlockEncoding::&lt;init&gt;(boolean)</new>
+                                    <justification>ArrayBlockEncoding needs to accept a parameter to enable SIMD support</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.block.ByteArrayBlockEncoding::&lt;init&gt;(boolean)</old>
+                                    <new>method void io.trino.spi.block.ByteArrayBlockEncoding::&lt;init&gt;(boolean, boolean, boolean)</new>
+                                    <justification>ByteArrayBlockEncoding needs to accept parameters to enable SIMD support</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.block.Fixed12BlockEncoding::&lt;init&gt;()</old>
+                                    <new>method void io.trino.spi.block.Fixed12BlockEncoding::&lt;init&gt;(boolean)</new>
+                                    <justification>Fixed12BlockEncoding needs to accept a parameter to enable SIMD support</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.block.Int128ArrayBlockEncoding::&lt;init&gt;()</old>
+                                    <new>method void io.trino.spi.block.Int128ArrayBlockEncoding::&lt;init&gt;(boolean)</new>
+                                    <justification>Int128ArrayBlockEncoding needs to accept a parameter to enable SIMD support</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.block.IntArrayBlockEncoding::&lt;init&gt;(boolean)</old>
+                                    <new>method void io.trino.spi.block.IntArrayBlockEncoding::&lt;init&gt;(boolean, boolean, boolean)</new>
+                                    <justification>IntArrayBlockEncoding needs to accept parameters to enable SIMD support</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.block.LongArrayBlockEncoding::&lt;init&gt;(boolean)</old>
+                                    <new>method void io.trino.spi.block.LongArrayBlockEncoding::&lt;init&gt;(boolean, boolean, boolean)</new>
+                                    <justification>LongArrayBlockEncoding needs to accept parameters to to enable SIMD support</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.block.MapBlockEncoding::&lt;init&gt;()</old>
+                                    <new>method void io.trino.spi.block.MapBlockEncoding::&lt;init&gt;(boolean)</new>
+                                    <justification>MapBlockEncoding needs to accept a parameter to enable SIMD support</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.block.RowBlockEncoding::&lt;init&gt;()</old>
+                                    <new>method void io.trino.spi.block.RowBlockEncoding::&lt;init&gt;(boolean)</new>
+                                    <justification>RowBlockEncoding needs to accept a parameter to enable SIMD support</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.block.ShortArrayBlockEncoding::&lt;init&gt;(boolean)</old>
+                                    <new>method void io.trino.spi.block.ShortArrayBlockEncoding::&lt;init&gt;(boolean, boolean, boolean)</new>
+                                    <justification>ShortArrayBlockEncoding needs to accept parameters to enable SIMD support</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.block.VariableWidthBlockEncoding::&lt;init&gt;()</old>
+                                    <new>method void io.trino.spi.block.VariableWidthBlockEncoding::&lt;init&gt;(boolean)</new>
+                                    <justification>VariableWidthBlockEncoding needs to accept a parameter to enable SIMD support</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method void io.trino.spi.block.PageBuilderStatus::&lt;init&gt;()</old>
+                                    <justification>Method is unnecessary</justification>
+                                </item>
+                                <item>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.connector.ConnectorMaterializedViewDefinition::&lt;init&gt;(java.lang.String, java.util.Optional&lt;io.trino.spi.connector.CatalogSchemaTableName&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.List&lt;io.trino.spi.connector.ConnectorMaterializedViewDefinition.Column&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.List&lt;io.trino.spi.connector.CatalogSchemaName&gt;)</old>
+                                    <new>method void io.trino.spi.connector.ConnectorMaterializedViewDefinition::&lt;init&gt;(java.lang.String, java.util.Optional&lt;io.trino.spi.connector.CatalogSchemaTableName&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.List&lt;io.trino.spi.connector.ConnectorMaterializedViewDefinition.Column&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;io.trino.spi.connector.ConnectorMaterializedViewDefinition.WhenStaleBehavior&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.List&lt;io.trino.spi.connector.CatalogSchemaName&gt;)</new>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.numberOfParametersChanged</code>
+                                    <old>method void io.trino.spi.resourcegroups.SelectionCriteria::&lt;init&gt;(boolean, java.lang.String, java.util.Set&lt;java.lang.String&gt;, java.lang.String, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Set&lt;java.lang.String&gt;, io.trino.spi.session.ResourceEstimates, java.util.Optional&lt;java.lang.String&gt;)</old>
+                                    <new>method void io.trino.spi.resourcegroups.SelectionCriteria::&lt;init&gt;(boolean, java.lang.String, java.util.Set&lt;java.lang.String&gt;, java.lang.String, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Set&lt;java.lang.String&gt;, io.trino.spi.session.ResourceEstimates, java.lang.String, java.util.Optional&lt;java.lang.String&gt;)</new>
+                                    <justification>Added queryText before queryType parameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method void io.trino.spi.resourcegroups.SelectionCriteria::&lt;init&gt;(boolean, java.lang.String, java.util.Set&lt;java.lang.String&gt;, java.lang.String, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Set&lt;java.lang.String&gt;, io.trino.spi.session.ResourceEstimates, java.util.Optional&lt;java.lang.String&gt;)</old>
+                                    <justification>Added queryText before queryType parameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method io.trino.spi.type.RowType io.trino.spi.type.RowType::createWithTypeSignature(io.trino.spi.type.TypeSignature, java.util.List&lt;io.trino.spi.type.RowType.Field&gt;)</old>
+                                    <justification>TypeParameter not needed</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeParameterChanged</code>
+                                    <old>parameter io.trino.spi.type.Type io.trino.spi.type.ParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeParameter&gt;===)</old>
+                                    <new>parameter io.trino.spi.type.Type io.trino.spi.type.ParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeSignatureParameter&gt;===)</new>
+                                    <parameterIndex>1</parameterIndex>
+                                    <justification>TypeParameter not needed</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeParameterChanged</code>
+                                    <old>parameter io.trino.spi.type.Type io.trino.spi.type.QuantileDigestParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeParameter&gt;===)</old>
+                                    <new>parameter io.trino.spi.type.Type io.trino.spi.type.QuantileDigestParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeSignatureParameter&gt;===)</new>
+                                    <parameterIndex>1</parameterIndex>
+                                    <justification>TypeParameter not needed</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeParameterChanged</code>
+                                    <old>parameter io.trino.spi.type.Type io.trino.spi.type.TimeParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeParameter&gt;===)</old>
+                                    <new>parameter io.trino.spi.type.Type io.trino.spi.type.TimeParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeSignatureParameter&gt;===)</new>
+                                    <parameterIndex>1</parameterIndex>
+                                    <justification>TypeParameter not needed</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeParameterChanged</code>
+                                    <old>parameter io.trino.spi.type.Type io.trino.spi.type.TimeWithTimeZoneParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeParameter&gt;===)</old>
+                                    <new>parameter io.trino.spi.type.Type io.trino.spi.type.TimeWithTimeZoneParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeSignatureParameter&gt;===)</new>
+                                    <parameterIndex>1</parameterIndex>
+                                    <justification>TypeParameter not needed</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeParameterChanged</code>
+                                    <old>parameter io.trino.spi.type.Type io.trino.spi.type.TimestampParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeParameter&gt;===)</old>
+                                    <new>parameter io.trino.spi.type.Type io.trino.spi.type.TimestampParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeSignatureParameter&gt;===)</new>
+                                    <parameterIndex>1</parameterIndex>
+                                    <justification>TypeParameter not needed</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeParameterChanged</code>
+                                    <old>parameter io.trino.spi.type.Type io.trino.spi.type.TimestampWithTimeZoneParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeParameter&gt;===)</old>
+                                    <new>parameter io.trino.spi.type.Type io.trino.spi.type.TimestampWithTimeZoneParametricType::createType(io.trino.spi.type.TypeManager, ===java.util.List&lt;io.trino.spi.type.TypeSignatureParameter&gt;===)</new>
+                                    <parameterIndex>1</parameterIndex>
+                                    <justification>TypeParameter not needed</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>class io.trino.spi.type.TypeParameter</old>
+                                    <justification>TypeParameter not needed</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeParameterChanged</code>
+                                    <old>parameter io.trino.spi.type.Type io.trino.spi.type.TypeManager::getParameterizedType(java.lang.String, ===java.util.List&lt;io.trino.spi.type.TypeSignatureParameter&gt;===)</old>
+                                    <new>parameter io.trino.spi.type.Type io.trino.spi.type.TypeManager::getParameterizedType(java.lang.String, ===java.util.List&lt;io.trino.spi.type.TypeParameter&gt;===)</new>
+                                    <parameterIndex>1</parameterIndex>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method io.trino.spi.type.NamedType io.trino.spi.type.TypeParameter::getNamedType()</old>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method io.trino.spi.type.Type io.trino.spi.type.TypeParameter::getType()</old>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.visibilityReduced</code>
+                                    <old>method &lt;A&gt; A io.trino.spi.type.TypeParameter::getValue(io.trino.spi.type.ParameterKind, java.lang.Class&lt;A&gt;)</old>
+                                    <new>method &lt;A&gt; A io.trino.spi.type.TypeParameter::getValue(io.trino.spi.type.ParameterKind, java.lang.Class&lt;A&gt;)</new>
+                                    <oldVisibility>public</oldVisibility>
+                                    <newVisibility>private</newVisibility>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method io.trino.spi.type.TypeParameter io.trino.spi.type.TypeParameter::of(io.trino.spi.type.NamedType)</old>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method io.trino.spi.type.TypeParameter io.trino.spi.type.TypeParameter::of(io.trino.spi.type.Type)</old>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method io.trino.spi.type.TypeParameter io.trino.spi.type.TypeParameter::of(io.trino.spi.type.TypeSignatureParameter, io.trino.spi.type.TypeManager)</old>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method io.trino.spi.type.TypeParameter io.trino.spi.type.TypeParameter::of(java.lang.String)</old>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method io.trino.spi.type.TypeParameter io.trino.spi.type.TypeParameter::of(long)</old>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.class.nowFinal</code>
+                                    <old>class io.trino.spi.type.TypeParameter</old>
+                                    <new>class io.trino.spi.type.TypeParameter</new>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeParameterChanged</code>
+                                    <old>parameter void io.trino.spi.type.TypeSignature::&lt;init&gt;(java.lang.String, ===java.util.List&lt;io.trino.spi.type.TypeSignatureParameter&gt;===)</old>
+                                    <new>parameter void io.trino.spi.type.TypeSignature::&lt;init&gt;(java.lang.String, ===java.util.List&lt;io.trino.spi.type.TypeParameter&gt;===)</new>
+                                    <parameterIndex>1</parameterIndex>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeChanged</code>
+                                    <old>parameter void io.trino.spi.type.TypeSignature::&lt;init&gt;(java.lang.String, ===io.trino.spi.type.TypeSignatureParameter[]===)</old>
+                                    <new>parameter void io.trino.spi.type.TypeSignature::&lt;init&gt;(java.lang.String, ===io.trino.spi.type.TypeParameter[]===)</new>
+                                    <parameterIndex>1</parameterIndex>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeChanged</code>
+                                    <old>parameter io.trino.spi.type.TypeSignature io.trino.spi.type.TypeSignature::arrayType(===io.trino.spi.type.TypeSignatureParameter===)</old>
+                                    <new>parameter io.trino.spi.type.TypeSignature io.trino.spi.type.TypeSignature::arrayType(===io.trino.spi.type.TypeParameter===)</new>
+                                    <parameterIndex>0</parameterIndex>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.returnTypeTypeParametersChanged</code>
+                                    <old>method java.util.List&lt;io.trino.spi.type.TypeSignatureParameter&gt; io.trino.spi.type.TypeSignature::getParameters()</old>
+                                    <new>method java.util.List&lt;io.trino.spi.type.TypeParameter&gt; io.trino.spi.type.TypeSignature::getParameters()</new>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeParameterChanged</code>
+                                    <old>parameter io.trino.spi.type.TypeSignature io.trino.spi.type.TypeSignature::rowType(===java.util.List&lt;io.trino.spi.type.TypeSignatureParameter&gt;===)</old>
+                                    <new>parameter io.trino.spi.type.TypeSignature io.trino.spi.type.TypeSignature::rowType(===java.util.List&lt;io.trino.spi.type.TypeParameter&gt;===)</new>
+                                    <parameterIndex>0</parameterIndex>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.parameterTypeChanged</code>
+                                    <old>parameter io.trino.spi.type.TypeSignature io.trino.spi.type.TypeSignature::rowType(===io.trino.spi.type.TypeSignatureParameter[]===)</old>
+                                    <new>parameter io.trino.spi.type.TypeSignature io.trino.spi.type.TypeSignature::rowType(===io.trino.spi.type.TypeParameter[]===)</new>
+                                    <parameterIndex>0</parameterIndex>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>class io.trino.spi.type.TypeSignatureParameter</old>
+                                    <justification>Rename TypeSignatureParameter to TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>class io.trino.spi.type.NamedType</old>
+                                    <justification>Removing NamedType and NamedTypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>class io.trino.spi.type.NamedTypeSignature</old>
+                                    <justification>Removing NamedType and NamedTypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.field.removed</code>
+                                    <old>field io.trino.spi.type.ParameterKind.NAMED_TYPE</old>
+                                    <justification>Removing NamedType and NamedTypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>class io.trino.spi.type.RowFieldName</old>
+                                    <justification>Removing NamedType and NamedTypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method io.trino.spi.type.ParameterKind io.trino.spi.type.TypeParameter::getKind()</old>
+                                    <justification>Improve type-safety of TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.Long io.trino.spi.type.TypeParameter::getLongLiteral()</old>
+                                    <justification>Improve type-safety of TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method &lt;A&gt; A io.trino.spi.type.TypeParameter::getValue(io.trino.spi.type.ParameterKind, java.lang.Class&lt;A&gt;)</old>
+                                    <justification>Improve type-safety of TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.type.TypeParameter::getVariable()</old>
+                                    <justification>Improve type-safety of TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method boolean io.trino.spi.type.TypeParameter::isLongLiteral()</old>
+                                    <justification>Improve type-safety of TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
                                     <code>java.method.addedToInterface</code>
-                                    <new>method void io.trino.spi.resourcegroups.ResourceGroupConfigurationManager&lt;C&gt;::shutdown()</new>
+                                    <new>method boolean io.trino.spi.type.TypeParameter::isCalculated()</new>
+                                    <justification>Improve type-safety of TypeParameter</justification>
                                 </item>
                                 <item>
-                                    <code>java.method.removed</code>
-                                    <old>method java.util.List&lt;io.trino.spi.block.Block&gt; io.trino.spi.block.Block::getChildren()</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method java.util.List&lt;io.trino.spi.block.Block&gt; io.trino.spi.block.DictionaryBlock::getChildren()</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method java.util.List&lt;io.trino.spi.block.Block&gt; io.trino.spi.block.LazyBlock::getChildren()</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method java.util.List&lt;io.trino.spi.block.Block&gt; io.trino.spi.block.RunLengthEncodedBlock::getChildren()</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method java.util.List&lt;io.trino.spi.block.Block&gt; io.trino.spi.block.ArrayBlock::getChildren()</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method java.util.List&lt;io.trino.spi.block.Block&gt; io.trino.spi.block.MapBlock::getChildren()</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method java.util.List&lt;io.trino.spi.block.Block&gt; io.trino.spi.block.RowBlock::getChildren()</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method byte io.trino.spi.block.Block::getByte(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method byte io.trino.spi.block.ByteArrayBlock::getByte(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method byte io.trino.spi.block.DictionaryBlock::getByte(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method byte io.trino.spi.block.LazyBlock::getByte(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method byte io.trino.spi.block.RunLengthEncodedBlock::getByte(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method byte io.trino.spi.block.VariableWidthBlock::getByte(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method short io.trino.spi.block.Block::getShort(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method short io.trino.spi.block.DictionaryBlock::getShort(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method short io.trino.spi.block.LazyBlock::getShort(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method short io.trino.spi.block.RunLengthEncodedBlock::getShort(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method short io.trino.spi.block.ShortArrayBlock::getShort(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method short io.trino.spi.block.VariableWidthBlock::getShort(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method int io.trino.spi.block.Block::getInt(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method int io.trino.spi.block.DictionaryBlock::getInt(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method int io.trino.spi.block.IntArrayBlock::getInt(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method int io.trino.spi.block.LazyBlock::getInt(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method int io.trino.spi.block.RunLengthEncodedBlock::getInt(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method int io.trino.spi.block.VariableWidthBlock::getInt(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method long io.trino.spi.block.Block::getLong(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method long io.trino.spi.block.DictionaryBlock::getLong(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method long io.trino.spi.block.Fixed12Block::getLong(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method long io.trino.spi.block.Int128ArrayBlock::getLong(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method long io.trino.spi.block.LazyBlock::getLong(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method long io.trino.spi.block.LongArrayBlock::getLong(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method long io.trino.spi.block.RunLengthEncodedBlock::getLong(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method long io.trino.spi.block.VariableWidthBlock::getLong(int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method io.airlift.slice.Slice io.trino.spi.block.Block::getSlice(int, int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method int io.trino.spi.block.Block::getSliceLength(int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method io.airlift.slice.Slice io.trino.spi.block.DictionaryBlock::getSlice(int, int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method int io.trino.spi.block.DictionaryBlock::getSliceLength(int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method io.airlift.slice.Slice io.trino.spi.block.LazyBlock::getSlice(int, int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method int io.trino.spi.block.LazyBlock::getSliceLength(int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method io.airlift.slice.Slice io.trino.spi.block.RunLengthEncodedBlock::getSlice(int, int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method int io.trino.spi.block.RunLengthEncodedBlock::getSliceLength(int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method io.airlift.slice.Slice io.trino.spi.block.VariableWidthBlock::getSlice(int, int, int)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method &lt;T&gt; T io.trino.spi.block.ArrayBlock::getObject(int, java.lang.Class&lt;T&gt;)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method &lt;T&gt; T io.trino.spi.block.Block::getObject(int, java.lang.Class&lt;T&gt;)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method &lt;T&gt; T io.trino.spi.block.DictionaryBlock::getObject(int, java.lang.Class&lt;T&gt;)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method &lt;T&gt; T io.trino.spi.block.LazyBlock::getObject(int, java.lang.Class&lt;T&gt;)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method &lt;T&gt; T io.trino.spi.block.MapBlock::getObject(int, java.lang.Class&lt;T&gt;)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method &lt;T&gt; T io.trino.spi.block.RowBlock::getObject(int, java.lang.Class&lt;T&gt;)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method &lt;T&gt; T io.trino.spi.block.RunLengthEncodedBlock::getObject(int, java.lang.Class&lt;T&gt;)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.AccessDeniedException::denyGrantExecuteFunctionPrivilege(java.lang.String, io.trino.spi.security.Identity, io.trino.spi.security.TrinoPrincipal)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.AccessDeniedException::denySelectView(java.lang.String)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.AccessDeniedException::denySelectView(java.lang.String, java.lang.String)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.AccessDeniedException::denySetViewComment(java.lang.String)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.AccessDeniedException::denySetViewComment(java.lang.String, java.lang.String)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.AccessDeniedException::denyShowRoleAuthorizationDescriptors()</old>
-                                </item>
-                                <item>
+                                    <ignore>true</ignore>
                                     <code>java.method.addedToInterface</code>
-                                    <new>method void io.trino.spi.block.BlockBuilder::resetTo(int)</new>
+                                    <new>method java.lang.String io.trino.spi.type.TypeParameter::jsonValue()</new>
+                                    <justification>Improve type-safety of TypeParameter</justification>
                                 </item>
                                 <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.TrinoException::&lt;init&gt;(io.trino.spi.ErrorCode, java.lang.String, java.lang.Throwable)</old>
+                                    <ignore>true</ignore>
+                                    <code>java.class.kindChanged</code>
+                                    <old>class io.trino.spi.type.TypeParameter</old>
+                                    <new>interface io.trino.spi.type.TypeParameter</new>
+                                    <justification>Improve type-safety of TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.class.nowAbstract</code>
+                                    <old>class io.trino.spi.type.TypeParameter</old>
+                                    <new>interface io.trino.spi.type.TypeParameter</new>
+                                    <justification>Improve type-safety of TypeParameter</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.nowAbstract</code>
+                                    <old>method java.lang.String io.trino.spi.type.AbstractType::getDisplayName()</old>
+                                    <new>method java.lang.String io.trino.spi.type.Type::getDisplayName() @ io.trino.spi.type.AbstractType</new>
+                                    <justification>Don't rely on TypeSignature for deriving the display name</justification>
                                 </item>
                             </differences>
                         </revapi.differences>
@@ -453,7 +631,7 @@
                     <dependency>
                         <groupId>org.revapi</groupId>
                         <artifactId>revapi-java</artifactId>
-                        <version>0.28.1</version>
+                        <version>0.28.4</version>
                     </dependency>
                 </dependencies>
                 <executions>

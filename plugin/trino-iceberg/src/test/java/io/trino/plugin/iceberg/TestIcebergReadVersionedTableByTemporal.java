@@ -51,7 +51,6 @@ public class TestIcebergReadVersionedTableByTemporal
         QueryRunner queryRunner = IcebergQueryRunner.builder()
                 .setIcebergProperties(
                         ImmutableMap.<String, String>builder()
-                                .put("fs.hadoop.enabled", "false")
                                 .put("fs.native-s3.enabled", "true")
                                 .put("s3.aws-access-key", MINIO_ACCESS_KEY)
                                 .put("s3.aws-secret-key", MINIO_SECRET_KEY)
@@ -80,8 +79,7 @@ public class TestIcebergReadVersionedTableByTemporal
 
         minio.copyResources("iceberg/timetravel", BUCKET_NAME, "timetravel");
         assertUpdate(format(
-                "CALL system.register_table('%s', '%s', '%s')",
-                getSession().getSchema().orElseThrow(),
+                "CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')",
                 tableName,
                 format("s3://%s/timetravel", BUCKET_NAME)));
 

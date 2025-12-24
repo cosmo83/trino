@@ -19,8 +19,8 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.ProjectNode;
@@ -75,11 +75,11 @@ public class PushDownDereferencesThroughTopN
         TopNNode topNNode = captures.get(CHILD);
 
         // Extract dereferences from project node assignments for pushdown
-        Set<SubscriptExpression> dereferences = extractRowSubscripts(projectNode.getAssignments().getExpressions(), false);
+        Set<FieldReference> dereferences = extractRowSubscripts(projectNode.getAssignments().expressions(), false);
 
         // Exclude dereferences on symbols being used in orderBy
         dereferences = dereferences.stream()
-                .filter(expression -> !topNNode.getOrderingScheme().getOrderBy().contains(getBase(expression)))
+                .filter(expression -> !topNNode.getOrderingScheme().orderBy().contains(getBase(expression)))
                 .collect(toImmutableSet());
 
         if (dereferences.isEmpty()) {
@@ -90,7 +90,7 @@ public class PushDownDereferencesThroughTopN
         Assignments dereferenceAssignments = Assignments.of(dereferences, context.getSymbolAllocator());
 
         // Rewrite project node assignments using new symbols for dereference expressions
-        Map<Expression, SymbolReference> mappings = HashBiMap.create(dereferenceAssignments.getMap())
+        Map<Expression, Reference> mappings = HashBiMap.create(dereferenceAssignments.assignments())
                 .inverse()
                 .entrySet().stream()
                 .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));

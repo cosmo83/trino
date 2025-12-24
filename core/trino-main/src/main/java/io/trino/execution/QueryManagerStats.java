@@ -24,6 +24,8 @@ import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
 
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Supplier;
 
 import static io.trino.execution.QueryState.RUNNING;
@@ -47,6 +49,10 @@ public class QueryManagerStats
     private final CounterStat consumedInputRows = new CounterStat();
     private final CounterStat consumedInputBytes = new CounterStat();
     private final CounterStat consumedCpuTimeSecs = new CounterStat();
+    private final AtomicLong runningDrivers = new AtomicLong();
+    private final AtomicLong blockedDrivers = new AtomicLong();
+    private final AtomicLong completedDrivers = new AtomicLong();
+    private final AtomicLong queuedDrivers = new AtomicLong();
     private final TimeStat executionTime = new TimeStat(MILLISECONDS);
     private final TimeStat queuedTime = new TimeStat(MILLISECONDS);
     private final DistributionStat wallInputBytesRate = new DistributionStat();
@@ -67,11 +73,11 @@ public class QueryManagerStats
     {
         completedQueries.update(1);
 
-        long rawInputBytes = info.getQueryStats().getRawInputDataSize().toBytes();
+        long rawInputBytes = info.getQueryStats().getPhysicalInputDataSize().toBytes() + info.getQueryStats().getInternalNetworkInputDataSize().toBytes();
 
         consumedCpuTimeSecs.update((long) info.getQueryStats().getTotalCpuTime().getValue(SECONDS));
-        consumedInputBytes.update(info.getQueryStats().getRawInputDataSize().toBytes());
-        consumedInputRows.update(info.getQueryStats().getRawInputPositions());
+        consumedInputBytes.update(rawInputBytes);
+        consumedInputRows.update(info.getQueryStats().getProcessedInputPositions());
         executionTime.add(info.getQueryStats().getExecutionTime());
         queuedTime.add(info.getQueryStats().getQueuedTime());
 
@@ -271,5 +277,52 @@ public class QueryManagerStats
     public DistributionStat getCpuInputByteRate()
     {
         return cpuInputByteRate;
+    }
+
+    @Managed
+    public long getRunningDrivers()
+    {
+        return runningDrivers.get();
+    }
+
+    @Managed
+    public long getBlockedDrivers()
+    {
+        return blockedDrivers.get();
+    }
+
+    @Managed
+    public long getCompletedDrivers()
+    {
+        return completedDrivers.get();
+    }
+
+    @Managed
+    public long getQueuedDrivers()
+    {
+        return queuedDrivers.get();
+    }
+
+    public void updateDriverStats(QueryTracker<DispatchQuery> queryTracker)
+    {
+        LongAdder tmpQueuedDrivers = new LongAdder();
+        LongAdder tmpRunningDrivers = new LongAdder();
+        LongAdder tmpBlockedDrivers = new LongAdder();
+        LongAdder tmpCompletedDrivers = new LongAdder();
+        queryTracker.getAllQueries().stream()
+                .filter(query -> !query.getState().isDone())
+                .map(dispatchQuery -> dispatchQuery.getBasicQueryInfo().getQueryStats())
+                .parallel()
+                .forEach(stats -> {
+                    tmpQueuedDrivers.add(stats.getQueuedDrivers());
+                    tmpRunningDrivers.add(stats.getRunningDrivers());
+                    tmpBlockedDrivers.add(stats.getBlockedDrivers());
+                    tmpCompletedDrivers.add(stats.getCompletedDrivers());
+                });
+
+        queuedDrivers.set(tmpQueuedDrivers.sum());
+        runningDrivers.set(tmpRunningDrivers.sum());
+        blockedDrivers.set(tmpBlockedDrivers.sum());
+        completedDrivers.set(tmpCompletedDrivers.sum());
     }
 }

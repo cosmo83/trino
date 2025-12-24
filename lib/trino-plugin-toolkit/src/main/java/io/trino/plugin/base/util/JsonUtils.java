@@ -18,6 +18,9 @@ import com.fasterxml.jackson.core.JsonFactoryBuilder;
 import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.StreamReadConstraints;
+import com.fasterxml.jackson.core.StreamReadFeature;
+import com.fasterxml.jackson.core.StreamWriteFeature;
+import com.fasterxml.jackson.core.util.JsonRecyclerPools;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.MapperFeature;
@@ -28,7 +31,6 @@ import org.gaul.modernizer_maven_annotations.SuppressModernizer;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
-import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -94,16 +96,6 @@ public final class JsonUtils
         return parseJson(mapper, ObjectMapper::createParser, inputStream, javaType);
     }
 
-    public static <T> T parseJson(URL url, Class<T> javaType)
-    {
-        return parseJson(OBJECT_MAPPER, url, javaType);
-    }
-
-    public static <T> T parseJson(ObjectMapper mapper, URL url, Class<T> javaType)
-    {
-        return parseJson(mapper, ObjectMapper::createParser, url, javaType);
-    }
-
     private static <I, T> T parseJson(ObjectMapper mapper, ParserConstructor<I> parserConstructor, I input, Class<T> javaType)
     {
         requireNonNull(mapper, "mapper is null");
@@ -158,12 +150,17 @@ public final class JsonUtils
     // due to the limits introduced by Jackson 2.15
     public static JsonFactoryBuilder jsonFactoryBuilder()
     {
+        // https://github.com/FasterXML/jackson-core/issues/1256
         return new JsonFactoryBuilder()
                 .streamReadConstraints(StreamReadConstraints.builder()
                         .maxStringLength(Integer.MAX_VALUE)
                         .maxNestingDepth(Integer.MAX_VALUE)
                         .maxNumberLength(Integer.MAX_VALUE)
-                        .build());
+                        .build())
+                .enable(StreamReadFeature.USE_FAST_BIG_NUMBER_PARSER)
+                .enable(StreamReadFeature.USE_FAST_DOUBLE_PARSER)
+                .enable(StreamWriteFeature.USE_FAST_DOUBLE_WRITER)
+                .recyclerPool(JsonRecyclerPools.threadLocalPool());
     }
 
     private interface ParserConstructor<I>

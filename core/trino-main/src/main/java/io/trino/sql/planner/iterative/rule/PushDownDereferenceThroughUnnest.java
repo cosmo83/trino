@@ -19,8 +19,8 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.Assignments;
@@ -74,12 +74,8 @@ public class PushDownDereferenceThroughUnnest
     {
         UnnestNode unnestNode = captures.get(CHILD);
 
-        // Extract dereferences from project node's assignments and unnest node's filter
-        ImmutableList.Builder<Expression> expressionsBuilder = ImmutableList.builder();
-        expressionsBuilder.addAll(projectNode.getAssignments().getExpressions());
-
-        // Extract dereferences for pushdown
-        Set<SubscriptExpression> dereferences = extractRowSubscripts(expressionsBuilder.build(), false);
+        // Extract dereferences for pushdown from project node's assignments
+        Set<FieldReference> dereferences = extractRowSubscripts(projectNode.getAssignments().expressions(), false);
 
         // Only retain dereferences on replicate symbols
         dereferences = dereferences.stream()
@@ -94,7 +90,7 @@ public class PushDownDereferenceThroughUnnest
         Assignments dereferenceAssignments = Assignments.of(dereferences, context.getSymbolAllocator());
 
         // Rewrite project node assignments using new symbols for dereference expressions
-        Map<Expression, SymbolReference> mappings = HashBiMap.create(dereferenceAssignments.getMap())
+        Map<Expression, Reference> mappings = HashBiMap.create(dereferenceAssignments.assignments())
                 .inverse()
                 .entrySet().stream()
                 .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));
@@ -118,7 +114,7 @@ public class PushDownDereferenceThroughUnnest
                                 source,
                                 ImmutableList.<Symbol>builder()
                                         .addAll(unnestNode.getReplicateSymbols())
-                                        .addAll(dereferenceAssignments.getSymbols())
+                                        .addAll(dereferenceAssignments.outputs())
                                         .build(),
                                 unnestNode.getMappings(),
                                 unnestNode.getOrdinalitySymbol(),

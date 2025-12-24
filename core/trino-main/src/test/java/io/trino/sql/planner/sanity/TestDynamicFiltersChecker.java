@@ -16,6 +16,7 @@ package io.trino.sql.planner.sanity;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.connector.CatalogHandle;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
@@ -23,16 +24,14 @@ import io.trino.metadata.TableHandle;
 import io.trino.metadata.TestingFunctionResolution;
 import io.trino.plugin.tpch.TpchColumnHandle;
 import io.trino.plugin.tpch.TpchTableHandle;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.function.OperatorType;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Cast;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Constant;
-import io.trino.sql.ir.IsNullPredicate;
-import io.trino.sql.ir.NotExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.BasePlanTest;
@@ -51,8 +50,8 @@ import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.sql.DynamicFilters.createDynamicFilterExpression;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
-import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
+import static io.trino.sql.ir.IrExpressions.not;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.ir.IrUtils.combineDisjuncts;
 import static io.trino.sql.planner.plan.JoinType.INNER;
@@ -100,13 +99,11 @@ public class TestDynamicFiltersChecker
     {
         PlanNode root = builder.join(
                 INNER,
-                builder.filter(new ComparisonExpression(GREATER_THAN, new SymbolReference(INTEGER, "ORDERS_OK"), new Constant(INTEGER, 0L)), ordersTableScanNode),
+                builder.filter(new Comparison(GREATER_THAN, new Reference(INTEGER, "ORDERS_OK"), new Constant(INTEGER, 0L)), ordersTableScanNode),
                 lineitemTableScanNode,
                 ImmutableList.of(new JoinNode.EquiJoinClause(ordersOrderKeySymbol, lineitemOrderKeySymbol)),
                 ImmutableList.of(ordersOrderKeySymbol),
                 ImmutableList.of(),
-                Optional.empty(),
-                Optional.empty(),
                 Optional.empty(),
                 ImmutableMap.of(new DynamicFilterId("DF"), lineitemOrderKeySymbol));
         assertThatThrownBy(() -> validatePlan(root))
@@ -129,8 +126,6 @@ public class TestDynamicFiltersChecker
                 ImmutableList.of(ordersOrderKeySymbol),
                 ImmutableList.of(),
                 Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
                 ImmutableMap.of(new DynamicFilterId("DF"), lineitemOrderKeySymbol));
         assertThatThrownBy(() -> validatePlan(root))
                 .isInstanceOf(VerifyException.class)
@@ -148,14 +143,12 @@ public class TestDynamicFiltersChecker
                         ordersTableScanNode,
                         builder.filter(
                                 combineConjuncts(
-                                        new ComparisonExpression(GREATER_THAN, new SymbolReference(INTEGER, "LINEITEM_OK"), new Constant(INTEGER, 0L)),
+                                        new Comparison(GREATER_THAN, new Reference(INTEGER, "LINEITEM_OK"), new Constant(INTEGER, 0L)),
                                         createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
                                 lineitemTableScanNode),
                         ImmutableList.of(new JoinNode.EquiJoinClause(ordersOrderKeySymbol, lineitemOrderKeySymbol)),
                         ImmutableList.of(ordersOrderKeySymbol),
                         ImmutableList.of(),
-                        Optional.empty(),
-                        Optional.empty(),
                         Optional.empty(),
                         ImmutableMap.of()));
         assertThatThrownBy(() -> validatePlan(root))
@@ -173,15 +166,13 @@ public class TestDynamicFiltersChecker
                         INNER,
                         builder.filter(
                                 combineConjuncts(
-                                        new ComparisonExpression(GREATER_THAN, new SymbolReference(INTEGER, "LINEITEM_OK"), new Constant(INTEGER, 0L)),
+                                        new Comparison(GREATER_THAN, new Reference(INTEGER, "LINEITEM_OK"), new Constant(INTEGER, 0L)),
                                         createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference())),
                                 builder.values(lineitemOrderKeySymbol)),
                         ordersTableScanNode,
                         ImmutableList.of(new JoinNode.EquiJoinClause(lineitemOrderKeySymbol, ordersOrderKeySymbol)),
                         ImmutableList.of(),
                         ImmutableList.of(),
-                        Optional.empty(),
-                        Optional.empty(),
                         Optional.empty(),
                         ImmutableMap.of(new DynamicFilterId("DF"), ordersOrderKeySymbol)));
         assertThatThrownBy(() -> validatePlan(root))
@@ -201,17 +192,15 @@ public class TestDynamicFiltersChecker
                         builder.filter(
                                 combineConjuncts(
                                         combineDisjuncts(
-                                                new IsNullPredicate(new SymbolReference(BIGINT, "LINEITEM_OK")),
+                                                new IsNull(new Reference(BIGINT, "LINEITEM_OK")),
                                                 createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
                                         combineDisjuncts(
-                                                new NotExpression(new IsNullPredicate(new SymbolReference(BIGINT, "LINEITEM_OK"))),
+                                                not(getPlanTester().getPlannerContext().getMetadata(), new IsNull(new Reference(BIGINT, "LINEITEM_OK"))),
                                                 createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference()))),
                                 lineitemTableScanNode),
                         ImmutableList.of(new JoinNode.EquiJoinClause(ordersOrderKeySymbol, lineitemOrderKeySymbol)),
                         ImmutableList.of(ordersOrderKeySymbol),
                         ImmutableList.of(),
-                        Optional.empty(),
-                        Optional.empty(),
                         Optional.empty(),
                         ImmutableMap.of()));
         assertThatThrownBy(() -> validatePlan(root))
@@ -226,14 +215,12 @@ public class TestDynamicFiltersChecker
                 builder.join(
                         INNER,
                         builder.filter(
-                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, new ArithmeticBinaryExpression(ADD_BIGINT, ADD, new SymbolReference(BIGINT, "LINEITEM_OK"), new Constant(BIGINT, 1L))),
+                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "LINEITEM_OK"), new Constant(BIGINT, 1L)))),
                                 lineitemTableScanNode),
                         ordersTableScanNode,
                         ImmutableList.of(new JoinNode.EquiJoinClause(lineitemOrderKeySymbol, ordersOrderKeySymbol)),
                         ImmutableList.of(lineitemOrderKeySymbol),
                         ImmutableList.of(ordersOrderKeySymbol),
-                        Optional.empty(),
-                        Optional.empty(),
                         Optional.empty(),
                         ImmutableMap.of(new DynamicFilterId("DF"), ordersOrderKeySymbol)));
         assertThatThrownBy(() -> validatePlan(root))
@@ -248,14 +235,12 @@ public class TestDynamicFiltersChecker
                 builder.join(
                         INNER,
                         builder.filter(
-                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, new Cast(new Cast(new SymbolReference(BIGINT, "LINEITEM_OK"), INTEGER), BIGINT)),
+                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, new Cast(new Cast(new Reference(BIGINT, "LINEITEM_OK"), INTEGER), BIGINT)),
                                 lineitemTableScanNode),
                         ordersTableScanNode,
                         ImmutableList.of(new JoinNode.EquiJoinClause(lineitemOrderKeySymbol, ordersOrderKeySymbol)),
                         ImmutableList.of(lineitemOrderKeySymbol),
                         ImmutableList.of(ordersOrderKeySymbol),
-                        Optional.empty(),
-                        Optional.empty(),
                         Optional.empty(),
                         ImmutableMap.of(new DynamicFilterId("DF"), ordersOrderKeySymbol)));
         assertThatThrownBy(() -> validatePlan(root)).isInstanceOf(VerifyException.class).hasMessageMatching("The expression CAST\\(LINEITEM_OK AS integer\\) within in a CAST in dynamic filter must be a SymbolReference.");
@@ -265,13 +250,11 @@ public class TestDynamicFiltersChecker
     public void testUnconsumedDynamicFilterInSemiJoin()
     {
         PlanNode root = builder.semiJoin(
-                builder.filter(new ComparisonExpression(GREATER_THAN, new SymbolReference(INTEGER, "ORDERS_OK"), new Constant(INTEGER, 0L)), ordersTableScanNode),
+                builder.filter(new Comparison(GREATER_THAN, new Reference(INTEGER, "ORDERS_OK"), new Constant(INTEGER, 0L)), ordersTableScanNode),
                 lineitemTableScanNode,
                 ordersOrderKeySymbol,
                 lineitemOrderKeySymbol,
                 new Symbol(UNKNOWN, "SEMIJOIN_OUTPUT"),
-                Optional.empty(),
-                Optional.empty(),
                 Optional.empty(),
                 Optional.of(new DynamicFilterId("DF")));
         assertThatThrownBy(() -> validatePlan(root))
@@ -285,19 +268,17 @@ public class TestDynamicFiltersChecker
         PlanNode root = builder.semiJoin(
                 builder.filter(
                         combineConjuncts(
-                                new ComparisonExpression(GREATER_THAN, new SymbolReference(INTEGER, "ORDERS_OK"), new Constant(INTEGER, 0L)),
+                                new Comparison(GREATER_THAN, new Reference(INTEGER, "ORDERS_OK"), new Constant(INTEGER, 0L)),
                                 createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
                         ordersTableScanNode),
                 builder.filter(
                         combineConjuncts(
-                                new ComparisonExpression(GREATER_THAN, new SymbolReference(INTEGER, "LINEITEM_OK"), new Constant(INTEGER, 0L)),
+                                new Comparison(GREATER_THAN, new Reference(INTEGER, "LINEITEM_OK"), new Constant(INTEGER, 0L)),
                                 createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
                         lineitemTableScanNode),
                 ordersOrderKeySymbol,
                 lineitemOrderKeySymbol,
                 new Symbol(UNKNOWN, "SEMIJOIN_OUTPUT"),
-                Optional.empty(),
-                Optional.empty(),
                 Optional.empty(),
                 Optional.of(new DynamicFilterId("DF")));
         assertThatThrownBy(() -> validatePlan(root))
@@ -314,15 +295,13 @@ public class TestDynamicFiltersChecker
                 builder.semiJoin(
                         builder.filter(
                                 combineConjuncts(
-                                        new ComparisonExpression(GREATER_THAN, new SymbolReference(INTEGER, "ORDERS_OK"), new Constant(INTEGER, 0L)),
+                                        new Comparison(GREATER_THAN, new Reference(INTEGER, "ORDERS_OK"), new Constant(INTEGER, 0L)),
                                         createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference())),
                                 ordersTableScanNode),
                         lineitemTableScanNode,
                         ordersOrderKeySymbol,
                         lineitemOrderKeySymbol,
                         new Symbol(UNKNOWN, "SEMIJOIN_OUTPUT"),
-                        Optional.empty(),
-                        Optional.empty(),
                         Optional.empty(),
                         Optional.empty()));
         assertThatThrownBy(() -> validatePlan(root))
@@ -336,15 +315,13 @@ public class TestDynamicFiltersChecker
         PlanNode root = builder.semiJoin(
                 builder.filter(
                         combineConjuncts(
-                                new ComparisonExpression(GREATER_THAN, new SymbolReference(INTEGER, "ORDERS_OK"), new Constant(INTEGER, 0L)),
+                                new Comparison(GREATER_THAN, new Reference(INTEGER, "ORDERS_OK"), new Constant(INTEGER, 0L)),
                                 createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference())),
                         builder.values(ordersOrderKeySymbol)),
                 lineitemTableScanNode,
                 ordersOrderKeySymbol,
                 lineitemOrderKeySymbol,
                 new Symbol(UNKNOWN, "SEMIJOIN_OUTPUT"),
-                Optional.empty(),
-                Optional.empty(),
                 Optional.empty(),
                 Optional.of(new DynamicFilterId("DF")));
         assertThatThrownBy(() -> validatePlan(root))

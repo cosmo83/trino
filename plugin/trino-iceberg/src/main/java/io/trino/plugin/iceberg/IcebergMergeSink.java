@@ -13,14 +13,12 @@
  */
 package io.trino.plugin.iceberg;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.json.JsonCodec;
 import io.airlift.slice.Slice;
 import io.trino.filesystem.TrinoFileSystem;
-import io.trino.plugin.iceberg.delete.IcebergPositionDeletePageSink;
+import io.trino.plugin.iceberg.delete.PositionDeleteWriter;
 import io.trino.spi.Page;
-import io.trino.spi.PageBuilder;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.RowBlock;
 import io.trino.spi.connector.ConnectorMergeSink;
@@ -44,6 +42,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
+import static io.airlift.slice.Slices.wrappedBuffer;
 import static io.trino.plugin.base.util.Closables.closeAllSuppress;
 import static io.trino.spi.connector.MergePage.createDeleteAndInsertPages;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -66,6 +65,7 @@ public class IcebergMergeSink
     private final ConnectorPageSink insertPageSink;
     private final int columnCount;
     private final Map<Slice, FileDeletion> fileDeletions = new HashMap<>();
+    private long writtenBytes;
 
     public IcebergMergeSink(
             LocationProvider locationProvider,
@@ -111,7 +111,7 @@ public class IcebergMergeSink
                 long rowPosition = BIGINT.getLong(rowPositionBlock, position);
 
                 int index = position;
-                FileDeletion deletion = fileDeletions.computeIfAbsent(filePath, ignored -> {
+                FileDeletion deletion = fileDeletions.computeIfAbsent(filePath, _ -> {
                     int partitionSpecId = INTEGER.getInt(partitionSpecIdBlock, index);
                     String partitionData = VarcharType.VARCHAR.getSlice(partitionDataBlock, index).toStringUtf8();
                     return new FileDeletion(partitionSpecId, partitionData);
@@ -120,20 +120,29 @@ public class IcebergMergeSink
                 deletion.rowsToDelete().addLong(rowPosition);
             }
         });
+
+        writtenBytes = insertPageSink.getCompletedBytes();
+    }
+
+    @Override
+    public long getCompletedBytes()
+    {
+        return writtenBytes;
     }
 
     @Override
     public CompletableFuture<Collection<Slice>> finish()
     {
         List<Slice> fragments = new ArrayList<>(insertPageSink.finish().join());
+        writtenBytes = insertPageSink.getCompletedBytes();
 
         fileDeletions.forEach((dataFilePath, deletion) -> {
-            ConnectorPageSink sink = createPositionDeletePageSink(
+            PositionDeleteWriter writer = createPositionDeleteWriter(
                     dataFilePath.toStringUtf8(),
                     partitionsSpecs.get(deletion.partitionSpecId()),
                     deletion.partitionDataJson());
 
-            fragments.addAll(writePositionDeletes(sink, deletion.rowsToDelete()));
+            fragments.addAll(writePositionDeletes(writer, deletion.rowsToDelete()));
         });
 
         return completedFuture(fragments);
@@ -145,7 +154,7 @@ public class IcebergMergeSink
         insertPageSink.abort();
     }
 
-    private ConnectorPageSink createPositionDeletePageSink(String dataFilePath, PartitionSpec partitionSpec, String partitionDataJson)
+    private PositionDeleteWriter createPositionDeleteWriter(String dataFilePath, PartitionSpec partitionSpec, String partitionDataJson)
     {
         Optional<PartitionData> partitionData = Optional.empty();
         if (partitionSpec.isPartitioned()) {
@@ -155,48 +164,29 @@ public class IcebergMergeSink
             partitionData = Optional.of(PartitionData.fromJson(partitionDataJson, columnTypes));
         }
 
-        return new IcebergPositionDeletePageSink(
+        return new PositionDeleteWriter(
                 dataFilePath,
                 partitionSpec,
                 partitionData,
                 locationProvider,
                 fileWriterFactory,
                 fileSystem,
-                jsonCodec,
                 session,
                 fileFormat,
                 storageProperties);
     }
 
-    private static Collection<Slice> writePositionDeletes(ConnectorPageSink sink, ImmutableLongBitmapDataProvider rowsToDelete)
+    private Collection<Slice> writePositionDeletes(PositionDeleteWriter writer, ImmutableLongBitmapDataProvider rowsToDelete)
     {
         try {
-            return doWritePositionDeletes(sink, rowsToDelete);
+            CommitTaskData task = writer.write(rowsToDelete);
+            writtenBytes += task.fileSizeInBytes();
+            return List.of(wrappedBuffer(jsonCodec.toJsonBytes(task)));
         }
         catch (Throwable t) {
-            closeAllSuppress(t, sink::abort);
+            closeAllSuppress(t, writer::abort);
             throw t;
         }
-    }
-
-    private static Collection<Slice> doWritePositionDeletes(ConnectorPageSink sink, ImmutableLongBitmapDataProvider rowsToDelete)
-    {
-        PageBuilder pageBuilder = new PageBuilder(ImmutableList.of(BIGINT));
-
-        rowsToDelete.forEach(rowPosition -> {
-            BIGINT.writeLong(pageBuilder.getBlockBuilder(0), rowPosition);
-            pageBuilder.declarePosition();
-            if (pageBuilder.isFull()) {
-                sink.appendPage(pageBuilder.build());
-                pageBuilder.reset();
-            }
-        });
-
-        if (!pageBuilder.isEmpty()) {
-            sink.appendPage(pageBuilder.build());
-        }
-
-        return sink.finish().join();
     }
 
     private static class FileDeletion

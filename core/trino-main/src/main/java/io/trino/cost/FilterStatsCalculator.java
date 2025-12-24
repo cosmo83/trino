@@ -15,25 +15,23 @@ package io.trino.cost;
 
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ListMultimap;
 import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.BetweenPredicate;
-import io.trino.sql.ir.BooleanLiteral;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Between;
+import io.trino.sql.ir.Booleans;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.FunctionCall;
-import io.trino.sql.ir.InPredicate;
+import io.trino.sql.ir.In;
 import io.trino.sql.ir.IrVisitor;
-import io.trino.sql.ir.IsNullPredicate;
-import io.trino.sql.ir.LogicalExpression;
-import io.trino.sql.ir.NotExpression;
-import io.trino.sql.ir.SymbolReference;
-import io.trino.sql.planner.IrExpressionInterpreter;
-import io.trino.sql.planner.NoOpSymbolResolver;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.Logical;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.util.DisjointSet;
 import jakarta.annotation.Nullable;
@@ -55,14 +53,16 @@ import static io.trino.cost.PlanNodeStatsEstimateMath.capStats;
 import static io.trino.cost.PlanNodeStatsEstimateMath.estimateCorrelatedConjunctionRowCount;
 import static io.trino.cost.PlanNodeStatsEstimateMath.intersectCorrelatedStats;
 import static io.trino.cost.PlanNodeStatsEstimateMath.subtractSubsetStats;
+import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.spi.statistics.StatsUtil.toStatsRepresentation;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.sql.DynamicFilters.isDynamicFilter;
-import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
-import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.IrExpressions.not;
 import static io.trino.sql.ir.IrUtils.and;
-import static io.trino.sql.planner.IrExpressionInterpreter.evaluateConstantExpression;
+import static io.trino.sql.ir.optimizer.IrExpressionOptimizer.newOptimizer;
 import static io.trino.sql.planner.SymbolsExtractor.extractUnique;
 import static java.lang.Double.NaN;
 import static java.lang.Double.isInfinite;
@@ -100,20 +100,14 @@ public class FilterStatsCalculator
     private Expression simplifyExpression(Session session, Expression predicate)
     {
         // TODO reuse io.trino.sql.planner.iterative.rule.SimplifyExpressions.rewrite
+        Expression value = newOptimizer(plannerContext).process(predicate, session, ImmutableMap.of()).orElse(predicate);
 
-        IrExpressionInterpreter interpreter = new IrExpressionInterpreter(predicate, plannerContext, session);
-        Object value = interpreter.optimize(NoOpSymbolResolver.INSTANCE);
-
-        if (value instanceof Expression expression) {
-            return expression;
-        }
-
-        if (value == null) {
+        if (value instanceof Constant constant && constant.value() == null) {
             // Expression evaluates to SQL null, which in Filter is equivalent to false. This assumes the expression is a top-level expression (eg. not in NOT).
-            value = false;
+            value = Booleans.FALSE;
         }
 
-        return new Constant(BOOLEAN, value);
+        return value;
     }
 
     private class FilterExpressionStatsCalculatingVisitor
@@ -148,32 +142,12 @@ public class FilterStatsCalculator
         }
 
         @Override
-        protected PlanNodeStatsEstimate visitNotExpression(NotExpression node, Void context)
+        protected PlanNodeStatsEstimate visitLogical(Logical node, Void context)
         {
-            if (node.getValue() instanceof IsNullPredicate inner) {
-                if (inner.getValue() instanceof SymbolReference) {
-                    Symbol symbol = Symbol.from(inner.getValue());
-                    SymbolStatsEstimate symbolStats = input.getSymbolStatistics(symbol);
-                    PlanNodeStatsEstimate.Builder result = PlanNodeStatsEstimate.buildFrom(input);
-                    result.setOutputRowCount(input.getOutputRowCount() * (1 - symbolStats.getNullsFraction()));
-                    result.addSymbolStatistics(symbol, symbolStats.mapNullsFraction(x -> 0.0));
-                    return result.build();
-                }
-                return PlanNodeStatsEstimate.unknown();
-            }
-            return subtractSubsetStats(input, process(node.getValue()));
-        }
-
-        @Override
-        protected PlanNodeStatsEstimate visitLogicalExpression(LogicalExpression node, Void context)
-        {
-            switch (node.getOperator()) {
-                case AND:
-                    return estimateLogicalAnd(node.getTerms());
-                case OR:
-                    return estimateLogicalOr(node.getTerms());
-            }
-            throw new IllegalArgumentException("Unexpected binary operator: " + node.getOperator());
+            return switch (node.operator()) {
+                case AND -> estimateLogicalAnd(node.terms());
+                case OR -> estimateLogicalOr(node.terms());
+            };
         }
 
         private PlanNodeStatsEstimate estimateLogicalAnd(List<Expression> terms)
@@ -262,8 +236,8 @@ public class FilterStatsCalculator
         @Override
         protected PlanNodeStatsEstimate visitConstant(Constant node, Void context)
         {
-            if (node.getType().equals(BOOLEAN) && node.getValue() != null) {
-                if ((boolean) node.getValue()) {
+            if (node.type().equals(BOOLEAN) && node.value() != null) {
+                if ((boolean) node.value()) {
                     return input;
                 }
 
@@ -277,10 +251,10 @@ public class FilterStatsCalculator
         }
 
         @Override
-        protected PlanNodeStatsEstimate visitIsNullPredicate(IsNullPredicate node, Void context)
+        protected PlanNodeStatsEstimate visitIsNull(IsNull node, Void context)
         {
-            if (node.getValue() instanceof SymbolReference) {
-                Symbol symbol = Symbol.from(node.getValue());
+            if (node.value() instanceof Reference) {
+                Symbol symbol = Symbol.from(node.value());
                 SymbolStatsEstimate symbolStats = input.getSymbolStatistics(symbol);
                 PlanNodeStatsEstimate.Builder result = PlanNodeStatsEstimate.buildFrom(input);
                 result.setOutputRowCount(input.getOutputRowCount() * symbolStats.getNullsFraction());
@@ -296,21 +270,21 @@ public class FilterStatsCalculator
         }
 
         @Override
-        protected PlanNodeStatsEstimate visitBetweenPredicate(BetweenPredicate node, Void context)
+        protected PlanNodeStatsEstimate visitBetween(Between node, Void context)
         {
-            SymbolStatsEstimate valueStats = getExpressionStats(node.getValue());
+            SymbolStatsEstimate valueStats = getExpressionStats(node.value());
             if (valueStats.isUnknown()) {
                 return PlanNodeStatsEstimate.unknown();
             }
-            if (!getExpressionStats(node.getMin()).isSingleValue()) {
+            if (!getExpressionStats(node.min()).isSingleValue()) {
                 return PlanNodeStatsEstimate.unknown();
             }
-            if (!getExpressionStats(node.getMax()).isSingleValue()) {
+            if (!getExpressionStats(node.max()).isSingleValue()) {
                 return PlanNodeStatsEstimate.unknown();
             }
 
-            Expression lowerBound = new ComparisonExpression(GREATER_THAN_OR_EQUAL, node.getValue(), node.getMin());
-            Expression upperBound = new ComparisonExpression(LESS_THAN_OR_EQUAL, node.getValue(), node.getMax());
+            Expression lowerBound = new Comparison(GREATER_THAN_OR_EQUAL, node.value(), node.min());
+            Expression upperBound = new Comparison(LESS_THAN_OR_EQUAL, node.value(), node.max());
 
             Expression transformed;
             if (isInfinite(valueStats.getLowValue())) {
@@ -325,10 +299,10 @@ public class FilterStatsCalculator
         }
 
         @Override
-        protected PlanNodeStatsEstimate visitInPredicate(InPredicate node, Void context)
+        protected PlanNodeStatsEstimate visitIn(In node, Void context)
         {
-            ImmutableList<PlanNodeStatsEstimate> equalityEstimates = node.getValueList().stream()
-                    .map(inValue -> process(new ComparisonExpression(EQUAL, node.getValue(), inValue)))
+            List<PlanNodeStatsEstimate> equalityEstimates = node.valueList().stream()
+                    .map(inValue -> process(new Comparison(EQUAL, node.value(), inValue)))
                     .collect(toImmutableList());
 
             if (equalityEstimates.stream().anyMatch(PlanNodeStatsEstimate::isOutputRowCountUnknown)) {
@@ -343,7 +317,7 @@ public class FilterStatsCalculator
                 return PlanNodeStatsEstimate.unknown();
             }
 
-            SymbolStatsEstimate valueStats = getExpressionStats(node.getValue());
+            SymbolStatsEstimate valueStats = getExpressionStats(node.value());
             if (valueStats.isUnknown()) {
                 return PlanNodeStatsEstimate.unknown();
             }
@@ -353,8 +327,8 @@ public class FilterStatsCalculator
             PlanNodeStatsEstimate.Builder result = PlanNodeStatsEstimate.buildFrom(input);
             result.setOutputRowCount(min(inEstimate.getOutputRowCount(), notNullValuesBeforeIn));
 
-            if (node.getValue() instanceof SymbolReference) {
-                Symbol valueSymbol = Symbol.from(node.getValue());
+            if (node.value() instanceof Reference) {
+                Symbol valueSymbol = Symbol.from(node.value());
                 SymbolStatsEstimate newSymbolStats = inEstimate.getSymbolStatistics(valueSymbol)
                         .mapDistinctValuesCount(newDistinctValuesCount -> min(newDistinctValuesCount, valueStats.getDistinctValuesCount()));
                 result.addSymbolStatistics(valueSymbol, newSymbolStats);
@@ -364,33 +338,33 @@ public class FilterStatsCalculator
 
         @SuppressWarnings("ArgumentSelectionDefectChecker")
         @Override
-        protected PlanNodeStatsEstimate visitComparisonExpression(ComparisonExpression node, Void context)
+        protected PlanNodeStatsEstimate visitComparison(Comparison node, Void context)
         {
-            ComparisonExpression.Operator operator = node.getOperator();
-            Expression left = node.getLeft();
-            Expression right = node.getRight();
+            Comparison.Operator operator = node.operator();
+            Expression left = node.left();
+            Expression right = node.right();
 
             checkArgument(!(left instanceof Constant && right instanceof Constant), "Literal-to-literal not supported here, should be eliminated earlier");
 
-            if (!(left instanceof SymbolReference) && right instanceof SymbolReference) {
+            if (!(left instanceof Reference) && right instanceof Reference) {
                 // normalize so that symbol is on the left
-                return process(new ComparisonExpression(operator.flip(), right, left));
+                return process(new Comparison(operator.flip(), right, left));
             }
 
             if (left instanceof Constant) {
                 // normalize so that literal is on the right
-                return process(new ComparisonExpression(operator.flip(), right, left));
+                return process(new Comparison(operator.flip(), right, left));
             }
 
-            if (left instanceof SymbolReference && left.equals(right)) {
-                return process(new NotExpression(new IsNullPredicate(left)));
+            if (left instanceof Reference && left.equals(right)) {
+                return process(not(plannerContext.getMetadata(), new IsNull(left)));
             }
 
             SymbolStatsEstimate leftStats = getExpressionStats(left);
-            Optional<Symbol> leftSymbol = left instanceof SymbolReference ? Optional.of(Symbol.from(left)) : Optional.empty();
-            if (right instanceof Constant) {
-                Type type = left.type();
-                Object literalValue = evaluateConstantExpression(right, plannerContext, session);
+            Optional<Symbol> leftSymbol = left instanceof Reference ? Optional.of(Symbol.from(left)) : Optional.empty();
+            if (right instanceof Constant constant) {
+                Type type = right.type();
+                Object literalValue = constant.value();
                 if (literalValue == null) {
                     // Possible when we process `x IN (..., NULL)` case.
                     return input.mapOutputRowCount(rowCountEstimate -> 0.);
@@ -405,22 +379,38 @@ public class FilterStatsCalculator
                 return estimateExpressionToLiteralComparison(input, leftStats, leftSymbol, value, operator);
             }
 
-            Optional<Symbol> rightSymbol = right instanceof SymbolReference ? Optional.of(Symbol.from(right)) : Optional.empty();
+            Optional<Symbol> rightSymbol = right instanceof Reference ? Optional.of(Symbol.from(right)) : Optional.empty();
             return estimateExpressionToExpressionComparison(input, leftStats, leftSymbol, rightStats, rightSymbol, operator);
         }
 
         @Override
-        protected PlanNodeStatsEstimate visitFunctionCall(FunctionCall node, Void context)
+        protected PlanNodeStatsEstimate visitCall(Call node, Void context)
         {
             if (isDynamicFilter(node)) {
-                return process(BooleanLiteral.TRUE_LITERAL, context);
+                return process(Booleans.TRUE, context);
             }
+            else if (node.function().name().equals(builtinFunctionName("$not"))) {
+                Expression argument = node.arguments().getFirst();
+                if (argument instanceof IsNull inner) {
+                    if (inner.value() instanceof Reference) {
+                        Symbol symbol = Symbol.from(inner.value());
+                        SymbolStatsEstimate symbolStats = input.getSymbolStatistics(symbol);
+                        PlanNodeStatsEstimate.Builder result = PlanNodeStatsEstimate.buildFrom(input);
+                        result.setOutputRowCount(input.getOutputRowCount() * (1 - symbolStats.getNullsFraction()));
+                        result.addSymbolStatistics(symbol, symbolStats.mapNullsFraction(x -> 0.0));
+                        return result.build();
+                    }
+                    return PlanNodeStatsEstimate.unknown();
+                }
+                return subtractSubsetStats(input, process(argument));
+            }
+
             return PlanNodeStatsEstimate.unknown();
         }
 
         private SymbolStatsEstimate getExpressionStats(Expression expression)
         {
-            if (expression instanceof SymbolReference) {
+            if (expression instanceof Reference) {
                 Symbol symbol = Symbol.from(expression);
                 return requireNonNull(input.getSymbolStatistics(symbol), () -> format("No statistics for symbol %s", symbol));
             }

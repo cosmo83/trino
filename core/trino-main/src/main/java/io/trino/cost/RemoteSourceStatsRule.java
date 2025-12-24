@@ -111,13 +111,13 @@ public class RemoteSourceStatsRule
         double variableTypeValuesCount = 0;
 
         for (Symbol outputSymbol : outputs) {
-            Type type = outputSymbol.getType();
+            Type type = outputSymbol.type();
             SymbolStatsEstimate symbolStatistics = estimateStats.getSymbolStatistics(outputSymbol);
             double nullsFraction = firstNonNaN(symbolStatistics.getNullsFraction(), 0d);
             double numberOfNonNullRows = runtimeStats.outputRowCountEstimate() * (1.0 - nullsFraction);
 
-            if (type instanceof FixedWidthType) {
-                fixedWidthTypeSize += numberOfNonNullRows * ((FixedWidthType) type).getFixedSize();
+            if (type instanceof FixedWidthType fixedType) {
+                fixedWidthTypeSize += numberOfNonNullRows * fixedType.getFixedSize();
             }
             else {
                 variableTypeValuesCount += numberOfNonNullRows;
@@ -132,7 +132,7 @@ public class RemoteSourceStatsRule
 
         for (Symbol outputSymbol : outputs) {
             SymbolStatsEstimate symbolStatistics = estimateStats.getSymbolStatistics(outputSymbol);
-            Type type = outputSymbol.getType();
+            Type type = outputSymbol.type();
             if (!(isNaN(variableTypeValueAverageSize) || type instanceof FixedWidthType)) {
                 symbolStatistics = SymbolStatsEstimate.buildFrom(symbolStatistics)
                         .setAverageRowSize(variableTypeValueAverageSize)

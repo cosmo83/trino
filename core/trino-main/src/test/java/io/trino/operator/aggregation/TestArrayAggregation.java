@@ -15,6 +15,7 @@ package io.trino.operator.aggregation;
 
 import com.google.common.collect.ImmutableList;
 import io.trino.metadata.TestingFunctionResolution;
+import io.trino.operator.AggregationMetrics;
 import io.trino.operator.aggregation.groupby.AggregationTestInput;
 import io.trino.operator.aggregation.groupby.AggregationTestInputBuilder;
 import io.trino.operator.aggregation.groupby.AggregationTestOutput;
@@ -29,7 +30,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.OptionalInt;
 import java.util.Random;
+import java.util.stream.LongStream;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.block.BlockAssertions.createArrayBigintBlock;
 import static io.trino.block.BlockAssertions.createBooleansBlock;
 import static io.trino.block.BlockAssertions.createLongsBlock;
@@ -104,6 +107,19 @@ public class TestArrayAggregation
     }
 
     @Test
+    public void testBigIntOnFlatArrayGroupSize()
+    {
+        long flatArrayGroupSize = 1 << 10;
+        long inputCount = flatArrayGroupSize * 2; // data will be split into two pages in assertAggregation
+        assertAggregation(
+                FUNCTION_RESOLUTION,
+                "array_agg",
+                fromTypes(BIGINT),
+                LongStream.rangeClosed(1L, inputCount).boxed().collect(toImmutableList()),
+                createLongsBlock(LongStream.rangeClosed(1L, inputCount).boxed().collect(toImmutableList())));
+    }
+
+    @Test
     public void testVarchar()
     {
         assertAggregation(
@@ -141,7 +157,7 @@ public class TestArrayAggregation
     {
         TestingAggregationFunction bigIntAgg = FUNCTION_RESOLUTION.getAggregateFunction("array_agg", fromTypes(BIGINT));
         GroupedAggregator groupedAggregator = bigIntAgg.createAggregatorFactory(SINGLE, ImmutableList.of(), OptionalInt.empty())
-                .createGroupedAggregator();
+                .createGroupedAggregator(new AggregationMetrics());
         BlockBuilder blockBuilder = bigIntAgg.getFinalType().createBlockBuilder(null, 1000);
 
         groupedAggregator.evaluate(0, blockBuilder);
@@ -197,7 +213,7 @@ public class TestArrayAggregation
         int arraySize = 30;
         Random random = new Random();
         GroupedAggregator groupedAggregator = varcharAgg.createAggregatorFactory(SINGLE, ImmutableList.of(0), OptionalInt.empty())
-                .createGroupedAggregator();
+                .createGroupedAggregator(new AggregationMetrics());
 
         for (int j = 0; j < numGroups; j++) {
             List<String> expectedValues = new ArrayList<>();

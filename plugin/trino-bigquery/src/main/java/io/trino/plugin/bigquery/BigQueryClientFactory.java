@@ -19,6 +19,7 @@ import com.google.common.cache.CacheBuilder;
 import com.google.inject.Inject;
 import io.airlift.units.Duration;
 import io.trino.cache.NonEvictableCache;
+import io.trino.plugin.base.cache.identity.IdentityCacheMapping;
 import io.trino.spi.connector.ConnectorSession;
 
 import java.util.Optional;
@@ -35,11 +36,13 @@ public class BigQueryClientFactory
     private final BigQueryTypeManager typeManager;
     private final Optional<String> projectId;
     private final boolean caseInsensitiveNameMatching;
+    private final Duration caseInsensitiveNameMatchingCacheTtl;
     private final ViewMaterializationCache materializationCache;
     private final BigQueryLabelFactory labelFactory;
 
     private final NonEvictableCache<IdentityCacheMapping.IdentityCacheKey, BigQueryClient> clientCache;
     private final Duration metadataCacheTtl;
+    private final int metadataPageSize;
     private final Set<BigQueryOptionsConfigurer> optionsConfigurers;
 
     @Inject
@@ -56,9 +59,11 @@ public class BigQueryClientFactory
         requireNonNull(bigQueryConfig, "bigQueryConfig is null");
         this.projectId = bigQueryConfig.getProjectId();
         this.caseInsensitiveNameMatching = bigQueryConfig.isCaseInsensitiveNameMatching();
+        this.caseInsensitiveNameMatchingCacheTtl = bigQueryConfig.getCaseInsensitiveNameMatchingCacheTtl();
         this.materializationCache = requireNonNull(materializationCache, "materializationCache is null");
         this.labelFactory = requireNonNull(labelFactory, "labelFactory is null");
         this.metadataCacheTtl = bigQueryConfig.getMetadataCacheTtl();
+        this.metadataPageSize = bigQueryConfig.getMetadataPageSize();
         this.optionsConfigurers = requireNonNull(optionsConfigurers, "optionsConfigurers is null");
 
         CacheBuilder<Object, Object> cacheBuilder = CacheBuilder.newBuilder()
@@ -75,7 +80,16 @@ public class BigQueryClientFactory
 
     protected BigQueryClient createBigQueryClient(ConnectorSession session)
     {
-        return new BigQueryClient(createBigQuery(session), labelFactory, typeManager, caseInsensitiveNameMatching, materializationCache, metadataCacheTtl, projectId);
+        return new BigQueryClient(
+                createBigQuery(session),
+                labelFactory,
+                typeManager,
+                caseInsensitiveNameMatching,
+                caseInsensitiveNameMatchingCacheTtl,
+                materializationCache,
+                metadataCacheTtl,
+                metadataPageSize,
+                projectId);
     }
 
     protected BigQuery createBigQuery(ConnectorSession session)

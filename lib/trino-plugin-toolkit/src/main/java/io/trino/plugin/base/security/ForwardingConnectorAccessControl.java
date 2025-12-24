@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.base.security;
 
+import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSecurityContext;
 import io.trino.spi.connector.SchemaRoutineName;
@@ -236,6 +237,12 @@ public abstract class ForwardingConnectorAccessControl
     }
 
     @Override
+    public void checkCanRefreshView(ConnectorSecurityContext context, SchemaTableName viewName)
+    {
+        delegate().checkCanRefreshView(context, viewName);
+    }
+
+    @Override
     public void checkCanSetViewAuthorization(ConnectorSecurityContext context, SchemaTableName viewName, TrinoPrincipal principal)
     {
         delegate().checkCanSetViewAuthorization(context, viewName, principal);
@@ -275,6 +282,12 @@ public abstract class ForwardingConnectorAccessControl
     public void checkCanRenameMaterializedView(ConnectorSecurityContext context, SchemaTableName viewName, SchemaTableName newViewName)
     {
         delegate().checkCanRenameMaterializedView(context, viewName, newViewName);
+    }
+
+    @Override
+    public void checkCanSetMaterializedViewAuthorization(ConnectorSecurityContext context, SchemaTableName viewName, TrinoPrincipal principal)
+    {
+        delegate().checkCanSetMaterializedViewAuthorization(context, viewName, principal);
     }
 
     @Override
@@ -430,6 +443,54 @@ public abstract class ForwardingConnectorAccessControl
     }
 
     @Override
+    public void checkCanShowCreateFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        delegate().checkCanShowCreateFunction(context, function);
+    }
+
+    @Override
+    public void checkCanShowBranches(ConnectorSecurityContext context, SchemaTableName tableName)
+    {
+        delegate().checkCanShowBranches(context, tableName);
+    }
+
+    @Override
+    public void checkCanCreateBranch(ConnectorSecurityContext context, SchemaTableName tableName, String branchName)
+    {
+        delegate().checkCanCreateBranch(context, tableName, branchName);
+    }
+
+    @Override
+    public void checkCanDropBranch(ConnectorSecurityContext context, SchemaTableName tableName, String branchName)
+    {
+        delegate().checkCanDropBranch(context, tableName, branchName);
+    }
+
+    @Override
+    public void checkCanFastForwardBranch(ConnectorSecurityContext context, SchemaTableName tableName, String sourceBranchName, String targetBranchName)
+    {
+        delegate().checkCanFastForwardBranch(context, tableName, sourceBranchName, targetBranchName);
+    }
+
+    @Override
+    public void checkCanGrantTableBranchPrivilege(ConnectorSecurityContext context, Privilege privilege, SchemaTableName tableName, String branchName, TrinoPrincipal grantee, boolean grantOption)
+    {
+        delegate().checkCanGrantTableBranchPrivilege(context, privilege, tableName, branchName, grantee, grantOption);
+    }
+
+    @Override
+    public void checkCanDenyTableBranchPrivilege(ConnectorSecurityContext context, Privilege privilege, SchemaTableName tableName, String branchName, TrinoPrincipal grantee)
+    {
+        delegate().checkCanDenyTableBranchPrivilege(context, privilege, tableName, branchName, grantee);
+    }
+
+    @Override
+    public void checkCanRevokeTableBranchPrivilege(ConnectorSecurityContext context, Privilege privilege, SchemaTableName tableName, String branchName, TrinoPrincipal revokee, boolean grantOption)
+    {
+        delegate().checkCanRevokeTableBranchPrivilege(context, privilege, tableName, branchName, revokee, grantOption);
+    }
+
+    @Override
     public List<ViewExpression> getRowFilters(ConnectorSecurityContext context, SchemaTableName tableName)
     {
         return delegate().getRowFilters(context, tableName);
@@ -439,5 +500,11 @@ public abstract class ForwardingConnectorAccessControl
     public Optional<ViewExpression> getColumnMask(ConnectorSecurityContext context, SchemaTableName tableName, String columnName, Type type)
     {
         return delegate().getColumnMask(context, tableName, columnName, type);
+    }
+
+    @Override
+    public Map<ColumnSchema, ViewExpression> getColumnMasks(ConnectorSecurityContext context, SchemaTableName tableName, List<ColumnSchema> columns)
+    {
+        return delegate().getColumnMasks(context, tableName, columns);
     }
 }

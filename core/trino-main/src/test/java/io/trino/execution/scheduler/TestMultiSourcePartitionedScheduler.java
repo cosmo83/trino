@@ -30,18 +30,16 @@ import io.trino.execution.SqlStage;
 import io.trino.execution.StageId;
 import io.trino.execution.TableExecuteContextManager;
 import io.trino.execution.TableInfo;
-import io.trino.failuredetector.NoOpFailureDetector;
 import io.trino.metadata.FunctionManager;
-import io.trino.metadata.InMemoryNodeManager;
-import io.trino.metadata.InternalNode;
-import io.trino.metadata.InternalNodeManager;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableHandle;
+import io.trino.node.InternalNode;
+import io.trino.node.InternalNodeManager;
+import io.trino.node.TestingInternalNodeManager;
 import io.trino.operator.RetryPolicy;
 import io.trino.server.DynamicFilterService;
 import io.trino.spi.QueryId;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.DynamicFilter;
@@ -80,13 +78,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
+import java.util.OptionalInt;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.BooleanSupplier;
-import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -101,7 +98,8 @@ import static io.trino.execution.scheduler.ScheduleResult.BlockedReason.WAITING_
 import static io.trino.execution.scheduler.StageExecution.State.PLANNED;
 import static io.trino.execution.scheduler.StageExecution.State.SCHEDULING;
 import static io.trino.metadata.FunctionManager.createTestingFunctionManager;
-import static io.trino.metadata.MetadataManager.createTestMetadataManager;
+import static io.trino.metadata.TestMetadataManager.createTestMetadataManager;
+import static io.trino.node.TestingInternalNodeManager.CURRENT_NODE;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.DynamicFilters.createDynamicFilterExpression;
@@ -115,7 +113,6 @@ import static io.trino.sql.planner.plan.ExchangeNode.Type.REPLICATE;
 import static io.trino.sql.planner.plan.JoinType.INNER;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
 import static io.trino.testing.TestingHandles.TEST_TABLE_HANDLE;
-import static io.trino.type.UnknownType.UNKNOWN;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
@@ -135,7 +132,7 @@ public class TestMultiSourcePartitionedScheduler
 
     private final ExecutorService queryExecutor = newCachedThreadPool(daemonThreadsNamed("stageExecutor-%s"));
     private final ScheduledExecutorService scheduledExecutor = newScheduledThreadPool(2, daemonThreadsNamed("stageScheduledExecutor-%s"));
-    private final InMemoryNodeManager nodeManager = new InMemoryNodeManager();
+    private final TestingInternalNodeManager nodeManager = TestingInternalNodeManager.createDefault();
     private final FinalizerService finalizerService = new FinalizerService();
     private final Metadata metadata = createTestMetadataManager();
     private final FunctionManager functionManager = createTestingFunctionManager();
@@ -194,7 +191,7 @@ public class TestMultiSourcePartitionedScheduler
             assertThat(scheduleResult.getBlocked().isDone()).isTrue();
 
             // first three splits create new tasks
-            assertThat(scheduleResult.getNewTasks().size()).isEqualTo(i == 0 ? 3 : 0);
+            assertThat(scheduleResult.getNewTasks()).hasSize(i == 0 ? 3 : 0);
         }
 
         for (RemoteTask remoteTask : stage.getAllTasks()) {
@@ -222,12 +219,12 @@ public class TestMultiSourcePartitionedScheduler
         ScheduleResult scheduleResult = scheduler.schedule();
         assertThat(scheduleResult.isFinished()).isFalse();
         assertThat(scheduleResult.getBlocked().isDone()).isTrue();
-        assertThat(scheduleResult.getNewTasks().size()).isEqualTo(3);
+        assertThat(scheduleResult.getNewTasks()).hasSize(3);
 
         scheduleResult = scheduler.schedule();
         assertThat(scheduleResult.isFinished()).isFalse();
         assertThat(scheduleResult.getBlocked().isDone()).isFalse();
-        assertThat(scheduleResult.getNewTasks().size()).isEqualTo(0);
+        assertThat(scheduleResult.getNewTasks()).isEmpty();
         assertThat(scheduleResult.getBlockedReason()).isEqualTo(Optional.of(WAITING_FOR_SOURCE));
 
         blockingSplitSource.addSplits(2, true);
@@ -235,7 +232,7 @@ public class TestMultiSourcePartitionedScheduler
         scheduleResult = scheduler.schedule();
         assertThat(scheduleResult.getBlocked().isDone()).isTrue();
         assertThat(scheduleResult.getSplitsScheduled()).isEqualTo(2);
-        assertThat(scheduleResult.getNewTasks().size()).isEqualTo(0);
+        assertThat(scheduleResult.getNewTasks()).isEmpty();
         assertThat(scheduleResult.getBlockedReason()).isEqualTo(Optional.empty());
         assertThat(scheduleResult.isFinished()).isTrue();
 
@@ -267,7 +264,7 @@ public class TestMultiSourcePartitionedScheduler
         assertThat(scheduleResult.getSplitsScheduled()).isEqualTo(300);
         assertThat(scheduleResult.isFinished()).isFalse();
         assertThat(scheduleResult.getBlocked().isDone()).isFalse();
-        assertThat(scheduleResult.getNewTasks().size()).isEqualTo(3);
+        assertThat(scheduleResult.getNewTasks()).hasSize(3);
         assertThat(scheduleResult.getBlockedReason()).isEqualTo(Optional.of(SPLIT_QUEUES_FULL));
 
         assertThat(stage.getAllTasks().stream().mapToInt(task -> task.getPartitionedSplitsInfo().getCount()).sum()).isEqualTo(300);
@@ -278,7 +275,7 @@ public class TestMultiSourcePartitionedScheduler
     public void testBalancedSplitAssignment()
     {
         // use private node manager so we can add a node later
-        InMemoryNodeManager nodeManager = new InMemoryNodeManager(
+        TestingInternalNodeManager nodeManager = TestingInternalNodeManager.createDefault(
                 new InternalNode("other1", URI.create("http://127.0.0.1:11"), NodeVersion.UNKNOWN, false),
                 new InternalNode("other2", URI.create("http://127.0.0.1:12"), NodeVersion.UNKNOWN, false),
                 new InternalNode("other3", URI.create("http://127.0.0.1:13"), NodeVersion.UNKNOWN, false));
@@ -302,8 +299,8 @@ public class TestMultiSourcePartitionedScheduler
 
         ScheduleResult scheduleResult = scheduler.schedule();
         assertThat(scheduleResult.getBlocked().isDone()).isFalse();
-        assertThat(scheduleResult.getNewTasks().size()).isEqualTo(3);
-        assertThat(firstStage.getAllTasks().size()).isEqualTo(3);
+        assertThat(scheduleResult.getNewTasks()).hasSize(3);
+        assertThat(firstStage.getAllTasks()).hasSize(3);
         for (RemoteTask remoteTask : firstStage.getAllTasks()) {
             PartitionedSplitsInfo splitsInfo = remoteTask.getPartitionedSplitsInfo();
             // All splits were balanced between nodes
@@ -322,8 +319,8 @@ public class TestMultiSourcePartitionedScheduler
         assertEffectivelyFinished(scheduleResult, scheduler);
         assertThat(scheduleResult.getBlocked().isDone()).isTrue();
         assertThat(scheduleResult.isFinished()).isTrue();
-        assertThat(scheduleResult.getNewTasks().size()).isEqualTo(1);
-        assertThat(firstStage.getAllTasks().size()).isEqualTo(4);
+        assertThat(scheduleResult.getNewTasks()).hasSize(1);
+        assertThat(firstStage.getAllTasks()).hasSize(4);
 
         assertThat(firstStage.getAllTasks().get(0).getPartitionedSplitsInfo().getCount()).isEqualTo(5);
         assertThat(firstStage.getAllTasks().get(1).getPartitionedSplitsInfo().getCount()).isEqualTo(5);
@@ -343,8 +340,8 @@ public class TestMultiSourcePartitionedScheduler
         assertEffectivelyFinished(scheduleResult, secondScheduler);
         assertThat(scheduleResult.getBlocked().isDone()).isTrue();
         assertThat(scheduleResult.isFinished()).isTrue();
-        assertThat(scheduleResult.getNewTasks().size()).isEqualTo(4);
-        assertThat(secondStage.getAllTasks().size()).isEqualTo(4);
+        assertThat(scheduleResult.getNewTasks()).hasSize(4);
+        assertThat(secondStage.getAllTasks()).hasSize(4);
 
         for (RemoteTask task : secondStage.getAllTasks()) {
             assertThat(task.getPartitionedSplitsInfo().getCount()).isEqualTo(5);
@@ -369,7 +366,7 @@ public class TestMultiSourcePartitionedScheduler
         ScheduleResult scheduleResult = scheduler.schedule();
 
         // If both split sources produce no splits then internal schedulers add one split - it can be expected by some operators e.g. AggregationOperator
-        assertThat(scheduleResult.getNewTasks().size()).isEqualTo(2);
+        assertThat(scheduleResult.getNewTasks()).hasSize(2);
         assertEffectivelyFinished(scheduleResult, scheduler);
 
         stage.abort();
@@ -407,7 +404,7 @@ public class TestMultiSourcePartitionedScheduler
         // make sure dynamic filtering collecting task was created immediately
         assertThat(stage.getState()).isEqualTo(PLANNED);
         scheduler.start();
-        assertThat(stage.getAllTasks().size()).isEqualTo(1);
+        assertThat(stage.getAllTasks()).hasSize(1);
         assertThat(stage.getState()).isEqualTo(SCHEDULING);
 
         // make sure dynamic filter is initially blocked
@@ -425,7 +422,7 @@ public class TestMultiSourcePartitionedScheduler
     public void testNoNewTaskScheduledWhenChildStageBufferIsOverUtilized()
     {
         NodeTaskMap nodeTaskMap = new NodeTaskMap(finalizerService);
-        InMemoryNodeManager nodeManager = new InMemoryNodeManager(
+        TestingInternalNodeManager nodeManager = TestingInternalNodeManager.createDefault(
                 new InternalNode("other1", URI.create("http://127.0.0.1:11"), NodeVersion.UNKNOWN, false),
                 new InternalNode("other2", URI.create("http://127.0.0.1:12"), NodeVersion.UNKNOWN, false),
                 new InternalNode("other3", URI.create("http://127.0.0.1:13"), NodeVersion.UNKNOWN, false));
@@ -443,7 +440,7 @@ public class TestMultiSourcePartitionedScheduler
         // the queues of 3 running nodes should be full
         ScheduleResult scheduleResult = scheduler.schedule();
         assertThat(scheduleResult.getBlockedReason()).isEqualTo(Optional.of(SPLIT_QUEUES_FULL));
-        assertThat(scheduleResult.getNewTasks().size()).isEqualTo(3);
+        assertThat(scheduleResult.getNewTasks()).hasSize(3);
         assertThat(scheduleResult.getSplitsScheduled()).isEqualTo(300);
         for (RemoteTask remoteTask : scheduleResult.getNewTasks()) {
             PartitionedSplitsInfo splitsInfo = remoteTask.getPartitionedSplitsInfo();
@@ -454,7 +451,7 @@ public class TestMultiSourcePartitionedScheduler
         nodeManager.addNodes(new InternalNode("other4", URI.create("http://127.0.0.4:14"), NodeVersion.UNKNOWN, false));
         scheduleResult = scheduler.schedule();
         assertThat(scheduleResult.getBlockedReason()).isEqualTo(Optional.of(SPLIT_QUEUES_FULL));
-        assertThat(scheduleResult.getNewTasks().size()).isEqualTo(0);
+        assertThat(scheduleResult.getNewTasks()).isEmpty();
         assertThat(scheduleResult.getSplitsScheduled()).isEqualTo(0);
     }
 
@@ -474,7 +471,7 @@ public class TestMultiSourcePartitionedScheduler
         ScheduleResult nextScheduleResult = scheduler.schedule();
         assertThat(nextScheduleResult.isFinished()).isTrue();
         assertThat(nextScheduleResult.getBlocked().isDone()).isTrue();
-        assertThat(nextScheduleResult.getNewTasks().size()).isEqualTo(0);
+        assertThat(nextScheduleResult.getNewTasks()).isEmpty();
         assertThat(nextScheduleResult.getSplitsScheduled()).isEqualTo(0);
     }
 
@@ -521,25 +518,29 @@ public class TestMultiSourcePartitionedScheduler
 
     private PlanFragment createFragment(TableHandle firstTableHandle, TableHandle secondTableHandle)
     {
-        Symbol symbol = new Symbol(UNKNOWN, "column");
-        Symbol buildSymbol = new Symbol(UNKNOWN, "buildColumn");
+        Symbol symbol = new Symbol(VARCHAR, "column");
+        Symbol buildSymbol = new Symbol(VARCHAR, "buildColumn");
 
-        TableScanNode tableScanOne = TableScanNode.newInstance(
+        TableScanNode tableScanOne = new TableScanNode(
                 TABLE_SCAN_1_NODE_ID,
                 firstTableHandle,
                 ImmutableList.of(symbol),
                 ImmutableMap.of(symbol, new TestingColumnHandle("column")),
+                TupleDomain.all(),
+                Optional.empty(),
                 false,
                 Optional.empty());
         FilterNode filterNodeOne = new FilterNode(
                 new PlanNodeId("filter_node_id"),
                 tableScanOne,
                 createDynamicFilterExpression(createTestMetadataManager(), DYNAMIC_FILTER_ID, VARCHAR, symbol.toSymbolReference()));
-        TableScanNode tableScanTwo = TableScanNode.newInstance(
+        TableScanNode tableScanTwo = new TableScanNode(
                 TABLE_SCAN_2_NODE_ID,
                 secondTableHandle,
                 ImmutableList.of(symbol),
                 ImmutableMap.of(symbol, new TestingColumnHandle("column")),
+                TupleDomain.all(),
+                Optional.empty(),
                 false,
                 Optional.empty());
         FilterNode filterNodeTwo = new FilterNode(
@@ -574,18 +575,17 @@ public class TestMultiSourcePartitionedScheduler
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
-                        Optional.empty(),
-                        Optional.empty(),
                         ImmutableMap.of(DYNAMIC_FILTER_ID, buildSymbol),
                         Optional.empty()),
                 ImmutableSet.of(symbol),
                 SOURCE_DISTRIBUTION,
-                Optional.empty(),
+                OptionalInt.empty(),
                 ImmutableList.of(TABLE_SCAN_1_NODE_ID, TABLE_SCAN_2_NODE_ID),
                 new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of(symbol)),
+                OptionalInt.empty(),
                 StatsAndCosts.empty(),
                 ImmutableList.of(),
-                ImmutableList.of(),
+                ImmutableMap.of(),
                 Optional.empty());
     }
 
@@ -596,18 +596,13 @@ public class TestMultiSourcePartitionedScheduler
 
     private SplitPlacementPolicy createSplitPlacementPolicies(Session session, StageExecution stage, NodeTaskMap nodeTaskMap, InternalNodeManager nodeManager)
     {
-        return createSplitPlacementPolicies(session, stage, nodeTaskMap, nodeManager, TEST_CATALOG_HANDLE);
-    }
-
-    private SplitPlacementPolicy createSplitPlacementPolicies(Session session, StageExecution stage, NodeTaskMap nodeTaskMap, InternalNodeManager nodeManager, CatalogHandle catalog)
-    {
         NodeSchedulerConfig nodeSchedulerConfig = new NodeSchedulerConfig()
                 .setIncludeCoordinator(false)
                 .setMaxSplitsPerNode(100)
                 .setMinPendingSplitsPerTask(0)
                 .setSplitsBalancingPolicy(STAGE);
-        NodeScheduler nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(nodeManager, nodeSchedulerConfig, nodeTaskMap, new Duration(0, SECONDS)));
-        return new DynamicSplitPlacementPolicy(nodeScheduler.createNodeSelector(session, Optional.of(catalog)), stage::getAllTasks);
+        NodeScheduler nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(CURRENT_NODE, nodeManager, nodeSchedulerConfig, nodeTaskMap, new Duration(0, SECONDS)));
+        return new DynamicSplitPlacementPolicy(nodeScheduler.createNodeSelector(session), stage::getAllTasks);
     }
 
     private StageExecution createStageExecution(PlanFragment fragment, NodeTaskMap nodeTaskMap)
@@ -626,7 +621,8 @@ public class TestMultiSourcePartitionedScheduler
                 queryExecutor,
                 noopTracer(),
                 Span.getInvalid(),
-                new SplitSchedulerStats());
+                new SplitSchedulerStats(),
+                (_, _) -> OptionalInt.empty());
         ImmutableMap.Builder<PlanFragmentId, PipelinedOutputBufferManager> outputBuffers = ImmutableMap.builder();
         outputBuffers.put(fragment.getId(), new PartitionedPipelinedOutputBufferManager(FIXED_HASH_DISTRIBUTION, 1));
         fragment.getRemoteSourceNodes().stream()
@@ -636,28 +632,11 @@ public class TestMultiSourcePartitionedScheduler
                 stage,
                 outputBuffers.buildOrThrow(),
                 TaskLifecycleListener.NO_OP,
-                new NoOpFailureDetector(),
+                TestingInternalNodeManager.createDefault(),
                 queryExecutor,
                 Optional.of(new int[] {0}),
+                OptionalInt.empty(),
                 0);
-    }
-
-    private static class InMemoryNodeManagerByCatalog
-            extends InMemoryNodeManager
-    {
-        private final Function<CatalogHandle, Set<InternalNode>> nodesByCatalogs;
-
-        public InMemoryNodeManagerByCatalog(Set<InternalNode> nodes, Function<CatalogHandle, Set<InternalNode>> nodesByCatalogs)
-        {
-            super(nodes);
-            this.nodesByCatalogs = nodesByCatalogs;
-        }
-
-        @Override
-        public Set<InternalNode> getActiveCatalogNodes(CatalogHandle catalogHandle)
-        {
-            return nodesByCatalogs.apply(catalogHandle);
-        }
     }
 
     private static class QueuedSplitSource

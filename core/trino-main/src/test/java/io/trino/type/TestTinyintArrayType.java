@@ -49,9 +49,9 @@ public class TestTinyintArrayType
     protected Object getGreaterValue(Object value)
     {
         Block block = (Block) value;
-        BlockBuilder blockBuilder = TINYINT.createBlockBuilder(null, block.getPositionCount() + 1);
+        BlockBuilder blockBuilder = TINYINT.createFixedSizeBlockBuilder(block.getPositionCount() + 1);
         for (int i = 0; i < block.getPositionCount(); i++) {
-            TINYINT.appendTo(block, i, blockBuilder);
+            blockBuilder.append(block.getUnderlyingValueBlock(), block.getUnderlyingValuePosition(i));
         }
         TINYINT.writeLong(blockBuilder, 1L);
 

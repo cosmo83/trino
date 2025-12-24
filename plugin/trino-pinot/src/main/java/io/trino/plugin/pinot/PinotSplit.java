@@ -117,15 +117,10 @@ public class PinotSplit
     {
         return toStringHelper(this)
                 .add("splitType", splitType)
+                .add("suffix", suffix)
                 .add("segments", segments)
                 .add("segmentHost", segmentHost)
                 .toString();
-    }
-
-    @Override
-    public Object getInfo()
-    {
-        return this;
     }
 
     @Override

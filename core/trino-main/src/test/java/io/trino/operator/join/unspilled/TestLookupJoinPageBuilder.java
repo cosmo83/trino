@@ -26,7 +26,6 @@ import io.trino.spi.type.Type;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.OptionalInt;
 
 import static io.trino.spi.type.BigintType.BIGINT;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,14 +36,14 @@ public class TestLookupJoinPageBuilder
     public void testPageBuilder()
     {
         int entries = 10_000;
-        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, entries);
+        BlockBuilder blockBuilder = BIGINT.createFixedSizeBlockBuilder(entries);
         for (int i = 0; i < entries; i++) {
             BIGINT.writeLong(blockBuilder, i);
         }
         Block block = blockBuilder.build();
         Page page = new Page(block, block);
 
-        JoinProbeFactory joinProbeFactory = new JoinProbeFactory(ImmutableList.of(0, 1), ImmutableList.of(0, 1), OptionalInt.empty(), false);
+        JoinProbeFactory joinProbeFactory = new JoinProbeFactory(ImmutableList.of(0, 1), ImmutableList.of(0, 1), false);
         LookupSource lookupSource = new TestLookupSource(ImmutableList.of(BIGINT, BIGINT), page);
         JoinProbe probe = joinProbeFactory.createJoinProbe(page, lookupSource);
         LookupJoinPageBuilder lookupJoinPageBuilder = new LookupJoinPageBuilder(ImmutableList.of(BIGINT, BIGINT));
@@ -58,8 +57,8 @@ public class TestLookupJoinPageBuilder
 
         Page output = lookupJoinPageBuilder.build(probe);
         assertThat(output.getChannelCount()).isEqualTo(4);
-        assertThat(output.getBlock(0) instanceof DictionaryBlock).isTrue();
-        assertThat(output.getBlock(1) instanceof DictionaryBlock).isTrue();
+        assertThat(output.getBlock(0)).isInstanceOf(DictionaryBlock.class);
+        assertThat(output.getBlock(1)).isInstanceOf(DictionaryBlock.class);
         for (int i = 0; i < output.getPositionCount(); i++) {
             assertThat(output.getBlock(0).isNull(i)).isFalse();
             assertThat(output.getBlock(1).isNull(i)).isFalse();
@@ -76,7 +75,7 @@ public class TestLookupJoinPageBuilder
                 assertThat(output.getBlock(3).isNull(i)).isTrue();
             }
         }
-        assertThat(lookupJoinPageBuilder.toString().contains("positionCount=" + output.getPositionCount())).isTrue();
+        assertThat(lookupJoinPageBuilder.toString()).contains("positionCount=" + output.getPositionCount());
 
         lookupJoinPageBuilder.reset();
         assertThat(lookupJoinPageBuilder.isEmpty()).isTrue();
@@ -92,7 +91,7 @@ public class TestLookupJoinPageBuilder
         }
         Block block = blockBuilder.build();
         Page page = new Page(block);
-        JoinProbeFactory joinProbeFactory = new JoinProbeFactory(ImmutableList.of(0), ImmutableList.of(0), OptionalInt.empty(), false);
+        JoinProbeFactory joinProbeFactory = new JoinProbeFactory(ImmutableList.of(0), ImmutableList.of(0), false);
         LookupSource lookupSource = new TestLookupSource(ImmutableList.of(BIGINT), page);
         LookupJoinPageBuilder lookupJoinPageBuilder = new LookupJoinPageBuilder(ImmutableList.of(BIGINT));
 
@@ -100,7 +99,7 @@ public class TestLookupJoinPageBuilder
         JoinProbe probe = joinProbeFactory.createJoinProbe(page, lookupSource);
         Page output = lookupJoinPageBuilder.build(probe);
         assertThat(output.getChannelCount()).isEqualTo(2);
-        assertThat(output.getBlock(0) instanceof LongArrayBlock).isTrue();
+        assertThat(output.getBlock(0)).isInstanceOf(LongArrayBlock.class);
         assertThat(output.getPositionCount()).isEqualTo(0);
         lookupJoinPageBuilder.reset();
 
@@ -114,7 +113,7 @@ public class TestLookupJoinPageBuilder
         }
         output = lookupJoinPageBuilder.build(probe);
         assertThat(output.getChannelCount()).isEqualTo(2);
-        assertThat(output.getBlock(0) instanceof DictionaryBlock).isTrue();
+        assertThat(output.getBlock(0)).isInstanceOf(DictionaryBlock.class);
         assertThat(output.getPositionCount()).isEqualTo(entries / 2);
         for (int i = 0; i < entries / 2; i++) {
             assertThat(BIGINT.getLong(output.getBlock(0), i)).isEqualTo(i * 2L);
@@ -129,7 +128,7 @@ public class TestLookupJoinPageBuilder
         }
         output = lookupJoinPageBuilder.build(probe);
         assertThat(output.getChannelCount()).isEqualTo(2);
-        assertThat(output.getBlock(0) instanceof DictionaryBlock).isFalse();
+        assertThat(output.getBlock(0)).isNotInstanceOf(DictionaryBlock.class);
         assertThat(output.getPositionCount()).isEqualTo(entries);
         for (int i = 0; i < entries; i++) {
             assertThat(BIGINT.getLong(output.getBlock(0), i)).isEqualTo(i);
@@ -147,7 +146,7 @@ public class TestLookupJoinPageBuilder
         }
         output = lookupJoinPageBuilder.build(probe);
         assertThat(output.getChannelCount()).isEqualTo(2);
-        assertThat(output.getBlock(0) instanceof DictionaryBlock).isFalse();
+        assertThat(output.getBlock(0)).isNotInstanceOf(DictionaryBlock.class);
         assertThat(output.getPositionCount()).isEqualTo(40);
         for (int i = 10; i < 50; i++) {
             assertThat(BIGINT.getLong(output.getBlock(0), i - 10)).isEqualTo(i);
@@ -158,13 +157,13 @@ public class TestLookupJoinPageBuilder
     @Test
     public void testCrossJoinWithEmptyBuild()
     {
-        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, 1);
+        BlockBuilder blockBuilder = BIGINT.createFixedSizeBlockBuilder(1);
         BIGINT.writeLong(blockBuilder, 0);
         Page page = new Page(blockBuilder.build());
 
         // nothing on the build side so we don't append anything
         LookupSource lookupSource = new TestLookupSource(ImmutableList.of(), page);
-        JoinProbe probe = new JoinProbeFactory(ImmutableList.of(0), ImmutableList.of(0), OptionalInt.empty(), false).createJoinProbe(page, lookupSource);
+        JoinProbe probe = new JoinProbeFactory(ImmutableList.of(0), ImmutableList.of(0), false).createJoinProbe(page, lookupSource);
         LookupJoinPageBuilder lookupJoinPageBuilder = new LookupJoinPageBuilder(ImmutableList.of(BIGINT));
 
         // append the same row many times should also flush in the end
@@ -239,13 +238,12 @@ public class TestLookupJoinPageBuilder
         public void appendTo(long position, PageBuilder pageBuilder, int outputChannelOffset)
         {
             for (int i = 0; i < types.size(); i++) {
-                types.get(i).appendTo(page.getBlock(i), (int) position, pageBuilder.getBlockBuilder(i));
+                Block block = page.getBlock(i);
+                pageBuilder.getBlockBuilder(i).append(block.getUnderlyingValueBlock(), block.getUnderlyingValuePosition((int) position));
             }
         }
 
         @Override
-        public void close()
-        {
-        }
+        public void close() {}
     }
 }

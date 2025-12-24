@@ -13,9 +13,9 @@
  */
 package io.trino.execution.scheduler;
 
-import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMultimap;
+import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -23,11 +23,10 @@ import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.execution.NodeTaskMap;
 import io.trino.execution.RemoteTask;
-import io.trino.metadata.InternalNode;
 import io.trino.metadata.Split;
+import io.trino.node.InternalNode;
 import io.trino.spi.HostAddress;
 import io.trino.spi.SplitWeight;
-import io.trino.spi.connector.CatalogHandle;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -39,7 +38,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -60,9 +58,9 @@ public class NodeScheduler
         this.nodeSelectorFactory = requireNonNull(nodeSelectorFactory, "nodeSelectorFactory is null");
     }
 
-    public NodeSelector createNodeSelector(Session session, Optional<CatalogHandle> catalogHandle)
+    public NodeSelector createNodeSelector(Session session)
     {
-        return nodeSelectorFactory.createNodeSelector(requireNonNull(session, "session is null"), requireNonNull(catalogHandle, "catalogHandle is null"));
+        return nodeSelectorFactory.createNodeSelector(requireNonNull(session, "session is null"));
     }
 
     public static List<InternalNode> getAllNodes(NodeMap nodeMap, boolean includeCoordinator)
@@ -162,7 +160,7 @@ public class NodeScheduler
             List<RemoteTask> existingTasks,
             BucketNodeMap bucketNodeMap)
     {
-        Multimap<InternalNode, Split> assignments = HashMultimap.create();
+        Multimap<InternalNode, Split> assignments = LinkedHashMultimap.create();
         NodeAssignmentStats assignmentStats = new NodeAssignmentStats(nodeTaskMap, nodeMap, existingTasks);
 
         Set<InternalNode> blockedNodes = new HashSet<>();

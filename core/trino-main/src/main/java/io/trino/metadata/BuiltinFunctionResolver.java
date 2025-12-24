@@ -107,7 +107,7 @@ class BuiltinFunctionResolver
         catch (UncheckedExecutionException e) {
             if (e.getCause() instanceof TrinoException cause) {
                 if (cause.getErrorCode().getCode() == FUNCTION_IMPLEMENTATION_MISSING.toErrorCode().getCode()) {
-                    throw new OperatorNotFoundException(operatorType, ImmutableList.of(fromType), toType.getTypeSignature(), cause);
+                    throw new OperatorNotFoundException(operatorType, ImmutableList.of(fromType), toType, cause);
                 }
                 throw cause;
             }
@@ -137,7 +137,7 @@ class BuiltinFunctionResolver
                 functionBinder,
                 GlobalSystemConnector.CATALOG_HANDLE,
                 functionBinding.functionBinding(),
-                functionBinding.functionMetadata(),
+                functionBinding.boundFunctionMetadata(),
                 dependencies,
                 catalogSchemaFunctionName -> {
                     // builtin functions can only depend on other builtin functions

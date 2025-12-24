@@ -44,8 +44,9 @@ import org.apache.parquet.column.values.rle.RunLengthBitPackingHybridValuesWrite
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Types;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -90,7 +91,9 @@ import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BINARY;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.BOOLEAN;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public abstract class AbstractValueDecodersTest
 {
     private static final int MAX_DATA_SIZE = 1_000_000;
@@ -115,13 +118,13 @@ public abstract class AbstractValueDecodersTest
 
     abstract Object[][] tests();
 
-    @DataProvider(name = "decoders")
     public Object[][] decoders()
     {
         return cartesianProduct(tests(), RUNNERS_AND_SIZES);
     }
 
-    @Test(dataProvider = "decoders")
+    @ParameterizedTest
+    @MethodSource("decoders")
     public <T> void testDecoder(
             TestType<T> testType,
             ParquetEncoding encoding,
@@ -151,7 +154,8 @@ public abstract class AbstractValueDecodersTest
                 page,
                 testType.columnAdapter(),
                 testType.optimizedValuesDecoderProvider().create(PLAIN),
-                field.isRequired()));
+                field.isRequired(),
+                false));
         ValueDecoder<T> optimizedValuesDecoder = dictionaryDecoder.orElseGet(() -> testType.optimizedValuesDecoderProvider().create(encoding));
 
         apacheValuesDecoder.init(new SimpleSliceInputStream(dataBuffer.dataPage()));

@@ -17,7 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.io.Resources;
 import io.trino.jdbc.BaseTestJdbcResultSet;
 import org.testcontainers.DockerClientFactory;
-import org.testcontainers.containers.TrinoContainer;
+import org.testcontainers.trino.TrinoContainer;
 import org.testcontainers.utility.DockerImageName;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
@@ -73,8 +73,8 @@ public class TestJdbcResultSetCompatibilityOldServer
             ImmutableList.Builder<String> testedTrinoVersions = ImmutableList.builder();
             int testVersion = currentVersion - 1; // last release version
             for (int i = 0; i < NUMBER_OF_TESTED_VERSIONS; i++) {
-                if (testVersion == 404) {
-                    // 404 release was skipped.
+                if (testVersion == 456) {
+                    // 456 is invalid - release process errors resulted in invalid artifacts.
                     testVersion--;
                 }
                 if (testVersion < FIRST_VERSION) {

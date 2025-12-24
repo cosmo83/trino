@@ -20,7 +20,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.testing.TestingTicker;
-import org.gaul.modernizer_maven_annotations.SuppressModernizer;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -248,39 +247,32 @@ public class TestEvictableLoadingCache
     public void testLoadStats()
             throws Exception
     {
-        LoadingCache<Integer, String> cache = EvictableCacheBuilder.newBuilder()
+        record CacheKey(int value) {}
+
+        LoadingCache<CacheKey, String> cache = EvictableCacheBuilder.newBuilder()
                 .maximumSize(10_000)
                 .recordStats()
-                .build(CacheLoader.from((Integer ignored) -> "abc"));
+                .build(CacheLoader.from((CacheKey ignored) -> "abc"));
 
         assertThat(cache.stats()).isEqualTo(new CacheStats(0, 0, 0, 0, 0, 0));
 
+        CacheKey key = new CacheKey(42);
         String value = assertCacheStats(cache)
                 .misses(1)
                 .loads(1)
-                .calling(() -> cache.get(42));
+                .calling(() -> cache.get(key));
         assertThat(value).isEqualTo("abc");
 
         value = assertCacheStats(cache)
                 .hits(1)
-                .calling(() -> cache.get(42));
+                .calling(() -> cache.get(key));
         assertThat(value).isEqualTo("abc");
 
         // with equal, but not the same key
         value = assertCacheStats(cache)
                 .hits(1)
-                .calling(() -> cache.get(newInteger(42)));
+                .calling(() -> cache.get(new CacheKey(42)));
         assertThat(value).isEqualTo("abc");
-    }
-
-    @SuppressModernizer
-    private static Integer newInteger(int value)
-    {
-        Integer integer = value;
-        @SuppressWarnings({"UnnecessaryBoxing", "BoxedPrimitiveConstructor", "CachedNumberConstructorCall", "removal"})
-        Integer newInteger = new Integer(value);
-        assertThat(integer).isNotSameAs(newInteger);
-        return newInteger;
     }
 
     /**
@@ -568,21 +560,15 @@ public class TestEvictableLoadingCache
                     assertThat(loadOngoing.await(10, SECONDS)).isTrue(); // 1
 
                     switch (invalidation) {
-                        case INVALIDATE_KEY:
-                            cache.invalidate(key);
-                            break;
-                        case INVALIDATE_PREDEFINED_KEYS:
-                            cache.invalidateAll(ImmutableList.of(key));
-                            break;
-                        case INVALIDATE_SELECTED_KEYS:
+                        case INVALIDATE_KEY -> cache.invalidate(key);
+                        case INVALIDATE_PREDEFINED_KEYS -> cache.invalidateAll(ImmutableList.of(key));
+                        case INVALIDATE_SELECTED_KEYS -> {
                             Set<Integer> keys = cache.asMap().keySet().stream()
                                     .filter(foundKey -> (int) foundKey == key)
                                     .collect(toImmutableSet());
                             cache.invalidateAll(keys);
-                            break;
-                        case INVALIDATE_ALL:
-                            cache.invalidateAll();
-                            break;
+                        }
+                        case INVALIDATE_ALL -> cache.invalidateAll();
                     }
 
                     remoteState.put(key, "fresh value");
@@ -595,6 +581,9 @@ public class TestEvictableLoadingCache
 
                 assertThat(threadA.get()).isEqualTo("stale value");
                 assertThat(threadB.get()).isEqualTo("fresh value");
+            }
+            catch (AssertionError e) {
+                throw new AssertionError("Error for invalidation=%s: %s".formatted(invalidation, e.getMessage()), e);
             }
             finally {
                 executor.shutdownNow();
@@ -639,21 +628,15 @@ public class TestEvictableLoadingCache
 
                             // invalidate
                             switch (invalidation) {
-                                case INVALIDATE_KEY:
-                                    cache.invalidate(key);
-                                    break;
-                                case INVALIDATE_PREDEFINED_KEYS:
-                                    cache.invalidateAll(ImmutableList.of(key));
-                                    break;
-                                case INVALIDATE_SELECTED_KEYS:
+                                case INVALIDATE_KEY -> cache.invalidate(key);
+                                case INVALIDATE_PREDEFINED_KEYS -> cache.invalidateAll(ImmutableList.of(key));
+                                case INVALIDATE_SELECTED_KEYS -> {
                                     Set<Integer> keys = cache.asMap().keySet().stream()
                                             .filter(foundKey -> (int) foundKey == key)
                                             .collect(toImmutableSet());
                                     cache.invalidateAll(keys);
-                                    break;
-                                case INVALIDATE_ALL:
-                                    cache.invalidateAll();
-                                    break;
+                                }
+                                case INVALIDATE_ALL -> cache.invalidateAll();
                             }
 
                             // read through cache
@@ -671,6 +654,9 @@ public class TestEvictableLoadingCache
                 assertThat(remoteState.keySet()).isEqualTo(ImmutableSet.of(key));
                 assertThat(remoteState.get(key).get()).isEqualTo(2 * 3 * 5 * 7);
                 assertThat((long) cache.get(key)).isEqualTo(2 * 3 * 5 * 7);
+            }
+            catch (AssertionError e) {
+                throw new AssertionError("Error for invalidation=%s: %s".formatted(invalidation, e.getMessage()), e);
             }
             finally {
                 executor.shutdownNow();

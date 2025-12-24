@@ -17,7 +17,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.errorprone.annotations.ThreadSafe;
-import io.trino.memory.context.LocalMemoryContext;
+import io.trino.memory.context.CoarseGrainLocalMemoryContext;
 import io.trino.operator.DriverContext;
 import io.trino.operator.HashArraySizeSupplier;
 import io.trino.operator.Operator;
@@ -33,11 +33,11 @@ import jakarta.annotation.Nullable;
 
 import java.util.List;
 import java.util.Optional;
-import java.util.OptionalInt;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
+import static io.trino.memory.context.CoarseGrainLocalMemoryContext.DEFAULT_GRANULARITY;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -56,7 +56,6 @@ public class HashBuilderOperator
         private final JoinBridgeManager<PartitionedLookupSourceFactory> lookupSourceFactoryManager;
         private final List<Integer> outputChannels;
         private final List<Integer> hashChannels;
-        private final OptionalInt preComputedHashChannel;
         private final Optional<JoinFilterFunctionFactory> filterFunctionFactory;
         private final Optional<Integer> sortChannel;
         private final List<JoinFilterFunctionFactory> searchFunctionFactories;
@@ -75,7 +74,6 @@ public class HashBuilderOperator
                 JoinBridgeManager<PartitionedLookupSourceFactory> lookupSourceFactoryManager,
                 List<Integer> outputChannels,
                 List<Integer> hashChannels,
-                OptionalInt preComputedHashChannel,
                 Optional<JoinFilterFunctionFactory> filterFunctionFactory,
                 Optional<Integer> sortChannel,
                 List<JoinFilterFunctionFactory> searchFunctionFactories,
@@ -92,7 +90,6 @@ public class HashBuilderOperator
 
             this.outputChannels = ImmutableList.copyOf(requireNonNull(outputChannels, "outputChannels is null"));
             this.hashChannels = ImmutableList.copyOf(requireNonNull(hashChannels, "hashChannels is null"));
-            this.preComputedHashChannel = requireNonNull(preComputedHashChannel, "preComputedHashChannel is null");
             this.filterFunctionFactory = requireNonNull(filterFunctionFactory, "filterFunctionFactory is null");
             this.sortChannel = sortChannel;
             this.searchFunctionFactories = ImmutableList.copyOf(searchFunctionFactories);
@@ -117,7 +114,6 @@ public class HashBuilderOperator
                     partitionIndex - 1,
                     outputChannels,
                     hashChannels,
-                    preComputedHashChannel,
                     filterFunctionFactory,
                     sortChannel,
                     searchFunctionFactories,
@@ -159,14 +155,13 @@ public class HashBuilderOperator
     }
 
     private final OperatorContext operatorContext;
-    private final LocalMemoryContext localUserMemoryContext;
+    private final CoarseGrainLocalMemoryContext localUserMemoryContext;
     private final PartitionedLookupSourceFactory lookupSourceFactory;
     private final ListenableFuture<Void> lookupSourceFactoryDestroyed;
     private final int partitionIndex;
 
     private final List<Integer> outputChannels;
     private final List<Integer> hashChannels;
-    private final OptionalInt preComputedHashChannel;
     private final Optional<JoinFilterFunctionFactory> filterFunctionFactory;
     private final Optional<Integer> sortChannel;
     private final List<JoinFilterFunctionFactory> searchFunctionFactories;
@@ -185,13 +180,30 @@ public class HashBuilderOperator
             int partitionIndex,
             List<Integer> outputChannels,
             List<Integer> hashChannels,
-            OptionalInt preComputedHashChannel,
             Optional<JoinFilterFunctionFactory> filterFunctionFactory,
             Optional<Integer> sortChannel,
             List<JoinFilterFunctionFactory> searchFunctionFactories,
             int expectedPositions,
             PagesIndex.Factory pagesIndexFactory,
             HashArraySizeSupplier hashArraySizeSupplier)
+    {
+        this(operatorContext, lookupSourceFactory, partitionIndex, outputChannels, hashChannels, filterFunctionFactory, sortChannel, searchFunctionFactories, expectedPositions, pagesIndexFactory, hashArraySizeSupplier, DEFAULT_GRANULARITY);
+    }
+
+    @VisibleForTesting
+    HashBuilderOperator(
+            OperatorContext operatorContext,
+            PartitionedLookupSourceFactory lookupSourceFactory,
+            int partitionIndex,
+            List<Integer> outputChannels,
+            List<Integer> hashChannels,
+            Optional<JoinFilterFunctionFactory> filterFunctionFactory,
+            Optional<Integer> sortChannel,
+            List<JoinFilterFunctionFactory> searchFunctionFactories,
+            int expectedPositions,
+            PagesIndex.Factory pagesIndexFactory,
+            HashArraySizeSupplier hashArraySizeSupplier,
+            long memorySyncThreshold)
     {
         requireNonNull(pagesIndexFactory, "pagesIndexFactory is null");
 
@@ -200,7 +212,7 @@ public class HashBuilderOperator
         this.filterFunctionFactory = filterFunctionFactory;
         this.sortChannel = sortChannel;
         this.searchFunctionFactories = searchFunctionFactories;
-        this.localUserMemoryContext = operatorContext.localUserMemoryContext();
+        this.localUserMemoryContext = new CoarseGrainLocalMemoryContext(operatorContext.localUserMemoryContext(), memorySyncThreshold);
 
         this.index = pagesIndexFactory.newPagesIndex(lookupSourceFactory.getTypes(), expectedPositions);
         this.lookupSourceFactory = lookupSourceFactory;
@@ -208,7 +220,6 @@ public class HashBuilderOperator
 
         this.outputChannels = outputChannels;
         this.hashChannels = hashChannels;
-        this.preComputedHashChannel = preComputedHashChannel;
 
         this.hashArraySizeSupplier = requireNonNull(hashArraySizeSupplier, "hashArraySizeSupplier is null");
     }
@@ -222,17 +233,11 @@ public class HashBuilderOperator
     @Override
     public ListenableFuture<Void> isBlocked()
     {
-        switch (state) {
-            case CONSUMING_INPUT:
-                return NOT_BLOCKED;
-
-            case LOOKUP_SOURCE_BUILT:
-                return lookupSourceNotNeeded.orElseThrow(() -> new IllegalStateException("Lookup source built, but disposal future not set"));
-
-            case CLOSED:
-                return NOT_BLOCKED;
-        }
-        throw new IllegalStateException("Unhandled state: " + state);
+        return switch (state) {
+            case CONSUMING_INPUT -> NOT_BLOCKED;
+            case LOOKUP_SOURCE_BUILT -> lookupSourceNotNeeded.orElseThrow(() -> new IllegalStateException("Lookup source built, but disposal future not set"));
+            case CLOSED -> NOT_BLOCKED;
+        };
     }
 
     @Override
@@ -314,7 +319,7 @@ public class HashBuilderOperator
                 hashArraySizeSupplier,
                 sortChannel,
                 hashChannels));
-        if (!reserved.isDone()) {
+        if (!reserved.isDone() || !operatorContext.isWaitingForMemory().isDone()) {
             // Yield when not enough memory is available to proceed, finish is expected to be called again when some memory is freed
             return;
         }
@@ -340,7 +345,7 @@ public class HashBuilderOperator
     private LookupSourceSupplier buildLookupSource()
     {
         checkState(index != null, "index is null");
-        LookupSourceSupplier partition = index.createLookupSourceSupplier(operatorContext.getSession(), hashChannels, preComputedHashChannel, filterFunctionFactory, sortChannel, searchFunctionFactories, Optional.of(outputChannels), hashArraySizeSupplier);
+        LookupSourceSupplier partition = index.createLookupSourceSupplier(operatorContext.getSession(), hashChannels, filterFunctionFactory, sortChannel, searchFunctionFactories, Optional.of(outputChannels), hashArraySizeSupplier);
         checkState(lookupSourceSupplier == null, "lookupSourceSupplier is already set");
         this.lookupSourceSupplier = partition;
         return partition;

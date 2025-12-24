@@ -26,9 +26,9 @@ import io.trino.metadata.ResolvedIndex;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Booleans;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.DomainTranslator;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
@@ -59,7 +59,7 @@ import static com.google.common.base.Predicates.in;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.spi.function.FunctionKind.AGGREGATE;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.planner.plan.WindowFrameType.RANGE;
 import static java.util.Objects.requireNonNull;
@@ -138,10 +138,10 @@ public class IndexJoinOptimizer
                         // Prefer the right candidate over the left candidate
                         PlanNode indexJoinNode = null;
                         if (rightIndexCandidate.isPresent()) {
-                            indexJoinNode = new IndexJoinNode(idAllocator.getNextId(), IndexJoinNode.Type.INNER, leftRewritten, rightIndexCandidate.get(), createEquiJoinClause(leftJoinSymbols, rightJoinSymbols), Optional.empty(), Optional.empty());
+                            indexJoinNode = new IndexJoinNode(idAllocator.getNextId(), IndexJoinNode.Type.INNER, leftRewritten, rightIndexCandidate.get(), createEquiJoinClause(leftJoinSymbols, rightJoinSymbols));
                         }
                         else if (leftIndexCandidate.isPresent()) {
-                            indexJoinNode = new IndexJoinNode(idAllocator.getNextId(), IndexJoinNode.Type.INNER, rightRewritten, leftIndexCandidate.get(), createEquiJoinClause(rightJoinSymbols, leftJoinSymbols), Optional.empty(), Optional.empty());
+                            indexJoinNode = new IndexJoinNode(idAllocator.getNextId(), IndexJoinNode.Type.INNER, rightRewritten, leftIndexCandidate.get(), createEquiJoinClause(rightJoinSymbols, leftJoinSymbols));
                         }
 
                         if (indexJoinNode != null) {
@@ -193,8 +193,6 @@ public class IndexJoinOptimizer
                         node.getRightOutputSymbols(),
                         node.isMaySkipOutputDuplicates(),
                         node.getFilter(),
-                        node.getLeftHashSymbol(),
-                        node.getRightHashSymbol(),
                         node.getDistributionType(),
                         node.isSpillable(),
                         node.getDynamicFilters(),
@@ -205,7 +203,7 @@ public class IndexJoinOptimizer
 
         private static PlanNode createIndexJoinWithExpectedOutputs(List<Symbol> expectedOutputs, IndexJoinNode.Type type, PlanNode probe, PlanNode index, List<IndexJoinNode.EquiJoinClause> equiJoinClause, PlanNodeIdAllocator idAllocator)
         {
-            PlanNode result = new IndexJoinNode(idAllocator.getNextId(), type, probe, index, equiJoinClause, Optional.empty(), Optional.empty());
+            PlanNode result = new IndexJoinNode(idAllocator.getNextId(), type, probe, index, equiJoinClause);
             if (!result.getOutputSymbols().equals(expectedOutputs)) {
                 result = new ProjectNode(
                         idAllocator.getNextId(),
@@ -234,8 +232,8 @@ public class IndexJoinOptimizer
     {
         private final PlanNodeIdAllocator idAllocator;
         private final PlannerContext plannerContext;
-        private final DomainTranslator domainTranslator;
         private final Session session;
+        private final DomainTranslator domainTranslator;
 
         private IndexSourceRewriter(
                 PlanNodeIdAllocator idAllocator,
@@ -243,9 +241,9 @@ public class IndexJoinOptimizer
                 Session session)
         {
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
-            this.domainTranslator = new DomainTranslator();
             this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
             this.session = requireNonNull(session, "session is null");
+            this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
         }
 
         public static Optional<PlanNode> rewriteWithIndex(
@@ -274,7 +272,7 @@ public class IndexJoinOptimizer
         @Override
         public PlanNode visitTableScan(TableScanNode node, RewriteContext<Context> context)
         {
-            return planTableScan(node, BooleanLiteral.TRUE_LITERAL, context.get());
+            return planTableScan(node, Booleans.TRUE, context.get());
         }
 
         private PlanNode planTableScan(TableScanNode node, Expression predicate, Context context)
@@ -317,7 +315,7 @@ public class IndexJoinOptimizer
                     domainTranslator.toPredicate(resolvedIndex.getUnresolvedTupleDomain().transformKeys(inverseAssignments::get)),
                     decomposedPredicate.getRemainingExpression());
 
-            if (!resultingPredicate.equals(TRUE_LITERAL)) {
+            if (!resultingPredicate.equals(TRUE)) {
                 // todo it is likely we end up with redundant filters here because the predicate push down has already been run... the fix is to run predicate push down again
                 source = new FilterNode(idAllocator.getNextId(), source, resultingPredicate);
             }
@@ -331,7 +329,7 @@ public class IndexJoinOptimizer
             // Rewrite the lookup symbols in terms of only the pre-projected symbols that have direct translations
             Set<Symbol> newLookupSymbols = context.get().getLookupSymbols().stream()
                     .map(node.getAssignments()::get)
-                    .filter(SymbolReference.class::isInstance)
+                    .filter(Reference.class::isInstance)
                     .map(Symbol::from)
                     .collect(toImmutableSet());
 
@@ -357,7 +355,7 @@ public class IndexJoinOptimizer
         {
             if (!node.getWindowFunctions().values().stream()
                     .map(Function::getResolvedFunction)
-                    .map(ResolvedFunction::getFunctionKind)
+                    .map(ResolvedFunction::functionKind)
                     .allMatch(AGGREGATE::equals)) {
                 return node;
             }
@@ -401,7 +399,7 @@ public class IndexJoinOptimizer
 
             PlanNode source = node;
             if (rewrittenProbeSource != node.getProbeSource()) {
-                source = new IndexJoinNode(node.getId(), node.getType(), rewrittenProbeSource, node.getIndexSource(), node.getCriteria(), node.getProbeHashSymbol(), node.getIndexHashSymbol());
+                source = new IndexJoinNode(node.getId(), node.getType(), rewrittenProbeSource, node.getIndexSource(), node.getCriteria());
             }
 
             return source;
@@ -462,6 +460,8 @@ public class IndexJoinOptimizer
      */
     public static final class IndexKeyTracer
     {
+        private IndexKeyTracer() {}
+
         public static Map<Symbol, Symbol> trace(PlanNode node, Set<Symbol> lookupSymbols)
         {
             return node.accept(new Visitor(), lookupSymbols);
@@ -480,7 +480,7 @@ public class IndexJoinOptimizer
             public Map<Symbol, Symbol> visitProject(ProjectNode node, Set<Symbol> lookupSymbols)
             {
                 // Map from output Symbols to source Symbols
-                Map<Symbol, Symbol> directSymbolTranslationOutputMap = Maps.transformValues(Maps.filterValues(node.getAssignments().getMap(), SymbolReference.class::isInstance), Symbol::from);
+                Map<Symbol, Symbol> directSymbolTranslationOutputMap = Maps.transformValues(Maps.filterValues(node.getAssignments().assignments(), Reference.class::isInstance), Symbol::from);
                 Map<Symbol, Symbol> outputToSourceMap = lookupSymbols.stream()
                         .filter(directSymbolTranslationOutputMap.keySet()::contains)
                         .collect(toImmutableMap(identity(), directSymbolTranslationOutputMap::get));

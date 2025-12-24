@@ -26,10 +26,8 @@ import io.trino.sql.analyzer.Field;
 import io.trino.sql.analyzer.RelationId;
 import io.trino.sql.analyzer.RelationType;
 import io.trino.sql.analyzer.Scope;
-import io.trino.sql.ir.Constant;
-import io.trino.sql.ir.SymbolReference;
-import io.trino.sql.planner.IrExpressionInterpreter;
-import io.trino.sql.planner.NoOpSymbolResolver;
+import io.trino.sql.ir.Reference;
+import io.trino.sql.ir.optimizer.IrExpressionOptimizer;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
 import io.trino.sql.planner.TranslationMap;
@@ -37,7 +35,6 @@ import io.trino.sql.planner.iterative.rule.LambdaCaptureDesugaringRewriter;
 import io.trino.sql.relational.RowExpression;
 import io.trino.sql.relational.SqlToRowExpressionTranslator;
 import io.trino.sql.relational.StandardFunctionResolution;
-import io.trino.sql.relational.optimizer.ExpressionOptimizer;
 import io.trino.sql.routine.ir.IrBlock;
 import io.trino.sql.routine.ir.IrBreak;
 import io.trino.sql.routine.ir.IrContinue;
@@ -59,7 +56,6 @@ import io.trino.sql.tree.CompoundStatement;
 import io.trino.sql.tree.ControlStatement;
 import io.trino.sql.tree.ElseIfClause;
 import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionSpecification;
 import io.trino.sql.tree.Identifier;
 import io.trino.sql.tree.IfStatement;
 import io.trino.sql.tree.IterateStatement;
@@ -78,44 +74,48 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
+import static io.trino.sql.ir.optimizer.IrExpressionOptimizer.newOptimizer;
 import static io.trino.sql.planner.LogicalPlanner.buildLambdaDeclarationToSymbolMap;
 import static io.trino.sql.relational.Expressions.call;
 import static io.trino.sql.relational.Expressions.constantNull;
 import static io.trino.sql.relational.Expressions.field;
+import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
 public final class SqlRoutinePlanner
 {
     private final PlannerContext plannerContext;
+    private final IrExpressionOptimizer optimizer;
 
     public SqlRoutinePlanner(PlannerContext plannerContext)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
+        this.optimizer = newOptimizer(plannerContext);
     }
 
-    public IrRoutine planSqlFunction(Session session, FunctionSpecification function, SqlRoutineAnalysis routineAnalysis)
+    public IrRoutine planSqlFunction(Session session, SqlRoutineAnalysis analysis)
     {
         List<IrVariable> allVariables = new ArrayList<>();
         Map<String, IrVariable> scopeVariables = new LinkedHashMap<>();
 
         ImmutableList.Builder<IrVariable> parameters = ImmutableList.builder();
-        routineAnalysis.arguments().forEach((name, type) -> {
+        analysis.arguments().forEach((name, type) -> {
             IrVariable variable = new IrVariable(allVariables.size(), type, constantNull(type));
             allVariables.add(variable);
             scopeVariables.put(name, variable);
             parameters.add(variable);
         });
 
-        Analysis analysis = routineAnalysis.analysis();
-        StatementVisitor visitor = new StatementVisitor(session, allVariables, analysis);
-        IrStatement body = visitor.process(function.getStatement(), new Context(scopeVariables, Map.of()));
+        StatementVisitor visitor = new StatementVisitor(session, allVariables, analysis.analysis());
+        IrStatement body = visitor.process(analysis.statement(), new Context(scopeVariables, Map.of()));
 
-        return new IrRoutine(routineAnalysis.returnType(), parameters.build(), body);
+        return new IrRoutine(analysis.returnType(), parameters.build(), body);
     }
 
     private class StatementVisitor
@@ -125,6 +125,8 @@ public final class SqlRoutinePlanner
         private final List<IrVariable> allVariables;
         private final Analysis analysis;
         private final StandardFunctionResolution resolution;
+
+        private final AtomicInteger labelCounter = new AtomicInteger();
 
         public StatementVisitor(
                 Session session,
@@ -193,7 +195,7 @@ public final class SqlRoutinePlanner
         {
             if (node.getExpression().isPresent()) {
                 RowExpression valueExpression = toRowExpression(context, node.getExpression().get());
-                IrVariable valueVariable = new IrVariable(allVariables.size(), valueExpression.getType(), valueExpression);
+                IrVariable valueVariable = new IrVariable(allVariables.size(), valueExpression.type(), valueExpression);
 
                 IrStatement statement = node.getElseClause()
                         .map(elseClause -> block(statements(elseClause.getStatements(), context)))
@@ -203,12 +205,12 @@ public final class SqlRoutinePlanner
                     RowExpression conditionValue = toRowExpression(context, whenClause.getExpression());
 
                     RowExpression testValue = field(valueVariable.field(), valueVariable.type());
-                    if (!testValue.getType().equals(conditionValue.getType())) {
-                        ResolvedFunction castFunction = plannerContext.getMetadata().getCoercion(testValue.getType(), conditionValue.getType());
+                    if (!testValue.type().equals(conditionValue.type())) {
+                        ResolvedFunction castFunction = plannerContext.getMetadata().getCoercion(testValue.type(), conditionValue.type());
                         testValue = call(castFunction, testValue);
                     }
 
-                    ResolvedFunction equals = resolution.comparisonFunction(EQUAL, testValue.getType(), conditionValue.getType());
+                    ResolvedFunction equals = resolution.comparisonFunction(EQUAL, testValue.type(), conditionValue.type());
                     RowExpression condition = call(equals, testValue, conditionValue);
 
                     IrStatement ifTrue = block(statements(whenClause.getStatements(), context));
@@ -286,10 +288,10 @@ public final class SqlRoutinePlanner
             return new IrBreak(label(context, node.getLabel()));
         }
 
-        private static Optional<IrLabel> getSqlLabel(Context context, Optional<Identifier> labelName)
+        private Optional<IrLabel> getSqlLabel(Context context, Optional<Identifier> labelName)
         {
             return labelName.map(name -> {
-                IrLabel label = new IrLabel(identifierValue(name));
+                IrLabel label = new IrLabel(identifierValue(name) + "_" + labelCounter.getAndIncrement());
                 verify(context.labels().put(identifierValue(name), label) == null, "Label already declared in this scope: %s", name);
                 return label;
             });
@@ -328,22 +330,11 @@ public final class SqlRoutinePlanner
             io.trino.sql.ir.Expression lambdaCaptureDesugared = LambdaCaptureDesugaringRewriter.rewrite(translated, symbolAllocator);
 
             // optimize the expression
-            IrExpressionInterpreter interpreter = new IrExpressionInterpreter(lambdaCaptureDesugared, plannerContext, session);
-            Object value = interpreter.optimize(NoOpSymbolResolver.INSTANCE);
-
-            io.trino.sql.ir.Expression optimized = value instanceof io.trino.sql.ir.Expression optimizedExpression ?
-                    optimizedExpression :
-                    new Constant(lambdaCaptureDesugared.type(), value);
+            io.trino.sql.ir.Expression optimized = optimizer.process(lambdaCaptureDesugared, session, ImmutableMap.of()).orElse(lambdaCaptureDesugared);
 
             // translate to RowExpression
             TranslationVisitor translator = new TranslationVisitor(plannerContext.getMetadata(), plannerContext.getTypeManager(), ImmutableMap.of(), context.variables());
-            RowExpression rowExpression = translator.process(optimized, null);
-
-            // optimize RowExpression
-            ExpressionOptimizer optimizer = new ExpressionOptimizer(plannerContext.getMetadata(), plannerContext.getFunctionManager(), session);
-            rowExpression = optimizer.optimize(rowExpression);
-
-            return rowExpression;
+            return translator.process(optimized, null);
         }
 
         public static io.trino.sql.ir.Expression coerceIfNecessary(Analysis analysis, Expression original, io.trino.sql.ir.Expression rewritten)
@@ -352,7 +343,7 @@ public final class SqlRoutinePlanner
             if (coercion == null) {
                 return rewritten;
             }
-            return new io.trino.sql.ir.Cast(rewritten, coercion, false);
+            return new io.trino.sql.ir.Cast(rewritten, coercion);
         }
 
         private List<IrStatement> statements(List<ControlStatement> statements, Context context)
@@ -370,7 +361,10 @@ public final class SqlRoutinePlanner
         private static String identifierValue(Identifier name)
         {
             // TODO: this should use getCanonicalValue()
-            return name.getValue();
+            // stop-gap: lowercasing for now to match what is happening during analysis;
+            // otherwise we do not support non-lowercase variables in functions.
+            // Rework as part of https://github.com/trinodb/trino/pull/24829
+            return name.getValue().toLowerCase(ENGLISH);
         }
     }
 
@@ -404,13 +398,13 @@ public final class SqlRoutinePlanner
         }
 
         @Override
-        protected RowExpression visitSymbolReference(SymbolReference node, Void context)
+        protected RowExpression visitReference(Reference node, Void context)
         {
-            IrVariable variable = variables.get(node.getName());
+            IrVariable variable = variables.get(node.name());
             if (variable != null) {
                 return field(variable.field(), variable.type());
             }
-            return super.visitSymbolReference(node, context);
+            return super.visitReference(node, context);
         }
     }
 }

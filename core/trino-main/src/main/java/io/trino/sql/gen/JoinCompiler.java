@@ -13,6 +13,7 @@
  */
 package io.trino.sql.gen;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.collect.ImmutableList;
@@ -27,14 +28,14 @@ import io.airlift.bytecode.OpCode;
 import io.airlift.bytecode.Parameter;
 import io.airlift.bytecode.Scope;
 import io.airlift.bytecode.Variable;
-import io.airlift.bytecode.control.ForLoop;
 import io.airlift.bytecode.control.IfStatement;
 import io.airlift.bytecode.expression.BytecodeExpression;
 import io.airlift.bytecode.expression.BytecodeExpressions;
 import io.airlift.bytecode.instruction.LabelNode;
-import io.airlift.jmx.CacheStatsMBean;
 import io.airlift.slice.SizeOf;
 import io.trino.Session;
+import io.trino.annotation.UsedByGeneratedCode;
+import io.trino.cache.CacheStatsMBean;
 import io.trino.cache.NonEvictableLoadingCache;
 import io.trino.operator.HashArraySizeSupplier;
 import io.trino.operator.PagesHashStrategy;
@@ -49,12 +50,12 @@ import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
 import io.trino.sql.gen.JoinFilterFunctionCompiler.JoinFilterFunctionFactory;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
-import org.assertj.core.util.VisibleForTesting;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
 
@@ -75,17 +76,16 @@ import static io.airlift.bytecode.Access.STATIC;
 import static io.airlift.bytecode.Access.a;
 import static io.airlift.bytecode.Parameter.arg;
 import static io.airlift.bytecode.ParameterizedType.type;
+import static io.airlift.bytecode.expression.BytecodeExpressions.add;
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantClass;
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantFalse;
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantInt;
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantLong;
-import static io.airlift.bytecode.expression.BytecodeExpressions.constantNull;
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantTrue;
 import static io.airlift.bytecode.expression.BytecodeExpressions.getStatic;
 import static io.airlift.bytecode.expression.BytecodeExpressions.invokeDynamic;
 import static io.airlift.bytecode.expression.BytecodeExpressions.invokeStatic;
 import static io.airlift.bytecode.expression.BytecodeExpressions.newInstance;
-import static io.airlift.bytecode.expression.BytecodeExpressions.notEqual;
 import static io.airlift.bytecode.expression.BytecodeExpressions.setStatic;
 import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static io.trino.operator.join.JoinUtils.getSingleBigintJoinChannel;
@@ -94,9 +94,7 @@ import static io.trino.spi.function.InvocationConvention.InvocationArgumentConve
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.DEFAULT_ON_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
 import static io.trino.spi.function.InvocationConvention.simpleConvention;
-import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.gen.Bootstrap.BOOTSTRAP_METHOD;
-import static io.trino.sql.gen.SqlTypeBytecodeExpression.constantType;
 import static io.trino.util.CompilerUtils.defineClass;
 import static io.trino.util.CompilerUtils.makeClassName;
 import static java.util.Objects.requireNonNull;
@@ -236,23 +234,22 @@ public class JoinCompiler
             FieldDefinition channelField = classDefinition.declareField(a(PRIVATE, FINAL), "joinChannel_" + i, type(List.class, Block.class));
             joinChannelFields.add(channelField);
         }
-        FieldDefinition hashChannelField = classDefinition.declareField(a(PRIVATE, FINAL), "hashChannel", type(List.class, Block.class));
 
-        generateConstructor(classDefinition, joinChannels, sizeField, instanceSizeField, channelFields, joinChannelFields, hashChannelField);
+        generateConstructor(classDefinition, joinChannels, sizeField, instanceSizeField, channelFields, joinChannelFields);
         generateGetChannelCountMethod(classDefinition, outputChannels.size());
         generateGetSizeInBytesMethod(classDefinition, sizeField);
-        generateAppendToMethod(classDefinition, callSiteBinder, types, outputChannels, channelFields);
-        generateHashPositionMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields, hashChannelField);
+        generateAppendToMethod(classDefinition, outputChannels, channelFields);
+        generateHashPositionMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields);
         generateHashRowMethod(classDefinition, callSiteBinder, joinChannelTypes);
         generateRowEqualsRowMethod(classDefinition, callSiteBinder, joinChannelTypes);
-        generateRowNotDistinctFromRowMethod(classDefinition, callSiteBinder, joinChannelTypes);
+        generateRowIdenticalToRowMethod(classDefinition, callSiteBinder, joinChannelTypes);
         generatePositionEqualsRowMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields, true);
         generatePositionEqualsRowMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields, false);
-        generatePositionNotDistinctFromRowMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields);
-        generatePositionNotDistinctFromRowWithPageMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields);
+        generatePositionIdenticalRowMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields);
+        generatePositionIdenticalToRowWithPageMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields);
         generatePositionEqualsPositionMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields, true);
         generatePositionEqualsPositionMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields, false);
-        generatePositionNotDistinctFromPositionMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields);
+        generatePositionIdenticalToPositionMethod(classDefinition, callSiteBinder, joinChannelTypes, joinChannelFields);
         generateIsPositionNull(classDefinition, joinChannelFields);
         generateCompareSortChannelPositionsMethod(classDefinition, callSiteBinder, types, channelFields, sortChannel);
         generateIsSortChannelPositionNull(classDefinition, channelFields, sortChannel);
@@ -266,15 +263,12 @@ public class JoinCompiler
             FieldDefinition sizeField,
             FieldDefinition instanceSizeField,
             List<FieldDefinition> channelFields,
-            List<FieldDefinition> joinChannelFields,
-            FieldDefinition hashChannelField)
+            List<FieldDefinition> joinChannelFields)
     {
         Parameter channels = arg("channels", type(List.class, type(List.class, Block.class)));
-        Parameter hashChannel = arg("hashChannel", type(OptionalInt.class));
-        MethodDefinition constructorDefinition = classDefinition.declareConstructor(a(PUBLIC), channels, hashChannel);
+        MethodDefinition constructorDefinition = classDefinition.declareConstructor(a(PUBLIC), channels);
 
         Variable thisVariable = constructorDefinition.getThis();
-        Variable blockIndex = constructorDefinition.getScope().declareVariable(int.class, "blockIndex");
 
         BytecodeBlock constructor = constructorDefinition
                 .getBody()
@@ -282,45 +276,20 @@ public class JoinCompiler
                 .append(thisVariable)
                 .invokeConstructor(Object.class);
 
-        constructor.comment("this.size = INSTANCE_SIZE")
-                .append(thisVariable.setField(sizeField, getStatic(instanceSizeField)));
+        constructor
+                .append(thisVariable)
+                .getVariable(channels)
+                .invokeStatic(JoinCompiler.class, "computeRetainedSize", long.class, List.class)
+                .append(getStatic(instanceSizeField))
+                .longAdd()
+                .putField(sizeField);
 
         constructor.comment("Set channel fields");
-
         for (int index = 0; index < channelFields.size(); index++) {
             BytecodeExpression channel = channels.invoke("get", Object.class, constantInt(index))
                     .cast(type(ObjectArrayList.class, Block.class));
 
             constructor.append(thisVariable.setField(channelFields.get(index), channel));
-
-            BytecodeBlock loopBody = new BytecodeBlock();
-
-            constructor.comment("for(blockIndex = 0; blockIndex < channel.size(); blockIndex++) { size += channel.get(i).getRetainedSizeInBytes() }")
-                    .append(new ForLoop()
-                            .initialize(blockIndex.set(constantInt(0)))
-                            .condition(new BytecodeBlock()
-                                    .append(blockIndex)
-                                    .append(channel.invoke("size", int.class))
-                                    .invokeStatic(CompilerOperations.class, "lessThan", boolean.class, int.class, int.class))
-                            .update(new BytecodeBlock().incrementVariable(blockIndex, (byte) 1))
-                            .body(loopBody));
-
-            loopBody.append(thisVariable)
-                    .append(thisVariable)
-                    .getField(sizeField)
-                    .append(
-                            channel.invoke("get", Object.class, blockIndex)
-                                    .cast(type(Block.class))
-                                    .invoke("getRetainedSizeInBytes", long.class))
-                    .longAdd()
-                    .putField(sizeField);
-
-            constructor.append(thisVariable)
-                    .append(thisVariable)
-                    .getField(sizeField)
-                    .append(invokeStatic(SizeOf.class, "sizeOf", long.class, channel.invoke("elements", Object[].class)))
-                    .longAdd()
-                    .putField(sizeField);
         }
 
         constructor.comment("Set join channel fields");
@@ -330,16 +299,6 @@ public class JoinCompiler
 
             constructor.append(thisVariable.setField(joinChannelFields.get(index), joinChannel));
         }
-
-        constructor.comment("Set hashChannel");
-        constructor.append(new IfStatement()
-                .condition(hashChannel.invoke("isPresent", boolean.class))
-                .ifTrue(thisVariable.setField(
-                        hashChannelField,
-                        channels.invoke("get", Object.class, hashChannel.invoke("getAsInt", int.class))))
-                .ifFalse(thisVariable.setField(
-                        hashChannelField,
-                        constantNull(hashChannelField.getType()))));
         constructor.ret();
     }
 
@@ -364,7 +323,7 @@ public class JoinCompiler
                 .retLong();
     }
 
-    private static void generateAppendToMethod(ClassDefinition classDefinition, CallSiteBinder callSiteBinder, List<Type> types, List<Integer> outputChannels, List<FieldDefinition> channelFields)
+    private static void generateAppendToMethod(ClassDefinition classDefinition, List<Integer> outputChannels, List<FieldDefinition> channelFields)
     {
         Parameter blockIndex = arg("blockIndex", int.class);
         Parameter blockPosition = arg("blockPosition", int.class);
@@ -376,26 +335,23 @@ public class JoinCompiler
         BytecodeBlock appendToBody = appendToMethod.getBody();
 
         int pageBuilderOutputChannel = 0;
+        Variable block = appendToMethod.getScope().declareVariable(Block.class, "block");
         for (int outputChannel : outputChannels) {
-            Type type = types.get(outputChannel);
-            BytecodeExpression typeExpression = constantType(callSiteBinder, type);
+            appendToBody.append(block.set(
+                    thisVariable.getField(channelFields.get(outputChannel))
+                            .invoke("get", Object.class, blockIndex)
+                            .cast(Block.class)));
 
-            BytecodeExpression block = thisVariable
-                    .getField(channelFields.get(outputChannel))
-                    .invoke("get", Object.class, blockIndex)
-                    .cast(Block.class);
-
+            BytecodeExpression blockBuilderExpression = pageBuilder
+                    .invoke("getBlockBuilder", BlockBuilder.class, add(outputChannelOffset, constantInt(pageBuilderOutputChannel)));
             appendToBody
-                    .comment("%s.appendTo(channel_%s.get(outputChannel), blockPosition, pageBuilder.getBlockBuilder(outputChannelOffset + %s));", type.getClass(), outputChannel, pageBuilderOutputChannel)
-                    .append(typeExpression)
-                    .append(block)
-                    .append(blockPosition)
-                    .append(pageBuilder)
-                    .append(outputChannelOffset)
-                    .push(pageBuilderOutputChannel++)
-                    .append(OpCode.IADD)
-                    .invokeVirtual(PageBuilder.class, "getBlockBuilder", BlockBuilder.class, int.class)
-                    .invokeInterface(Type.class, "appendTo", void.class, Block.class, int.class, BlockBuilder.class);
+                    .comment("pageBuilder.getBlockBuilder(outputChannelOffset + %s).append(block.getUnderlyingValueBlock(), block.getUnderlyingValuePosition(blockPosition));", pageBuilderOutputChannel)
+                    .append(blockBuilderExpression.invoke(
+                            "append",
+                            void.class,
+                            block.invoke("getUnderlyingValueBlock", ValueBlock.class),
+                            block.invoke("getUnderlyingValuePosition", int.class, blockPosition)));
+            pageBuilderOutputChannel++;
         }
         appendToBody.ret();
     }
@@ -432,7 +388,7 @@ public class JoinCompiler
                 .append(constantFalse().ret());
     }
 
-    private void generateHashPositionMethod(ClassDefinition classDefinition, CallSiteBinder callSiteBinder, List<Type> joinChannelTypes, List<FieldDefinition> joinChannelFields, FieldDefinition hashChannelField)
+    private void generateHashPositionMethod(ClassDefinition classDefinition, CallSiteBinder callSiteBinder, List<Type> joinChannelTypes, List<FieldDefinition> joinChannelFields)
     {
         Parameter blockIndex = arg("blockIndex", int.class);
         Parameter blockPosition = arg("blockPosition", int.class);
@@ -442,24 +398,6 @@ public class JoinCompiler
                 type(long.class),
                 blockIndex,
                 blockPosition);
-
-        Variable thisVariable = hashPositionMethod.getThis();
-        BytecodeExpression hashChannel = thisVariable.getField(hashChannelField);
-        BytecodeExpression bigintType = constantType(callSiteBinder, BIGINT);
-
-        IfStatement ifStatement = new IfStatement();
-        ifStatement.condition(notEqual(hashChannel, constantNull(hashChannelField.getType())));
-        ifStatement.ifTrue(
-                bigintType.invoke(
-                                "getLong",
-                                long.class,
-                                hashChannel.invoke("get", Object.class, blockIndex).cast(Block.class),
-                                blockPosition)
-                        .ret());
-
-        hashPositionMethod
-                .getBody()
-                .append(ifStatement);
 
         Variable resultVariable = hashPositionMethod.getScope().declareVariable(long.class, "result");
         hashPositionMethod.getBody().push(0L).putVariable(resultVariable);
@@ -575,7 +513,7 @@ public class JoinCompiler
                 .retInt();
     }
 
-    private void generateRowNotDistinctFromRowMethod(
+    private void generateRowIdenticalToRowMethod(
             ClassDefinition classDefinition,
             CallSiteBinder callSiteBinder,
             List<Type> joinChannelTypes)
@@ -584,9 +522,9 @@ public class JoinCompiler
         Parameter leftPage = arg("leftPage", Page.class);
         Parameter rightPosition = arg("rightPosition", int.class);
         Parameter rightPage = arg("rightPage", Page.class);
-        MethodDefinition rowNotDistinctFromRowMethod = classDefinition.declareMethod(
+        MethodDefinition rowIdenticalToRowMethod = classDefinition.declareMethod(
                 a(PUBLIC),
-                "rowNotDistinctFromRow",
+                "rowIdenticalToRow",
                 type(boolean.class),
                 leftPosition,
                 leftPage,
@@ -601,22 +539,22 @@ public class JoinCompiler
             BytecodeExpression rightBlock = rightPage.invoke("getBlock", Block.class, constantInt(index));
 
             LabelNode checkNextField = new LabelNode("checkNextField");
-            rowNotDistinctFromRowMethod
+            rowIdenticalToRowMethod
                     .getBody()
-                    .append(typeDistinctFrom(
+                    .append(typeIdentical(
                             callSiteBinder,
                             type,
                             leftBlock,
                             leftPosition,
                             rightBlock,
                             rightPosition))
-                    .ifFalseGoto(checkNextField)
+                    .ifTrueGoto(checkNextField)
                     .push(false)
                     .retBoolean()
                     .visitLabel(checkNextField);
         }
 
-        rowNotDistinctFromRowMethod
+        rowIdenticalToRowMethod
                 .getBody()
                 .push(true)
                 .retInt();
@@ -677,7 +615,7 @@ public class JoinCompiler
                 .retInt();
     }
 
-    private void generatePositionNotDistinctFromRowMethod(
+    private void generatePositionIdenticalRowMethod(
             ClassDefinition classDefinition,
             CallSiteBinder callSiteBinder,
             List<Type> joinChannelTypes,
@@ -687,16 +625,16 @@ public class JoinCompiler
         Parameter leftBlockPosition = arg("leftBlockPosition", int.class);
         Parameter rightPosition = arg("rightPosition", int.class);
         Parameter rightPage = arg("rightPage", Page.class);
-        MethodDefinition positionNotDistinctFromRowPosition = classDefinition.declareMethod(
+        MethodDefinition positionIdenticalToRowPosition = classDefinition.declareMethod(
                 a(PUBLIC),
-                "positionNotDistinctFromRow",
+                "positionIdenticalToRow",
                 type(boolean.class),
                 leftBlockIndex,
                 leftBlockPosition,
                 rightPosition,
                 rightPage);
 
-        Variable thisVariable = positionNotDistinctFromRowPosition.getThis();
+        Variable thisVariable = positionIdenticalToRowPosition.getThis();
 
         for (int index = 0; index < joinChannelTypes.size(); index++) {
             Type type = joinChannelTypes.get(index);
@@ -709,22 +647,22 @@ public class JoinCompiler
             BytecodeExpression rightBlock = rightPage.invoke("getBlock", Block.class, constantInt(index));
 
             LabelNode checkNextField = new LabelNode("checkNextField");
-            positionNotDistinctFromRowPosition
+            positionIdenticalToRowPosition
                     .getBody()
-                    .append(typeDistinctFrom(callSiteBinder, type, leftBlock, leftBlockPosition, rightBlock, rightPosition))
-                    .ifFalseGoto(checkNextField)
+                    .append(typeIdentical(callSiteBinder, type, leftBlock, leftBlockPosition, rightBlock, rightPosition))
+                    .ifTrueGoto(checkNextField)
                     .push(false)
                     .retBoolean()
                     .visitLabel(checkNextField);
         }
 
-        positionNotDistinctFromRowPosition
+        positionIdenticalToRowPosition
                 .getBody()
                 .push(true)
                 .retInt();
     }
 
-    private void generatePositionNotDistinctFromRowWithPageMethod(
+    private void generatePositionIdenticalToRowWithPageMethod(
             ClassDefinition classDefinition,
             CallSiteBinder callSiteBinder,
             List<Type> joinChannelTypes,
@@ -736,9 +674,9 @@ public class JoinCompiler
         Parameter page = arg("page", Page.class);
         Parameter rightChannels = arg("rightChannels", int[].class);
 
-        MethodDefinition positionNotDistinctFromRowMethod = classDefinition.declareMethod(
+        MethodDefinition positionIdenticalToRowMethod = classDefinition.declareMethod(
                 a(PUBLIC),
-                "positionNotDistinctFromRow",
+                "positionIdenticalToRow",
                 type(boolean.class),
                 leftBlockIndex,
                 leftBlockPosition,
@@ -746,9 +684,9 @@ public class JoinCompiler
                 page,
                 rightChannels);
 
-        Variable thisVariable = positionNotDistinctFromRowMethod.getThis();
-        Scope scope = positionNotDistinctFromRowMethod.getScope();
-        BytecodeBlock body = positionNotDistinctFromRowMethod.getBody();
+        Variable thisVariable = positionIdenticalToRowMethod.getThis();
+        Scope scope = positionIdenticalToRowMethod.getScope();
+        BytecodeBlock body = positionIdenticalToRowMethod.getBody();
         scope.declareVariable("wasNull", body, constantFalse());
         for (int index = 0; index < joinChannelTypes.size(); index++) {
             BytecodeExpression leftBlock = thisVariable
@@ -759,13 +697,13 @@ public class JoinCompiler
             Type type = joinChannelTypes.get(index);
 
             body.append(new IfStatement()
-                    .condition(typeDistinctFrom(callSiteBinder, type, leftBlock, leftBlockPosition, rightBlock, rightPosition))
-                    .ifTrue(constantFalse().ret()));
+                    .condition(typeIdentical(callSiteBinder, type, leftBlock, leftBlockPosition, rightBlock, rightPosition))
+                    .ifFalse(constantFalse().ret()));
         }
         body.append(constantTrue().ret());
     }
 
-    private BytecodeNode typeDistinctFrom(
+    private BytecodeNode typeIdentical(
             CallSiteBinder callSiteBinder,
             Type type,
             BytecodeExpression leftBlock,
@@ -775,13 +713,13 @@ public class JoinCompiler
     {
         return new IfStatement()
                 .condition(BytecodeExpressions.or(leftBlock.invoke("isNull", boolean.class, leftBlockPosition), rightBlock.invoke("isNull", boolean.class, rightBlockPosition)))
-                .ifTrue(BytecodeExpressions.not(BytecodeExpressions.and(
+                .ifTrue(BytecodeExpressions.and(
                         leftBlock.invoke("isNull", boolean.class, leftBlockPosition),
-                        rightBlock.invoke("isNull", boolean.class, rightBlockPosition))))
-                .ifFalse(typeDistinctFromIgnoreNulls(callSiteBinder, type, leftBlock, leftBlockPosition, rightBlock, rightBlockPosition));
+                        rightBlock.invoke("isNull", boolean.class, rightBlockPosition)))
+                .ifFalse(typeIdenticalIgnoreNulls(callSiteBinder, type, leftBlock, leftBlockPosition, rightBlock, rightBlockPosition));
     }
 
-    private BytecodeExpression typeDistinctFromIgnoreNulls(
+    private BytecodeExpression typeIdenticalIgnoreNulls(
             CallSiteBinder callSiteBinder,
             Type type,
             BytecodeExpression leftBlock,
@@ -789,12 +727,12 @@ public class JoinCompiler
             BytecodeExpression rightBlock,
             BytecodeExpression rightBlockPosition)
     {
-        MethodHandle distinctFromOperator = typeOperators.getDistinctFromOperator(type, simpleConvention(FAIL_ON_NULL, BLOCK_POSITION, BLOCK_POSITION));
+        MethodHandle identicalOperator = typeOperators.getIdenticalOperator(type, simpleConvention(FAIL_ON_NULL, BLOCK_POSITION, BLOCK_POSITION));
         return invokeDynamic(
                 BOOTSTRAP_METHOD,
-                ImmutableList.of(callSiteBinder.bind(distinctFromOperator).getBindingId()),
-                "distinctFrom",
-                distinctFromOperator.type(),
+                ImmutableList.of(callSiteBinder.bind(identicalOperator).getBindingId()),
+                "identical",
+                identicalOperator.type(),
                 leftBlock, leftBlockPosition, rightBlock, rightBlockPosition);
     }
 
@@ -856,7 +794,7 @@ public class JoinCompiler
                 .retInt();
     }
 
-    private void generatePositionNotDistinctFromPositionMethod(
+    private void generatePositionIdenticalToPositionMethod(
             ClassDefinition classDefinition,
             CallSiteBinder callSiteBinder,
             List<Type> joinChannelTypes,
@@ -866,16 +804,16 @@ public class JoinCompiler
         Parameter leftBlockPosition = arg("leftBlockPosition", int.class);
         Parameter rightBlockIndex = arg("rightBlockIndex", int.class);
         Parameter rightBlockPosition = arg("rightBlockPosition", int.class);
-        MethodDefinition positionNotDistinctFromPositionMethod = classDefinition.declareMethod(
+        MethodDefinition positionIdenticalToPositionMethod = classDefinition.declareMethod(
                 a(PUBLIC),
-                "positionNotDistinctFromPosition",
+                "positionIdenticalToPosition",
                 type(boolean.class),
                 leftBlockIndex,
                 leftBlockPosition,
                 rightBlockIndex,
                 rightBlockPosition);
 
-        Variable thisVariable = positionNotDistinctFromPositionMethod.getThis();
+        Variable thisVariable = positionIdenticalToPositionMethod.getThis();
         for (int index = 0; index < joinChannelTypes.size(); index++) {
             Type type = joinChannelTypes.get(index);
 
@@ -890,16 +828,16 @@ public class JoinCompiler
                     .cast(Block.class);
 
             LabelNode checkNextField = new LabelNode("checkNextField");
-            positionNotDistinctFromPositionMethod
+            positionIdenticalToPositionMethod
                     .getBody()
-                    .append(typeDistinctFrom(callSiteBinder, type, leftBlock, leftBlockPosition, rightBlock, rightBlockPosition))
-                    .ifFalseGoto(checkNextField)
+                    .append(typeIdentical(callSiteBinder, type, leftBlock, leftBlockPosition, rightBlock, rightBlockPosition))
+                    .ifTrueGoto(checkNextField)
                     .push(false)
                     .retBoolean()
                     .visitLabel(checkNextField);
         }
 
-        positionNotDistinctFromPositionMethod
+        positionIdenticalToPositionMethod
                 .getBody()
                 .push(true)
                 .retInt();
@@ -1040,6 +978,22 @@ public class JoinCompiler
                 leftBlock, leftBlockPosition, rightBlock, rightBlockPosition);
     }
 
+    @UsedByGeneratedCode
+    public static long computeRetainedSize(List<List<Block>> channels)
+    {
+        long result = 0;
+
+        for (List<Block> channel : channels) {
+            ObjectArrayList<Block> blocks = (ObjectArrayList<Block>) channel;
+            result += SizeOf.sizeOf(blocks.elements());
+            for (Block block : channel) {
+                result += block.getRetainedSizeInBytes();
+            }
+        }
+
+        return result;
+    }
+
     public static class LookupSourceSupplierFactory
     {
         private final Constructor<? extends LookupSourceSupplier> constructor;
@@ -1062,13 +1016,12 @@ public class JoinCompiler
                 Session session,
                 LongArrayList addresses,
                 List<ObjectArrayList<Block>> channels,
-                OptionalInt hashChannel,
                 Optional<JoinFilterFunctionFactory> filterFunctionFactory,
                 Optional<Integer> sortChannel,
                 List<JoinFilterFunctionFactory> searchFunctionFactories,
                 HashArraySizeSupplier hashArraySizeSupplier)
         {
-            PagesHashStrategy pagesHashStrategy = pagesHashStrategyFactory.createPagesHashStrategy(channels, hashChannel);
+            PagesHashStrategy pagesHashStrategy = pagesHashStrategyFactory.createPagesHashStrategy(channels);
             try {
                 return constructor.newInstance(session, pagesHashStrategy, addresses, channels, filterFunctionFactory, sortChannel, searchFunctionFactories, hashArraySizeSupplier, singleBigintJoinChannel);
             }
@@ -1085,17 +1038,17 @@ public class JoinCompiler
         public PagesHashStrategyFactory(Class<? extends PagesHashStrategy> pagesHashStrategyClass)
         {
             try {
-                constructor = pagesHashStrategyClass.getConstructor(List.class, OptionalInt.class);
+                constructor = pagesHashStrategyClass.getConstructor(List.class);
             }
             catch (NoSuchMethodException e) {
                 throw new RuntimeException(e);
             }
         }
 
-        public PagesHashStrategy createPagesHashStrategy(List<ObjectArrayList<Block>> channels, OptionalInt hashChannel)
+        public PagesHashStrategy createPagesHashStrategy(List<ObjectArrayList<Block>> channels)
         {
             try {
-                return constructor.newInstance(channels, hashChannel);
+                return constructor.newInstance(channels);
             }
             catch (ReflectiveOperationException e) {
                 throw new RuntimeException(e);
@@ -1150,10 +1103,9 @@ public class JoinCompiler
             if (this == obj) {
                 return true;
             }
-            if (!(obj instanceof CacheKey)) {
+            if (!(obj instanceof CacheKey other)) {
                 return false;
             }
-            CacheKey other = (CacheKey) obj;
             return Objects.equals(this.types, other.types) &&
                     Objects.equals(this.outputChannels, other.outputChannels) &&
                     Objects.equals(this.joinChannels, other.joinChannels) &&

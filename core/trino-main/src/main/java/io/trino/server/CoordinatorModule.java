@@ -16,6 +16,7 @@ package io.trino.server;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Binder;
 import com.google.inject.Inject;
+import com.google.inject.Key;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.Singleton;
@@ -48,6 +49,7 @@ import io.trino.execution.DynamicFiltersCollector.VersionedDynamicFilterDomains;
 import io.trino.execution.ExecutionFailureInfo;
 import io.trino.execution.ExplainAnalyzeContext;
 import io.trino.execution.ForQueryExecution;
+import io.trino.execution.NodeTaskMap;
 import io.trino.execution.QueryExecution;
 import io.trino.execution.QueryExecutionMBean;
 import io.trino.execution.QueryExecutorInternal;
@@ -57,8 +59,9 @@ import io.trino.execution.QueryManagerConfig;
 import io.trino.execution.QueryPerformanceFetcher;
 import io.trino.execution.QueryPreparer;
 import io.trino.execution.RemoteTaskFactory;
-import io.trino.execution.SqlQueryManager;
+import io.trino.execution.SessionPropertyEvaluator;
 import io.trino.execution.StageInfo;
+import io.trino.execution.StagesInfo;
 import io.trino.execution.TaskInfo;
 import io.trino.execution.TaskManagerConfig;
 import io.trino.execution.TaskStatus;
@@ -66,8 +69,12 @@ import io.trino.execution.resourcegroups.InternalResourceGroupManager;
 import io.trino.execution.resourcegroups.LegacyResourceGroupConfigurationManager;
 import io.trino.execution.resourcegroups.ResourceGroupInfoProvider;
 import io.trino.execution.resourcegroups.ResourceGroupManager;
+import io.trino.execution.scheduler.NodeScheduler;
+import io.trino.execution.scheduler.NodeSchedulerConfig;
 import io.trino.execution.scheduler.SplitSchedulerStats;
 import io.trino.execution.scheduler.TaskExecutionStats;
+import io.trino.execution.scheduler.TopologyAwareNodeSelectorModule;
+import io.trino.execution.scheduler.UniformNodeSelectorModule;
 import io.trino.execution.scheduler.faulttolerant.BinPackingNodeAllocatorService;
 import io.trino.execution.scheduler.faulttolerant.ByEagerParentOutputStatsEstimator;
 import io.trino.execution.scheduler.faulttolerant.BySmallStageOutputStatsEstimator;
@@ -80,11 +87,12 @@ import io.trino.execution.scheduler.faulttolerant.NoMemoryAwarePartitionMemoryEs
 import io.trino.execution.scheduler.faulttolerant.NodeAllocatorService;
 import io.trino.execution.scheduler.faulttolerant.OutputStatsEstimatorFactory;
 import io.trino.execution.scheduler.faulttolerant.PartitionMemoryEstimatorFactory;
+import io.trino.execution.scheduler.faulttolerant.StageExecutionStats;
+import io.trino.execution.scheduler.faulttolerant.TaskDescriptor;
 import io.trino.execution.scheduler.faulttolerant.TaskDescriptorStorage;
 import io.trino.execution.scheduler.policy.AllAtOnceExecutionPolicy;
 import io.trino.execution.scheduler.policy.ExecutionPolicy;
 import io.trino.execution.scheduler.policy.PhasedExecutionPolicy;
-import io.trino.failuredetector.FailureDetectorModule;
 import io.trino.memory.ClusterMemoryManager;
 import io.trino.memory.ForMemoryManager;
 import io.trino.memory.LeastWastedEffortTaskLowMemoryKiller;
@@ -110,8 +118,10 @@ import io.trino.server.ui.WebUiModule;
 import io.trino.server.ui.WorkerResource;
 import io.trino.spi.VersionEmbedder;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.SessionPropertyResolver;
 import io.trino.sql.analyzer.AnalyzerFactory;
 import io.trino.sql.analyzer.QueryExplainerFactory;
+import io.trino.sql.planner.NodePartitioningManager;
 import io.trino.sql.planner.OptimizerStatsMBeanExporter;
 import io.trino.sql.planner.PlanFragmenter;
 import io.trino.sql.planner.PlanOptimizers;
@@ -134,15 +144,16 @@ import java.util.concurrent.ThreadPoolExecutor;
 
 import static com.google.inject.multibindings.MapBinder.newMapBinder;
 import static com.google.inject.multibindings.Multibinder.newSetBinder;
+import static io.airlift.bootstrap.ClosingBinder.closingBinder;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.concurrent.Threads.threadsNamed;
 import static io.airlift.configuration.ConditionalModule.conditionalModule;
 import static io.airlift.configuration.ConfigBinder.configBinder;
-import static io.airlift.discovery.client.DiscoveryBinder.discoveryBinder;
 import static io.airlift.jaxrs.JaxrsBinder.jaxrsBinder;
 import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
-import static io.trino.plugin.base.ClosingBinder.closingBinder;
+import static io.trino.execution.scheduler.NodeSchedulerConfig.NodeSchedulerPolicy.TOPOLOGY;
+import static io.trino.execution.scheduler.NodeSchedulerConfig.NodeSchedulerPolicy.UNIFORM;
 import static io.trino.server.InternalCommunicationHttpClientModule.internalHttpClientModule;
 import static io.trino.util.Executors.decorateWithVersion;
 import static java.util.concurrent.Executors.newCachedThreadPool;
@@ -159,9 +170,6 @@ public class CoordinatorModule
     {
         install(new WebUiModule());
 
-        // coordinator announcement
-        discoveryBinder(binder).bindHttpAnnouncement("trino-coordinator");
-
         // statement resource
         jsonCodecBinder(binder).bindJsonCodec(TaskInfo.class);
         jaxrsBinder(binder).bind(QueuedStatementResource.class);
@@ -176,26 +184,27 @@ public class CoordinatorModule
             config.setMaxResponseHeaderSize(DataSize.of(2, MEGABYTE));
         });
 
-        // failure detector
-        install(new FailureDetectorModule());
-        jaxrsBinder(binder).bind(NodeResource.class);
+        // worker resource
         jaxrsBinder(binder).bind(WorkerResource.class);
-        install(internalHttpClientModule("workerInfo", ForWorkerInfo.class).build());
+        install(internalHttpClientModule("worker-info", ForWorkerInfo.class).build());
 
         // query monitor
         jsonCodecBinder(binder).bindJsonCodec(ExecutionFailureInfo.class);
         jsonCodecBinder(binder).bindJsonCodec(OperatorStats.class);
         jsonCodecBinder(binder).bindJsonCodec(StageInfo.class);
+        jsonCodecBinder(binder).bindJsonCodec(StagesInfo.class);
         jsonCodecBinder(binder).bindJsonCodec(StatsAndCosts.class);
         configBinder(binder).bindConfig(QueryMonitorConfig.class);
         binder.bind(QueryMonitor.class).in(Scopes.SINGLETON);
 
         // query manager
         jaxrsBinder(binder).bind(QueryResource.class);
-        jaxrsBinder(binder).bind(QueryStateInfoResource.class);
         jaxrsBinder(binder).bind(ResourceGroupStateInfoResource.class);
         binder.bind(QueryIdGenerator.class).in(Scopes.SINGLETON);
-        binder.bind(QueryManager.class).to(SqlQueryManager.class).in(Scopes.SINGLETON);
+        binder.bind(QueryManager.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(QueryManager.class).as(generator -> generator.generatedNameOf(QueryManager.class)
+                // For backward compatibility
+                .replaceFirst("QueryManager", "SqlQueryManager"));
         binder.bind(QueryPreparer.class).in(Scopes.SINGLETON);
         OptionalBinder.newOptionalBinder(binder, SessionSupplier.class).setDefault().to(QuerySessionSupplier.class).in(Scopes.SINGLETON);
         binder.bind(ResourceGroupInfoProvider.class).to(ResourceGroupManager.class).in(Scopes.SINGLETON);
@@ -206,6 +215,8 @@ public class CoordinatorModule
 
         // dispatcher
         binder.bind(DispatchManager.class).in(Scopes.SINGLETON);
+        // WITH SESSION interpreter
+        binder.bind(SessionPropertyResolver.class).in(Scopes.SINGLETON);
         // export under the old name, for backwards compatibility
         newExporter(binder).export(DispatchManager.class).as(generator -> generator.generatedNameOf(QueryManager.class));
         binder.bind(FailedDispatchQueryFactory.class).in(Scopes.SINGLETON);
@@ -216,8 +227,7 @@ public class CoordinatorModule
 
         // cluster memory manager
         binder.bind(ClusterMemoryManager.class).in(Scopes.SINGLETON);
-        install(internalHttpClientModule("memoryManager", ForMemoryManager.class)
-                .withTracing()
+        install(internalHttpClientModule("memory-manager", ForMemoryManager.class)
                 .withConfigDefaults(config -> {
                     config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
@@ -232,8 +242,29 @@ public class CoordinatorModule
 
         newExporter(binder).export(ClusterMemoryManager.class).withGeneratedName();
 
+        jaxrsBinder(binder).bind(GatewayResource.class);
+
+        // node partitioning manager
+        binder.bind(NodePartitioningManager.class).in(Scopes.SINGLETON);
+
+        // node scheduler
+        binder.bind(NodeScheduler.class).in(Scopes.SINGLETON);
+        binder.bind(NodeTaskMap.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(NodeScheduler.class).withGeneratedName();
+
+        // network topology
+        install(conditionalModule(
+                NodeSchedulerConfig.class,
+                config -> UNIFORM == config.getNodeSchedulerPolicy(),
+                new UniformNodeSelectorModule()));
+        install(conditionalModule(
+                NodeSchedulerConfig.class,
+                config -> TOPOLOGY == config.getNodeSchedulerPolicy(),
+                new TopologyAwareNodeSelectorModule()));
+
         // node allocator
         binder.bind(BinPackingNodeAllocatorService.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(BinPackingNodeAllocatorService.class).withGeneratedName();
         binder.bind(NodeAllocatorService.class).to(BinPackingNodeAllocatorService.class);
         binder.bind(PartitionMemoryEstimatorFactory.class).to(NoMemoryAwarePartitionMemoryEstimator.Factory.class).in(Scopes.SINGLETON);
         binder.bind(PartitionMemoryEstimatorFactory.class)
@@ -260,9 +291,9 @@ public class CoordinatorModule
             List<OutputStatsEstimatorFactory> getCompositeOutputDataSizeEstimatorDelegateFactories(
                     ByTaskProgressOutputStatsEstimator.Factory byTaskProgressOutputDataSizeEstimatorFactory,
                     BySmallStageOutputStatsEstimator.Factory bySmallStageOutputDataSizeEstimatorFactory,
-                    ByEagerParentOutputStatsEstimator.Factory byEagerParentOutputDataSizeEstimatorFactoryy)
+                    ByEagerParentOutputStatsEstimator.Factory byEagerParentOutputDataSizeEstimatorFactory)
             {
-                return ImmutableList.of(byTaskProgressOutputDataSizeEstimatorFactory, bySmallStageOutputDataSizeEstimatorFactory, byEagerParentOutputDataSizeEstimatorFactoryy);
+                return ImmutableList.of(byTaskProgressOutputDataSizeEstimatorFactory, bySmallStageOutputDataSizeEstimatorFactory, byEagerParentOutputDataSizeEstimatorFactory);
             }
         });
 
@@ -313,6 +344,9 @@ public class CoordinatorModule
         // explain analyze
         binder.bind(ExplainAnalyzeContext.class).in(Scopes.SINGLETON);
 
+        // session evaluator
+        binder.bind(SessionPropertyEvaluator.class).in(Scopes.SINGLETON);
+
         // execution scheduler
         jsonCodecBinder(binder).bindJsonCodec(TaskInfo.class);
         jsonCodecBinder(binder).bindJsonCodec(TaskStatus.class);
@@ -326,8 +360,6 @@ public class CoordinatorModule
         newExporter(binder).export(RemoteTaskStats.class).withGeneratedName();
 
         install(internalHttpClientModule("scheduler", ForScheduler.class)
-                .withTracing()
-                .withFilter(GenerateTraceTokenRequestFilter.class)
                 .withConfigDefaults(config -> {
                     config.setIdleTimeout(new Duration(60, SECONDS));
                     config.setRequestTimeout(new Duration(20, SECONDS));
@@ -348,11 +380,14 @@ public class CoordinatorModule
 
         binder.bind(EventDrivenTaskSourceFactory.class).in(Scopes.SINGLETON);
         binder.bind(TaskDescriptorStorage.class).in(Scopes.SINGLETON);
+        jsonCodecBinder(binder).bindJsonCodec(TaskDescriptor.class);
         jsonCodecBinder(binder).bindJsonCodec(Split.class);
         newExporter(binder).export(TaskDescriptorStorage.class).withGeneratedName();
 
         binder.bind(TaskExecutionStats.class).in(Scopes.SINGLETON);
         newExporter(binder).export(TaskExecutionStats.class).withGeneratedName();
+        binder.bind(StageExecutionStats.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(StageExecutionStats.class).withGeneratedName();
 
         MapBinder<String, ExecutionPolicy> executionPolicyBinder = newMapBinder(binder, String.class, ExecutionPolicy.class);
         executionPolicyBinder.addBinding("all-at-once").to(AllAtOnceExecutionPolicy.class);
@@ -361,11 +396,10 @@ public class CoordinatorModule
         install(new QueryExecutionFactoryModule());
 
         // cleanup
-        closingBinder(binder)
-                .registerExecutor(ExecutorService.class, ForStatementResource.class)
-                .registerExecutor(ScheduledExecutorService.class, ForStatementResource.class)
-                .registerExecutor(ExecutorService.class, ForQueryExecution.class)
-                .registerExecutor(ScheduledExecutorService.class, ForScheduler.class);
+        closingBinder(binder).registerExecutor(Key.get(ExecutorService.class, ForStatementResource.class));
+        closingBinder(binder).registerExecutor(Key.get(ScheduledExecutorService.class, ForStatementResource.class));
+        closingBinder(binder).registerExecutor(Key.get(ExecutorService.class, ForQueryExecution.class));
+        closingBinder(binder).registerExecutor(Key.get(ScheduledExecutorService.class, ForScheduler.class));
     }
 
     // working around circular dependency Metadata <-> PlannerContext

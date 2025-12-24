@@ -35,7 +35,6 @@ import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.PlanFragmentId;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.ValuesNode;
-import org.joda.time.DateTime;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -44,8 +43,10 @@ import org.junit.jupiter.api.parallel.Execution;
 import java.io.IOException;
 import java.net.URI;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -223,7 +224,7 @@ public class TestStageStateMachine
                 false,
                 Optional.empty(),
                 taskStats(ImmutableList.of(pipeline0Context, pipeline1Context), baseValue));
-        TaskInfo task1 = task0.withTaskStatus(TaskStatus.failWith(task0.getTaskStatus(), TaskState.FAILED, ImmutableList.of()));
+        TaskInfo task1 = task0.withTaskStatus(TaskStatus.failWith(task0.taskStatus(), TaskState.FAILED, ImmutableList.of()));
         List<TaskInfo> taskInfos = ImmutableList.of(task0, task1);
         int expectedStatsValue = baseValue * taskInfos.size();
 
@@ -232,7 +233,7 @@ public class TestStageStateMachine
         assertThat(stageInfo.getState()).isEqualTo(PLANNED);
         assertThat(stageInfo.isCoordinatorOnly()).isFalse();
         assertThat(stageInfo.getSubStages()).isEmpty();
-        assertThat(stageInfo.getTasks().size()).isEqualTo(taskInfos.size());
+        assertThat(stageInfo.getTasks()).hasSize(taskInfos.size());
 
         BasicStageStats stats = stageInfo.getStageStats();
 
@@ -250,8 +251,6 @@ public class TestStageStateMachine
         assertThat(stats.getPhysicalInputPositions()).isEqualTo(expectedStatsValue);
         assertThat(stats.getPhysicalInputReadTime()).isEqualTo(succinctDuration(expectedStatsValue, MILLISECONDS));
         assertThat(stats.getPhysicalInputPositions()).isEqualTo(expectedStatsValue);
-        assertThat(stats.getRawInputDataSize()).isEqualTo(succinctBytes(0));
-        assertThat(stats.getRawInputPositions()).isEqualTo(0);
         assertThat(stats.getCumulativeUserMemory()).isEqualTo(expectedStatsValue);
         assertThat(stats.getFailedCumulativeUserMemory()).isEqualTo(1);
         assertThat(stats.getTotalMemoryReservation()).isEqualTo(succinctBytes(expectedStatsValue * 2L));
@@ -264,7 +263,7 @@ public class TestStageStateMachine
         assertThat(stats.getFailedScheduledTime()).isEqualTo(succinctDuration(1, MILLISECONDS));
         assertThat(stats.getRunningPercentage()).isEmpty();
         assertThat(stats.getProgressPercentage()).isEmpty();
-        assertThat(stats.getSpilledDataSize()).isEqualTo(succinctBytes(0));
+        assertThat(stats.getSpilledDataSize()).isEqualTo(succinctBytes(expectedStatsValue));
     }
 
     private static TaskStats taskStats(List<PipelineContext> pipelineContexts)
@@ -274,7 +273,7 @@ public class TestStageStateMachine
 
     private static TaskStats taskStats(List<PipelineContext> pipelineContexts, int baseValue)
     {
-        return new TaskStats(DateTime.now(),
+        return new TaskStats(Instant.now(),
                 null,
                 null,
                 null,
@@ -292,6 +291,7 @@ public class TestStageStateMachine
                 baseValue,
                 baseValue,
                 baseValue,
+                DataSize.ofBytes(baseValue),
                 DataSize.ofBytes(baseValue),
                 DataSize.ofBytes(baseValue),
                 DataSize.ofBytes(baseValue),
@@ -307,15 +307,13 @@ public class TestStageStateMachine
                 baseValue,
                 DataSize.ofBytes(baseValue),
                 baseValue,
-                DataSize.ofBytes(baseValue),
-                baseValue,
                 new Duration(baseValue, MILLISECONDS),
                 DataSize.ofBytes(baseValue),
                 baseValue,
                 new Duration(baseValue, MILLISECONDS),
                 DataSize.ofBytes(baseValue),
                 DataSize.ofBytes(baseValue),
-                Optional.empty(),
+                OptionalInt.empty(),
                 baseValue,
                 new Duration(baseValue, MILLISECONDS),
                 pipelineContexts.stream().map(PipelineContext::getPipelineStats).collect(toImmutableList()));
@@ -394,12 +392,13 @@ public class TestStageStateMachine
                         ImmutableList.of(new Row(ImmutableList.of(new Constant(VARCHAR, Slices.utf8Slice("foo")))))),
                 ImmutableSet.of(symbol),
                 SOURCE_DISTRIBUTION,
-                Optional.empty(),
+                OptionalInt.empty(),
                 ImmutableList.of(valuesNodeId),
                 new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of(symbol)),
+                OptionalInt.empty(),
                 StatsAndCosts.empty(),
                 ImmutableList.of(),
-                ImmutableList.of(),
+                ImmutableMap.of(),
                 Optional.empty());
 
         return planFragment;

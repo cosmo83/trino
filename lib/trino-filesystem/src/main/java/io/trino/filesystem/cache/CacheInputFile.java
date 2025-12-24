@@ -21,7 +21,9 @@ import io.trino.filesystem.TrinoInputStream;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.Optional;
+import java.util.OptionalLong;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
 public final class CacheInputFile
@@ -30,12 +32,16 @@ public final class CacheInputFile
     private final TrinoInputFile delegate;
     private final TrinoFileSystemCache cache;
     private final CacheKeyProvider keyProvider;
+    private OptionalLong length;
+    private Optional<Instant> lastModified;
 
-    public CacheInputFile(TrinoInputFile delegate, TrinoFileSystemCache cache, CacheKeyProvider keyProvider)
+    public CacheInputFile(TrinoInputFile delegate, TrinoFileSystemCache cache, CacheKeyProvider keyProvider, OptionalLong length, Optional<Instant> lastModified)
     {
         this.delegate = requireNonNull(delegate, "delegate is null");
         this.cache = requireNonNull(cache, "cache is null");
         this.keyProvider = requireNonNull(keyProvider, "keyProvider is null");
+        this.length = requireNonNull(length, "length is null");
+        this.lastModified = requireNonNull(lastModified, "lastModified is null");
     }
 
     @Override
@@ -64,14 +70,26 @@ public final class CacheInputFile
     public long length()
             throws IOException
     {
-        return delegate.length();
+        if (length.isEmpty()) {
+            Optional<String> key = keyProvider.getCacheKey(delegate);
+            if (key.isPresent()) {
+                length = OptionalLong.of(cache.cacheLength(delegate, key.orElseThrow()));
+            }
+            else {
+                length = OptionalLong.of(delegate.length());
+            }
+        }
+        return length.getAsLong();
     }
 
     @Override
     public Instant lastModified()
             throws IOException
     {
-        return delegate.lastModified();
+        if (lastModified.isEmpty()) {
+            lastModified = Optional.of(delegate.lastModified());
+        }
+        return lastModified.orElseThrow();
     }
 
     @Override
@@ -85,5 +103,15 @@ public final class CacheInputFile
     public Location location()
     {
         return delegate.location();
+    }
+
+    @Override
+    public String toString()
+    {
+        return toStringHelper(this)
+                .add("delegate", delegate)
+                .add("length", length)
+                .add("lastModified", lastModified)
+                .toString();
     }
 }

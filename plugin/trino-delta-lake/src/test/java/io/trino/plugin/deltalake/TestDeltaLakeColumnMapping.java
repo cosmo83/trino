@@ -16,7 +16,6 @@ package io.trino.plugin.deltalake;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.airlift.json.ObjectMapperProvider;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
@@ -27,6 +26,7 @@ import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.function.Consumer;
@@ -35,9 +35,11 @@ import java.util.regex.Pattern;
 
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.MoreCollectors.onlyElement;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createDeltaLakeQueryRunner;
+import static com.google.common.io.MoreFiles.deleteRecursively;
+import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
+import static io.trino.plugin.deltalake.DeltaLakeConfig.DEFAULT_TRANSACTION_LOG_MAX_CACHED_SIZE;
 import static io.trino.plugin.deltalake.DeltaTestingConnectorSession.SESSION;
+import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.getTransactionLogJsonEntryPath;
 import static io.trino.plugin.deltalake.transactionlog.checkpoint.TransactionLogTail.getEntriesFromJson;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_STATS;
@@ -55,7 +57,13 @@ public class TestDeltaLakeColumnMapping
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createDeltaLakeQueryRunner(DELTA_CATALOG, ImmutableMap.of(), ImmutableMap.of("delta.enable-non-concurrent-writes", "true"));
+        Path catalogDir = Files.createTempDirectory("catalog-dir");
+        closeAfterClass(() -> deleteRecursively(catalogDir, ALLOW_INSECURE));
+
+        return DeltaLakeQueryRunner.builder()
+                .addDeltaProperty("hive.metastore.catalog.dir", catalogDir.toUri().toString())
+                .addDeltaProperty("delta.enable-non-concurrent-writes", "true")
+                .build();
     }
 
     @Test
@@ -138,7 +146,9 @@ public class TestDeltaLakeColumnMapping
             throws IOException
     {
         TrinoFileSystem fileSystem = new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS).create(SESSION);
-        DeltaLakeTransactionLogEntry transactionLog = getEntriesFromJson(entryNumber, tableLocation.resolve("_delta_log").toString(), fileSystem).orElseThrow().stream()
+        DeltaLakeTransactionLogEntry transactionLog = getEntriesFromJson(entryNumber, fileSystem.newInputFile(getTransactionLogJsonEntryPath(tableLocation.resolve("_delta_log").toString(), entryNumber)), DEFAULT_TRANSACTION_LOG_MAX_CACHED_SIZE)
+                .orElseThrow()
+                .getEntriesList(fileSystem).stream()
                 .filter(log -> log.getMetaData() != null)
                 .collect(onlyElement());
         return transactionLog.getMetaData();

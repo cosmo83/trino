@@ -14,14 +14,22 @@
 package io.trino.filesystem.manager;
 
 import io.airlift.configuration.Config;
+import io.airlift.configuration.ConfigDescription;
+
+import static java.lang.System.getenv;
 
 public class FileSystemConfig
 {
-    private boolean hadoopEnabled = true;
+    private boolean hadoopEnabled;
+    private boolean alluxioEnabled;
     private boolean nativeAzureEnabled;
     private boolean nativeS3Enabled;
     private boolean nativeGcsEnabled;
+    private boolean nativeLocalEnabled;
     private boolean cacheEnabled;
+
+    // Enable leak detection if configured or if running in a CI environment
+    private boolean trackingEnabled = getenv("CONTINUOUS_INTEGRATION") != null;
 
     public boolean isHadoopEnabled()
     {
@@ -32,6 +40,18 @@ public class FileSystemConfig
     public FileSystemConfig setHadoopEnabled(boolean hadoopEnabled)
     {
         this.hadoopEnabled = hadoopEnabled;
+        return this;
+    }
+
+    public boolean isAlluxioEnabled()
+    {
+        return alluxioEnabled;
+    }
+
+    @Config("fs.alluxio.enabled")
+    public FileSystemConfig setAlluxioEnabled(boolean nativeAlluxioEnabled)
+    {
+        this.alluxioEnabled = nativeAlluxioEnabled;
         return this;
     }
 
@@ -71,6 +91,18 @@ public class FileSystemConfig
         return this;
     }
 
+    public boolean isNativeLocalEnabled()
+    {
+        return nativeLocalEnabled;
+    }
+
+    @Config("fs.native-local.enabled")
+    public FileSystemConfig setNativeLocalEnabled(boolean nativeLocalEnabled)
+    {
+        this.nativeLocalEnabled = nativeLocalEnabled;
+        return this;
+    }
+
     public boolean isCacheEnabled()
     {
         return cacheEnabled;
@@ -80,6 +112,19 @@ public class FileSystemConfig
     public FileSystemConfig setCacheEnabled(boolean enabled)
     {
         this.cacheEnabled = enabled;
+        return this;
+    }
+
+    public boolean isTrackingEnabled()
+    {
+        return trackingEnabled;
+    }
+
+    @ConfigDescription("Enable input/output stream tracking to detect resource leaks")
+    @Config("fs.tracking.enabled")
+    public FileSystemConfig setTrackingEnabled(boolean trackingEnabled)
+    {
+        this.trackingEnabled = trackingEnabled;
         return this;
     }
 }

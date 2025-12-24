@@ -23,20 +23,27 @@ import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.DynamicFilter;
+import io.trino.spi.connector.EmptyPageSource;
+import io.trino.spi.predicate.TupleDomain;
 
 import java.util.List;
 
+import static io.trino.plugin.mongodb.TypeUtils.isPushdownSupportedType;
 import static java.util.Objects.requireNonNull;
 
 public class MongoPageSourceProvider
         implements ConnectorPageSourceProvider
 {
+    private static final int MONGO_DOMAIN_COMPACTION_THRESHOLD = 1000;
+
     private final MongoSession mongoSession;
+    private final String implicitPrefix;
 
     @Inject
-    public MongoPageSourceProvider(MongoSession mongoSession)
+    public MongoPageSourceProvider(MongoSession mongoSession, MongoClientConfig config)
     {
         this.mongoSession = requireNonNull(mongoSession, "mongoSession is null");
+        this.implicitPrefix = config.getImplicitRowFieldPrefix();
     }
 
     @Override
@@ -55,6 +62,26 @@ public class MongoPageSourceProvider
             handles.add((MongoColumnHandle) handle);
         }
 
-        return new MongoPageSource(mongoSession, tableHandle, handles.build());
+        TupleDomain<MongoColumnHandle> dynamicPredicate = dynamicFilter
+                .getCurrentPredicate()
+                .transformKeys(MongoColumnHandle.class::cast)
+                .filter((mongoColumnHandle, domain) -> isPushdownSupportedType(mongoColumnHandle.type()));
+
+        MongoTableHandle newTableHandle = tableHandle;
+
+        if (!dynamicPredicate.isAll() && tableHandle.limit().isEmpty()) {
+            TupleDomain<ColumnHandle> newDomain = tableHandle
+                    .constraint()
+                    .intersect(dynamicPredicate)
+                    .simplify(MONGO_DOMAIN_COMPACTION_THRESHOLD);
+
+            newTableHandle = tableHandle.withConstraint(newDomain);
+        }
+
+        if (newTableHandle.constraint().isNone()) {
+            return new EmptyPageSource();
+        }
+
+        return new MongoPageSource(mongoSession, newTableHandle, handles.build(), implicitPrefix);
     }
 }

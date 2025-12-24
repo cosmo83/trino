@@ -30,7 +30,7 @@ import io.trino.spi.function.table.Descriptor;
 import io.trino.spi.function.table.Descriptor.Field;
 import io.trino.sql.ir.Cast;
 import io.trino.sql.ir.Constant;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.assertions.RowNumberSymbolMatcher;
 import io.trino.sql.planner.plan.TableFunctionProcessorNode;
@@ -45,7 +45,7 @@ import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.SmallintType.SMALLINT;
 import static io.trino.spi.type.VarcharType.createVarcharType;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.LogicalPlanner.Stage.CREATED;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -93,14 +93,14 @@ public class TestTableFunctionInvocation
     {
         assertPlan(
                 """
-                        SELECT * FROM TABLE(mock.system.different_arguments_function(
-                           INPUT_1 => TABLE(SELECT 'a') t1(c1) PARTITION BY c1 ORDER BY c1,
-                           INPUT_3 => TABLE(SELECT 'b') t3(c3) PARTITION BY c3,
-                           INPUT_2 => TABLE(VALUES 1) t2(c2),
-                           ID => BIGINT '2001',
-                           LAYOUT => DESCRIPTOR (x boolean, y bigint)
-                           COPARTITION (t1, t3))) t
-                        """,
+                SELECT * FROM TABLE(mock.system.different_arguments_function(
+                   INPUT_1 => TABLE(SELECT 'a') t1(c1) PARTITION BY c1 ORDER BY c1,
+                   INPUT_3 => TABLE(SELECT 'b') t3(c3) PARTITION BY c3,
+                   INPUT_2 => TABLE(VALUES 1) t2(c2),
+                   ID => BIGINT '2001',
+                   LAYOUT => DESCRIPTOR (x boolean, y bigint)
+                   COPARTITION (t1, t3))) t
+                """,
                 CREATED,
                 anyTree(tableFunction(builder -> builder
                                 .name("different_arguments_function")
@@ -140,11 +140,11 @@ public class TestTableFunctionInvocation
     {
         assertPlan(
                 """
-                        SELECT * FROM TABLE(mock.system.two_table_arguments_function(
-                           INPUT1 => TABLE(VALUES SMALLINT '1') t1(c1) PARTITION BY c1,
-                           INPUT2 => TABLE(VALUES INTEGER '2') t2(c2) PARTITION BY c2
-                           COPARTITION (t1, t2))) t
-                        """,
+                SELECT * FROM TABLE(mock.system.two_table_arguments_function(
+                   INPUT1 => TABLE(VALUES SMALLINT '1') t1(c1) PARTITION BY c1,
+                   INPUT2 => TABLE(VALUES INTEGER '2') t2(c2) PARTITION BY c2
+                   COPARTITION (t1, t2))) t
+                """,
                 CREATED,
                 anyTree(tableFunction(builder -> builder
                                 .name("two_table_arguments_function")
@@ -160,7 +160,7 @@ public class TestTableFunctionInvocation
                                                 .passThroughSymbols(ImmutableSet.of("c2")))
                                 .addCopartitioning(ImmutableList.of("INPUT1", "INPUT2"))
                                 .properOutputs(ImmutableList.of("COLUMN")),
-                        project(ImmutableMap.of("c1_coerced", expression(new Cast(new SymbolReference(SMALLINT, "c1"), INTEGER))),
+                        project(ImmutableMap.of("c1_coerced", expression(new Cast(new Reference(SMALLINT, "c1"), INTEGER))),
                                 anyTree(values(ImmutableList.of("c1"), ImmutableList.of(ImmutableList.of(new Constant(SMALLINT, 1L)))))),
                         anyTree(values(ImmutableList.of("c2"), ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 2L))))))));
     }
@@ -214,7 +214,7 @@ public class TestTableFunctionInvocation
                                         .passThroughSymbols(ImmutableList.of(ImmutableList.of("a", "b")))
                                         .requiredSymbols(ImmutableList.of(ImmutableList.of("a")))
                                         .specification(specification(ImmutableList.of(), ImmutableList.of(), ImmutableMap.of())),
-                                values(ImmutableList.of("a", "b"), ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 1L), TRUE_LITERAL))))));
+                                values(ImmutableList.of("a", "b"), ImmutableList.of(ImmutableList.of(new Constant(INTEGER, 1L), TRUE))))));
 
         // no table function outputs are referenced. All pass-through symbols are pruned from the TableFunctionProcessorNode. The unused symbol "b" is pruned from the source values node.
         assertPlan("SELECT 'constant' c FROM TABLE(mock.system.pass_through_function(input => TABLE(SELECT 1, true) t(a, b)))",
@@ -238,46 +238,51 @@ public class TestTableFunctionInvocation
         assertPlan("SELECT * FROM TABLE(mock.system.pass_through_function(input => TABLE(SELECT 1, true WHERE false) t(a, b) PRUNE WHEN EMPTY))",
                 output(values(ImmutableList.of("x", "a", "b"))));
 
-        assertPlan("""
-                        SELECT *
-                        FROM TABLE(mock.system.two_table_arguments_function(
-                                        input1 => TABLE(SELECT 1, true WHERE false) t1(a, b) PRUNE WHEN EMPTY,
-                                        input2 => TABLE(SELECT 2, false) t2(c, d) KEEP WHEN EMPTY))
-                        """,
+        assertPlan(
+                """
+                SELECT *
+                FROM TABLE(mock.system.two_table_arguments_function(
+                                input1 => TABLE(SELECT 1, true WHERE false) t1(a, b) PRUNE WHEN EMPTY,
+                                input2 => TABLE(SELECT 2, false) t2(c, d) KEEP WHEN EMPTY))
+                """,
                 output(values(ImmutableList.of("column"))));
 
-        assertPlan("""
-                        SELECT *
-                        FROM TABLE(mock.system.two_table_arguments_function(
-                                        input1 => TABLE(SELECT 1, true WHERE false) t1(a, b) PRUNE WHEN EMPTY,
-                                        input2 => TABLE(SELECT 2, false WHERE false) t2(c, d) PRUNE WHEN EMPTY))
-                        """,
+        assertPlan(
+                """
+                SELECT *
+                FROM TABLE(mock.system.two_table_arguments_function(
+                                input1 => TABLE(SELECT 1, true WHERE false) t1(a, b) PRUNE WHEN EMPTY,
+                                input2 => TABLE(SELECT 2, false WHERE false) t2(c, d) PRUNE WHEN EMPTY))
+                """,
                 output(values(ImmutableList.of("column"))));
 
-        assertPlan("""
-                        SELECT *
-                        FROM TABLE(mock.system.two_table_arguments_function(
-                                        input1 => TABLE(SELECT 1, true WHERE false) t1(a, b) PRUNE WHEN EMPTY,
-                                        input2 => TABLE(SELECT 2, false WHERE false) t2(c, d) KEEP WHEN EMPTY))
-                        """,
+        assertPlan(
+                """
+                SELECT *
+                FROM TABLE(mock.system.two_table_arguments_function(
+                                input1 => TABLE(SELECT 1, true WHERE false) t1(a, b) PRUNE WHEN EMPTY,
+                                input2 => TABLE(SELECT 2, false WHERE false) t2(c, d) KEEP WHEN EMPTY))
+                """,
                 output(values(ImmutableList.of("column"))));
 
-        assertPlan("""
-                        SELECT *
-                        FROM TABLE(mock.system.two_table_arguments_function(
-                                        input1 => TABLE(SELECT 1, true WHERE false) t1(a, b) KEEP WHEN EMPTY,
-                                        input2 => TABLE(SELECT 2, false WHERE false) t2(c, d) KEEP WHEN EMPTY))
-                        """,
+        assertPlan(
+                """
+                SELECT *
+                FROM TABLE(mock.system.two_table_arguments_function(
+                                input1 => TABLE(SELECT 1, true WHERE false) t1(a, b) KEEP WHEN EMPTY,
+                                input2 => TABLE(SELECT 2, false WHERE false) t2(c, d) KEEP WHEN EMPTY))
+                """,
                 output(
                         node(TableFunctionProcessorNode.class,
                                 values(ImmutableList.of("a", "marker_1", "c", "marker_2", "row_number")))));
 
-        assertPlan("""
-                        SELECT *
-                        FROM TABLE(mock.system.two_table_arguments_function(
-                                        input1 => TABLE(SELECT 1, true WHERE false) t1(a, b) KEEP WHEN EMPTY,
-                                        input2 => TABLE(SELECT 2, false) t2(c, d) PRUNE WHEN EMPTY))
-                        """,
+        assertPlan(
+                """
+                SELECT *
+                FROM TABLE(mock.system.two_table_arguments_function(
+                                input1 => TABLE(SELECT 1, true WHERE false) t1(a, b) KEEP WHEN EMPTY,
+                                input2 => TABLE(SELECT 2, false) t2(c, d) PRUNE WHEN EMPTY))
+                """,
                 output(
                         node(TableFunctionProcessorNode.class,
                                 project(

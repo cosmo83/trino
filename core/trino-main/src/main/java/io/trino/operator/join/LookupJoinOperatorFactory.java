@@ -15,24 +15,18 @@ package io.trino.operator.join;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
-import io.trino.operator.DriverContext;
 import io.trino.operator.HashGenerator;
 import io.trino.operator.JoinOperatorType;
-import io.trino.operator.Operator;
-import io.trino.operator.OperatorContext;
+import io.trino.operator.NullSafeHashCompiler;
 import io.trino.operator.OperatorFactory;
-import io.trino.operator.PrecomputedHashGenerator;
 import io.trino.operator.ProcessorContext;
 import io.trino.operator.WorkProcessor;
 import io.trino.operator.WorkProcessorOperator;
-import io.trino.operator.WorkProcessorOperatorAdapter;
-import io.trino.operator.WorkProcessorOperatorAdapter.AdapterWorkProcessorOperator;
-import io.trino.operator.WorkProcessorOperatorAdapter.AdapterWorkProcessorOperatorFactory;
+import io.trino.operator.WorkProcessorOperatorFactory;
 import io.trino.operator.join.JoinProbe.JoinProbeFactory;
 import io.trino.operator.join.LookupOuterOperator.LookupOuterOperatorFactory;
 import io.trino.spi.Page;
 import io.trino.spi.type.Type;
-import io.trino.spi.type.TypeOperators;
 import io.trino.spiller.PartitioningSpillerFactory;
 import io.trino.sql.planner.plan.PlanNodeId;
 
@@ -49,7 +43,7 @@ import static io.trino.operator.join.LookupJoinOperatorFactory.JoinType.PROBE_OU
 import static java.util.Objects.requireNonNull;
 
 public class LookupJoinOperatorFactory
-        implements JoinOperatorFactory, AdapterWorkProcessorOperatorFactory
+        implements JoinOperatorFactory, WorkProcessorOperatorFactory
 {
     public enum JoinType
     {
@@ -84,10 +78,9 @@ public class LookupJoinOperatorFactory
             List<Type> buildOutputTypes,
             JoinOperatorType joinOperatorType,
             JoinProbeFactory joinProbeFactory,
-            TypeOperators typeOperators,
+            NullSafeHashCompiler hashCompiler,
             OptionalInt totalOperatorsCount,
             List<Integer> probeJoinChannels,
-            OptionalInt probeHashChannel,
             PartitioningSpillerFactory partitioningSpillerFactory)
     {
         this.operatorId = operatorId;
@@ -115,17 +108,11 @@ public class LookupJoinOperatorFactory
         }
         this.totalOperatorsCount = requireNonNull(totalOperatorsCount, "totalOperatorsCount is null");
 
-        requireNonNull(probeHashChannel, "probeHashChannel is null");
-        if (probeHashChannel.isPresent()) {
-            this.probeHashGenerator = new PrecomputedHashGenerator(probeHashChannel.getAsInt());
-        }
-        else {
-            requireNonNull(probeJoinChannels, "probeJoinChannels is null");
-            List<Type> hashTypes = probeJoinChannels.stream()
-                    .map(probeTypes::get)
-                    .collect(toImmutableList());
-            this.probeHashGenerator = createChannelsHashGenerator(hashTypes, Ints.toArray(probeJoinChannels), typeOperators);
-        }
+        requireNonNull(probeJoinChannels, "probeJoinChannels is null");
+        List<Type> hashTypes = probeJoinChannels.stream()
+                .map(probeTypes::get)
+                .collect(toImmutableList());
+        this.probeHashGenerator = createChannelsHashGenerator(hashTypes, Ints.toArray(probeJoinChannels), hashCompiler);
 
         this.partitioningSpillerFactory = requireNonNull(partitioningSpillerFactory, "partitioningSpillerFactory is null");
     }
@@ -158,23 +145,6 @@ public class LookupJoinOperatorFactory
     {
         return outerOperatorFactory;
     }
-
-    // Methods from OperatorFactory
-
-    @Override
-    public Operator createOperator(DriverContext driverContext)
-    {
-        OperatorContext operatorContext = driverContext.addOperatorContext(getOperatorId(), getPlanNodeId(), getOperatorType());
-        return new WorkProcessorOperatorAdapter(operatorContext, this);
-    }
-
-    @Override
-    public void noMoreOperators()
-    {
-        close();
-    }
-
-    // Methods from AdapterWorkProcessorOperatorFactory
 
     @Override
     public int getOperatorId()
@@ -214,30 +184,7 @@ public class LookupJoinOperatorFactory
                 probeHashGenerator,
                 partitioningSpillerFactory,
                 processorContext,
-                Optional.of(sourcePages));
-    }
-
-    @Override
-    public AdapterWorkProcessorOperator createAdapterOperator(ProcessorContext processorContext)
-    {
-        checkState(!closed, "Factory is already closed");
-        LookupSourceFactory lookupSourceFactory = joinBridgeManager.getJoinBridge();
-
-        joinBridgeManager.probeOperatorCreated();
-        return new LookupJoinOperator(
-                probeTypes,
-                buildOutputTypes,
-                joinType,
-                outputSingleMatch,
-                waitForBuild,
-                lookupSourceFactory,
-                joinProbeFactory,
-                joinBridgeManager::probeOperatorClosed,
-                totalOperatorsCount,
-                probeHashGenerator,
-                partitioningSpillerFactory,
-                processorContext,
-                Optional.empty());
+                sourcePages);
     }
 
     @Override

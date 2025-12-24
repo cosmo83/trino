@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.mysql;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.spi.type.TimeZoneKey;
@@ -36,7 +35,6 @@ import java.sql.Statement;
 import java.time.ZoneId;
 import java.util.Map;
 
-import static io.trino.plugin.mysql.MySqlQueryRunner.createMySqlQueryRunner;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.TimeType.createTimeType;
 import static io.trino.spi.type.TimestampType.createTimestampType;
@@ -58,7 +56,8 @@ public class TestMySqlTimeMappingsWithServerTimeZone
             throws Exception
     {
         mySqlServer = closeAfterClass(new TestingMySqlServer(ZoneId.of("Pacific/Apia")));
-        return createMySqlQueryRunner(mySqlServer, ImmutableMap.of(), ImmutableMap.of(), ImmutableList.of());
+        return MySqlQueryRunner.builder(mySqlServer)
+                .build();
     }
 
     @Test
@@ -602,7 +601,7 @@ public class TestMySqlTimeMappingsWithServerTimeZone
     @Test
     public void testUnsupportedTimestampWithTimeZoneValues()
     {
-        // The range for TIMESTAMP values is '1970-01-01 00:00:01.000000' to '2038-01-19 03:14:07.499999'
+        // The range for supported TIMESTAMP values in MySQL is '1970-01-01 00:00:01.000000' to '2038-01-19 03:14:07.499999'
         try (TestTable table = new TestTable(mySqlServer::execute, "tpch.test_unsupported_timestamp", "(data TIMESTAMP)")) {
             // Verify MySQL writes -- the server timezone is set to Pacific/Apia, so we have to account for that when inserting into MySQL
             assertMySqlQueryFails(
@@ -614,8 +613,8 @@ public class TestMySqlTimeMappingsWithServerTimeZone
 
             // Verify Trino writes
             assertQueryFails(
-                    "INSERT INTO " + table.getName() + " VALUES (TIMESTAMP '1970-01-01 00:00:00 UTC')", // min - 1
-                    "Failed to insert data: Data truncation: Incorrect datetime value: '1969-12-31 16:00:00' for column 'data' at row 1");
+                    "INSERT INTO " + table.getName() + " VALUES (TIMESTAMP '1932-04-01 00:00:00 UTC')", // min - 1
+                    "Failed to insert data: Data truncation: Incorrect datetime value: '1932-03-31 17:00:00' for column 'data' at row 1");
             assertQueryFails(
                     "INSERT INTO " + table.getName() + " VALUES (TIMESTAMP '2038-01-19 03:14:08 UTC')", // max + 1
                     "Failed to insert data: Data truncation: Incorrect datetime value: '2038-01-18 21:14:08' for column 'data' at row 1");

@@ -174,7 +174,7 @@ public final class PrioritizedSplitRunner
                 .setParent(Context.current().with(splitSpan))
                 .startSpan();
 
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             long startNanos = ticker.read();
             start.compareAndSet(0, startNanos);
             lastReady.compareAndSet(0, startNanos);
@@ -187,19 +187,19 @@ public final class PrioritizedSplitRunner
             ListenableFuture<Void> blocked = split.processFor(SPLIT_RUN_QUANTA);
             CpuTimer.CpuDuration elapsed = timer.elapsedTime();
 
-            long quantaScheduledNanos = elapsed.getWall().roundTo(NANOSECONDS);
+            long quantaScheduledNanos = elapsed.wall().roundTo(NANOSECONDS);
             scheduledNanos.addAndGet(quantaScheduledNanos);
 
             priority.set(taskHandle.addScheduledNanos(quantaScheduledNanos));
 
             if (blocked == NOT_BLOCKED) {
-                unblockedQuantaWallTime.add(elapsed.getWall());
+                unblockedQuantaWallTime.add(elapsed.wall());
             }
             else {
-                blockedQuantaWallTime.add(elapsed.getWall());
+                blockedQuantaWallTime.add(elapsed.wall());
             }
 
-            long quantaCpuNanos = elapsed.getCpu().roundTo(NANOSECONDS);
+            long quantaCpuNanos = elapsed.cpu().roundTo(NANOSECONDS);
             cpuTimeNanos.addAndGet(quantaCpuNanos);
 
             globalCpuTimeMicros.update(quantaCpuNanos / 1000);
@@ -215,6 +215,11 @@ public final class PrioritizedSplitRunner
             finishedFuture.setException(e);
             throw e;
         }
+    }
+
+    public void markFailed(Throwable cause)
+    {
+        finishedFuture.setException(cause);
     }
 
     public void setReady()

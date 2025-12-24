@@ -84,7 +84,7 @@ public class TestHiveStorageFormats
     private static final String TPCH_SCHEMA = "tiny";
 
     @Inject(optional = true)
-    @Named("databases.presto.admin_role_enabled")
+    @Named("databases.trino.admin_role_enabled")
     private boolean adminRoleEnabled;
 
     @Inject
@@ -303,6 +303,10 @@ public class TestHiveStorageFormats
                 .filter(format -> !"CSV".equals(format))
                 // REGEX is read-only
                 .filter(format -> !"REGEX".equals(format))
+                // ESRI is read-only
+                .filter(format -> !"ESRI".equals(format))
+                // SEQUENCEFILE_PROTOBUF is read-only
+                .filter(format -> !"SEQUENCEFILE_PROTOBUF".equals(format))
                 // TODO when using JSON serde Hive fails with ClassNotFoundException: org.apache.hive.hcatalog.data.JsonSerDe
                 .filter(format -> !"JSON".equals(format))
                 // OPENX is not supported in Hive by default
@@ -866,8 +870,8 @@ public class TestHiveStorageFormats
                     .containsOnly(row(
                             format("array(%s)", type),
                             format("map(%1$s, %1$s)", type),
-                            format("row(col %s)", type),
-                            format("array(map(%1$s, row(col array(%1$s))))", type))));
+                            format("row(\"col\" %s)", type),
+                            format("array(map(%1$s, row(\"col\" array(%1$s))))", type))));
 
             // Check the values as varchar
             softly.check(() -> assertThat(onTrino()
@@ -959,7 +963,7 @@ public class TestHiveStorageFormats
         try {
             JdbcDriverUtils.setRole(connection, "admin");
         }
-        catch (SQLException ignored) {
+        catch (SQLException _) {
             // The test environments do not properly setup or manage
             // roles, so try to set the role, but ignore any errors
         }

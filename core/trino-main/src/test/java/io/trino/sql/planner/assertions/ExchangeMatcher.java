@@ -17,6 +17,7 @@ import com.google.common.base.MoreObjects.ToStringHelper;
 import io.trino.Session;
 import io.trino.cost.StatsProvider;
 import io.trino.metadata.Metadata;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.PartitioningHandle;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.PlanMatchPattern.Ordering;
@@ -25,6 +26,7 @@ import io.trino.sql.planner.plan.PlanNode;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
@@ -43,7 +45,7 @@ final class ExchangeMatcher
     private final List<Ordering> orderBy;
     private final Set<String> partitionedBy;
     private final Optional<List<List<String>>> inputs;
-    private final Optional<Optional<Integer>> partitionCount;
+    private final Optional<OptionalInt> partitionCount;
 
     public ExchangeMatcher(
             ExchangeNode.Scope scope,
@@ -52,7 +54,7 @@ final class ExchangeMatcher
             List<Ordering> orderBy,
             Set<String> partitionedBy,
             Optional<List<List<String>>> inputs,
-            Optional<Optional<Integer>> partitionCount)
+            Optional<OptionalInt> partitionCount)
     {
         this.scope = requireNonNull(scope, "scope is null");
         this.type = requireNonNull(type, "type is null");
@@ -80,6 +82,22 @@ final class ExchangeMatcher
     {
         checkState(shapeMatches(node), "Plan testing framework error: shapeMatches returned false in detailMatches in %s", this.getClass().getName());
         ExchangeNode exchangeNode = (ExchangeNode) node;
+        SymbolAliases outputSymbolAliases = symbolAliases;
+
+        // Update symbol aliases if the exchange has multiple sources
+        if (exchangeNode.getSources().size() > 1 && exchangeNode.getInputs().size() > 1) {
+            SymbolAliases.Builder builder = SymbolAliases.builder();
+            for (int i = 0; i < exchangeNode.getOutputSymbols().size(); i++) {
+                Optional<Reference> reference = symbolAliases.getOptional(exchangeNode.getInputs().getFirst().get(i).name());
+                Symbol outputSymbol = exchangeNode.getOutputSymbols().get(i);
+                // Add the reference for output symbol if it does not match with the input symbol which
+                // happens when there are multiple sources.
+                if (reference.isPresent() && !outputSymbol.name().equals(reference.get().name())) {
+                    builder.put(outputSymbol.name(), outputSymbol.toSymbolReference());
+                }
+            }
+            outputSymbolAliases = symbolAliases.withNewAliases(builder.build());
+        }
 
         if (!orderBy.isEmpty()) {
             if (exchangeNode.getOrderingScheme().isEmpty()) {
@@ -93,8 +111,9 @@ final class ExchangeMatcher
 
         if (!partitionedBy.isEmpty()) {
             Set<Symbol> partitionedColumns = exchangeNode.getPartitioningScheme().getPartitioning().getColumns();
+
             if (!partitionedBy.stream()
-                    .map(symbolAliases::get)
+                    .map(outputSymbolAliases::get)
                     .map(Symbol::from)
                     .allMatch(partitionedColumns::contains)) {
                 return NO_MATCH;
@@ -107,7 +126,7 @@ final class ExchangeMatcher
             }
             for (int i = 0; i < exchangeNode.getInputs().size(); i++) {
                 if (!inputs.get().get(i).stream()
-                        .map(symbolAliases::get)
+                        .map(outputSymbolAliases::get)
                         .map(Symbol::from)
                         .collect(toImmutableList())
                         .equals(exchangeNode.getInputs().get(i))) {

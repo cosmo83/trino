@@ -4,16 +4,17 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>443</version>
+        <version>480-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-exchange-filesystem</artifactId>
     <packaging>trino-plugin</packaging>
+    <name>${project.artifactId}</name>
     <description>Trino - Exchange</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
+        <air.compiler.fail-warnings>true</air.compiler.fail-warnings>
     </properties>
 
     <dependencies>
@@ -29,10 +30,6 @@
                 <exclusion>
                     <groupId>com.github.stephenc.jcip</groupId>
                     <artifactId>jcip-annotations</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>com.nimbusds</groupId>
-                    <artifactId>oauth2-oidc-sdk</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>net.java.dev.jna</groupId>
@@ -69,20 +66,12 @@
             <artifactId>gax</artifactId>
             <exclusions>
                 <exclusion>
-                    <groupId>com.google.protobuf</groupId>
-                    <artifactId>protobuf-java</artifactId>
-                </exclusion>
-                <exclusion>
                     <groupId>io.opencensus</groupId>
                     <artifactId>opencensus-api</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>javax.annotation</groupId>
                     <artifactId>javax.annotation-api</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.threeten</groupId>
-                    <artifactId>threetenbp</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -139,8 +128,8 @@
                     <artifactId>google-oauth-client</artifactId>
                 </exclusion>
                 <exclusion>
-                    <groupId>com.google.protobuf</groupId>
-                    <artifactId>protobuf-java</artifactId>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>io.opencensus</groupId>
@@ -171,6 +160,7 @@
         <dependency>
             <groupId>com.google.inject</groupId>
             <artifactId>guice</artifactId>
+            <classifier>classes</classifier>
         </dependency>
 
         <dependency>
@@ -210,6 +200,11 @@
 
         <dependency>
             <groupId>io.trino</groupId>
+            <artifactId>trino-cache</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
             <artifactId>trino-plugin-toolkit</artifactId>
         </dependency>
 
@@ -221,6 +216,21 @@
         <dependency>
             <groupId>jakarta.validation</groupId>
             <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.alluxio</groupId>
+            <artifactId>alluxio-core-client-fs</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.alluxio</groupId>
+            <artifactId>alluxio-core-common</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.alluxio</groupId>
+            <artifactId>alluxio-core-transport</artifactId>
         </dependency>
 
         <dependency>
@@ -262,6 +272,11 @@
         <dependency>
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>regions</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>retries-spi</artifactId>
         </dependency>
 
         <dependency>
@@ -314,6 +329,18 @@
 
         <dependency>
             <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api-incubator</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-common</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-context</artifactId>
             <scope>provided</scope>
         </dependency>
@@ -332,7 +359,19 @@
 
         <dependency>
             <groupId>io.airlift</groupId>
+            <artifactId>configuration-testing</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
             <artifactId>junit-extensions</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
+            <artifactId>testing</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -357,6 +396,12 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
             <scope>test</scope>
         </dependency>
 

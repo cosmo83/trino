@@ -14,15 +14,12 @@
 package io.trino.tests.product.deltalake;
 
 import com.google.common.collect.ImmutableList;
-import io.trino.tempto.BeforeMethodWithContext;
 import io.trino.tempto.assertions.QueryAssert.Row;
 import io.trino.testng.services.Flaky;
-import io.trino.tests.product.deltalake.util.DatabricksVersion;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -31,18 +28,15 @@ import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.tempto.assertions.QueryAssert.assertQueryFailure;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS;
-import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_104;
-import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_113;
-import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_122;
-import static io.trino.tests.product.TestGroups.DELTA_LAKE_EXCLUDE_91;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_133;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_143;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_154;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_164;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_OSS;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
-import static io.trino.tests.product.deltalake.util.DatabricksVersion.DATABRICKS_104_RUNTIME_VERSION;
-import static io.trino.tests.product.deltalake.util.DatabricksVersion.DATABRICKS_133_RUNTIME_VERSION;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_ISSUE;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_MATCH;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.dropDeltaTableWithRetry;
-import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.getDatabricksRuntimeVersion;
 import static io.trino.tests.product.utils.QueryExecutors.onDelta;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.util.Arrays.asList;
@@ -51,15 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class TestDeltaLakeInsertCompatibility
         extends BaseTestDeltaLakeS3Storage
 {
-    private Optional<DatabricksVersion> databricksRuntimeVersion;
-
-    @BeforeMethodWithContext
-    public void setup()
-    {
-        databricksRuntimeVersion = getDatabricksRuntimeVersion();
-    }
-
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_104, DELTA_LAKE_DATABRICKS_113, DELTA_LAKE_DATABRICKS_122, DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS})
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_133, DELTA_LAKE_DATABRICKS_143, DELTA_LAKE_DATABRICKS_154, DELTA_LAKE_DATABRICKS_164, DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS})
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testInsertCompatibility()
     {
@@ -95,7 +81,7 @@ public class TestDeltaLakeInsertCompatibility
         }
     }
 
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_104, DELTA_LAKE_DATABRICKS_113, DELTA_LAKE_DATABRICKS_122, PROFILE_SPECIFIC_TESTS})
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_133, DELTA_LAKE_DATABRICKS_143, DELTA_LAKE_DATABRICKS_154, DELTA_LAKE_DATABRICKS_164, PROFILE_SPECIFIC_TESTS})
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testPartitionedInsertCompatibility()
     {
@@ -141,7 +127,7 @@ public class TestDeltaLakeInsertCompatibility
         }
     }
 
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_EXCLUDE_91, DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS})
+    @Test(groups = {DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS})
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testTimestampInsertCompatibility()
     {
@@ -159,20 +145,16 @@ public class TestDeltaLakeInsertCompatibility
                                    "(3, TIMESTAMP '2023-03-04 01:02:03.999')," +
                                    "(4, TIMESTAMP '9999-12-31 23:59:59.999')");
 
-            // Databricks returns incorrect results before version 13.3
-            Optional<String> expected = databricksRuntimeVersion.map(version -> version.isAtLeast(DATABRICKS_133_RUNTIME_VERSION) ? "0001-01-01 00:00:00.000" : "0001-01-03 00:00:00.000");
+            List<Row> expected = ImmutableList.<Row>builder()
+                    .add(row(1, "0001-01-01 00:00:00.000"))
+                    .add(row(2, "2023-01-02 01:02:03.999"))
+                    .add(row(3, "2023-03-04 01:02:03.999"))
+                    .add(row(4, "9999-12-31 23:59:59.999"))
+                    .build();
             assertThat(onDelta().executeQuery("SELECT id, date_format(ts, \"yyyy-MM-dd HH:mm:ss.SSS\") FROM default." + tableName))
-                    .containsOnly(
-                            row(1, expected.orElse("0001-01-01 00:00:00.000")),
-                            row(2, "2023-01-02 01:02:03.999"),
-                            row(3, "2023-03-04 01:02:03.999"),
-                            row(4, "9999-12-31 23:59:59.999"));
+                    .containsOnly(expected);
             assertThat(onTrino().executeQuery("SELECT id, format_datetime(ts, 'yyyy-MM-dd HH:mm:ss.SSS') FROM delta.default." + tableName))
-                    .containsOnly(
-                            row(1, "0001-01-01 00:00:00.000"),
-                            row(2, "2023-01-02 01:02:03.999"),
-                            row(3, "2023-03-04 01:02:03.999"),
-                            row(4, "9999-12-31 23:59:59.999"));
+                    .containsOnly(expected);
         }
         finally {
             onTrino().executeQuery("DROP TABLE delta.default." + tableName);
@@ -419,14 +401,8 @@ public class TestDeltaLakeInsertCompatibility
                 assertThat(onTrino().executeQuery("SELECT * FROM " + trinoTableName))
                         .containsOnly(expected);
 
-                if ("ZSTD".equals(compressionCodec) && databricksRuntimeVersion.orElseThrow().isOlderThan(DATABRICKS_104_RUNTIME_VERSION)) {
-                    assertQueryFailure(() -> onDelta().executeQuery("SELECT * FROM default." + tableName))
-                            .hasMessageContaining("java.lang.ClassNotFoundException: org.apache.hadoop.io.compress.ZStandardCodec");
-                }
-                else {
-                    assertThat(onDelta().executeQuery("SELECT * FROM default." + tableName))
-                            .containsOnly(expected);
-                }
+                assertThat(onDelta().executeQuery("SELECT * FROM default." + tableName))
+                        .containsOnly(expected);
             }
         }
         finally {
@@ -440,8 +416,8 @@ public class TestDeltaLakeInsertCompatibility
         assertThat(onTrino().executeQuery("SHOW SESSION LIKE 'delta.compression_codec'"))
                 .containsOnly(row(
                         "delta.compression_codec",
-                        "SNAPPY",
-                        "SNAPPY",
+                        "ZSTD",
+                        "ZSTD",
                         "varchar",
                         "Compression codec to use when writing new data files. Possible values: " +
                                 Stream.of(compressionCodecs())

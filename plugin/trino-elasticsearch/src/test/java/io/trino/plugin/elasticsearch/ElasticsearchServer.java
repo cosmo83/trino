@@ -13,12 +13,10 @@
  */
 package io.trino.plugin.elasticsearch;
 
-import com.amazonaws.util.Base64;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
 import com.google.common.net.HostAndPort;
-import io.trino.testing.ResourcePresence;
 import org.apache.http.HttpHost;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
 import org.apache.http.message.BasicHeader;
@@ -29,24 +27,32 @@ import org.testcontainers.containers.Network;
 import org.testcontainers.elasticsearch.ElasticsearchContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import javax.net.ssl.SSLContext;
+
+import java.io.Closeable;
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Base64;
 import java.util.Map;
+import java.util.Optional;
 
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static com.google.common.io.Resources.getResource;
+import static io.trino.plugin.base.ssl.SslUtils.createSSLContext;
 import static io.trino.plugin.elasticsearch.ElasticsearchQueryRunner.PASSWORD;
 import static io.trino.plugin.elasticsearch.ElasticsearchQueryRunner.USER;
-import static io.trino.plugin.elasticsearch.ElasticsearchQueryRunner.getSSLContext;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.Files.createTempDirectory;
 import static org.testcontainers.utility.MountableFile.forHostPath;
 
 public class ElasticsearchServer
+        implements Closeable
 {
     public static final String ELASTICSEARCH_7_IMAGE = "elasticsearch:7.16.2";
     public static final String ELASTICSEARCH_8_IMAGE = "elasticsearch:8.11.3";
@@ -67,6 +73,7 @@ public class ElasticsearchServer
         container = new ElasticsearchContainer(dockerImageName);
         container.withNetwork(network);
         container.withNetworkAliases("elasticsearch-server");
+        container.withStartupTimeout(Duration.ofMinutes(5));
 
         configurationPath = createTempDirectory(null);
         Map<String, String> configurationFiles = ImmutableMap.<String, String>builder()
@@ -90,17 +97,12 @@ public class ElasticsearchServer
         container.start();
     }
 
-    public void stop()
+    @Override
+    public void close()
             throws IOException
     {
         container.close();
         deleteRecursively(configurationPath, ALLOW_INSECURE);
-    }
-
-    @ResourcePresence
-    public boolean isRunning()
-    {
-        return container.getContainerId() != null;
     }
 
     public HostAndPort getAddress()
@@ -121,7 +123,21 @@ public class ElasticsearchServer
     private static HttpAsyncClientBuilder enableSecureCommunication(HttpAsyncClientBuilder clientBuilder)
     {
         return clientBuilder.setSSLContext(getSSLContext())
-                .setDefaultHeaders(ImmutableList.of(new BasicHeader("Authorization", format("Basic %s", Base64.encodeAsString(format("%s:%s", USER, PASSWORD).getBytes(StandardCharsets.UTF_8))))));
+                .setDefaultHeaders(ImmutableList.of(new BasicHeader("Authorization", format("Basic %s", Base64.getEncoder().encodeToString(format("%s:%s", USER, PASSWORD).getBytes(StandardCharsets.UTF_8))))));
+    }
+
+    private static SSLContext getSSLContext()
+    {
+        try {
+            return createSSLContext(
+                    Optional.empty(),
+                    Optional.empty(),
+                    Optional.of(new File(getResource("truststore.jks").toURI())),
+                    Optional.of("123456"));
+        }
+        catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static String loadResource(String file)

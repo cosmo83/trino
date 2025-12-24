@@ -13,15 +13,15 @@
  */
 package io.trino.connector;
 
+import io.trino.connector.CatalogHandle.CatalogHandleType;
 import io.trino.metadata.Catalog;
 import io.trino.spi.catalog.CatalogProperties;
-import io.trino.spi.connector.CatalogHandle;
-import io.trino.spi.connector.CatalogHandle.CatalogHandleType;
 import io.trino.spi.connector.ConnectorName;
 
 import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static io.trino.metadata.CatalogStatus.OPERATIONAL;
 import static java.util.Objects.requireNonNull;
 
 public class CatalogConnector
@@ -55,7 +55,8 @@ public class CatalogConnector
                 connectorName,
                 catalogConnector,
                 informationSchemaConnector,
-                systemConnector);
+                systemConnector,
+                OPERATIONAL);
     }
 
     public CatalogHandle getCatalogHandle()
@@ -80,16 +81,11 @@ public class CatalogConnector
 
     public ConnectorServices getMaterializedConnector(CatalogHandleType type)
     {
-        switch (type) {
-            case NORMAL:
-                return catalogConnector;
-            case INFORMATION_SCHEMA:
-                return informationSchemaConnector;
-            case SYSTEM:
-                return systemConnector;
-            default:
-                throw new IllegalArgumentException("Unknown type " + type);
-        }
+        return switch (type) {
+            case NORMAL -> catalogConnector;
+            case INFORMATION_SCHEMA -> informationSchemaConnector;
+            case SYSTEM -> systemConnector;
+        };
     }
 
     public void shutdown()

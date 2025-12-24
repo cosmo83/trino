@@ -13,10 +13,13 @@
  */
 package io.trino.filesystem;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Ordering;
-import com.google.common.io.ByteStreams;
 import com.google.common.io.Closer;
 import io.airlift.slice.Slice;
+import io.airlift.units.DataSize;
+import io.airlift.units.Duration;
+import io.trino.filesystem.encryption.EncryptionEnforcingFileSystem;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -30,32 +33,40 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.file.FileAlreadyExistsException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.slice.Slices.wrappedBuffer;
+import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static io.trino.testing.assertions.Assert.assertEventually;
 import static java.lang.Math.min;
+import static java.lang.Math.toIntExact;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Comparator.comparing;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Fail.fail;
 import static org.junit.jupiter.api.Assumptions.abort;
 import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
@@ -66,6 +77,10 @@ public abstract class AbstractTestTrinoFileSystem
     protected static final String TEST_BLOB_CONTENT_PREFIX = "test blob content for ";
     private static final int MEGABYTE = 1024 * 1024;
 
+    // A size large enough that could trigger different code paths in file system implementations.
+    // The test subclasses are encouraged to use this constant in their configurations.
+    protected static final DataSize LARGER_FILE_DATA_SIZE = DataSize.of(10, DataSize.Unit.MEGABYTE);
+
     protected abstract boolean isHierarchical();
 
     protected abstract TrinoFileSystem getFileSystem();
@@ -73,6 +88,11 @@ public abstract class AbstractTestTrinoFileSystem
     protected abstract Location getRootLocation();
 
     protected abstract void verifyFileSystemIsEmpty();
+
+    protected boolean useServerSideEncryptionWithCustomerKey()
+    {
+        return false;
+    }
 
     /**
      * Specifies whether implementation {@link TrinoOutputFile#create()} is exclusive.
@@ -87,7 +107,7 @@ public abstract class AbstractTestTrinoFileSystem
      */
     protected boolean supportsCreateExclusive()
     {
-        return false;
+        return true;
     }
 
     protected boolean supportsRenameFile()
@@ -98,6 +118,11 @@ public abstract class AbstractTestTrinoFileSystem
     protected boolean supportsIncompleteWriteNoClobber()
     {
         return true;
+    }
+
+    protected boolean supportsPreSignedUri()
+    {
+        return false;
     }
 
     protected boolean normalizesListFilesResult()
@@ -213,6 +238,64 @@ public abstract class AbstractTestTrinoFileSystem
             // input file caches metadata, so results will be unchanged after delete
             assertThat(inputFile.length()).isEqualTo(22);
             assertThat(inputFile.lastModified()).isEqualTo(lastModified);
+        }
+    }
+
+    @Test
+    void testInputFileWithLastModifiedMetadata()
+            throws IOException
+    {
+        try (TempBlob tempBlob = randomBlobLocation("inputFileWithLastModifiedMetadata")) {
+            TrinoInputFile inputFile = getFileSystem().newInputFile(tempBlob.location(), 22, Instant.ofEpochMilli(12345));
+            assertThat(inputFile.exists()).isFalse();
+
+            // getting length for non-existent file returns pre-declared length
+            assertThat(inputFile.length()).isEqualTo(22);
+            // getting modified time for non-existent file returns pre-declared modified time
+            assertThat(inputFile.lastModified()).isEqualTo(Instant.ofEpochMilli(12345));
+            // double-check the length did not change in call above
+            assertThat(inputFile.length()).isEqualTo(22);
+
+            tempBlob.createOrOverwrite("123456");
+
+            // length always returns the pre-declared length
+            assertThat(inputFile.length()).isEqualTo(22);
+            // modified time always returns the pre-declared length
+            assertThat(inputFile.lastModified()).isEqualTo(Instant.ofEpochMilli(12345));
+            // double-check the length did not change when metadata was loaded
+            assertThat(inputFile.length()).isEqualTo(22);
+
+            // delete file and verify that exists check is not cached
+            tempBlob.close();
+            assertThat(inputFile.exists()).isFalse();
+            // input file caches metadata, so results will be unchanged after delete
+            assertThat(inputFile.length()).isEqualTo(22);
+            assertThat(inputFile.lastModified()).isEqualTo(Instant.ofEpochMilli(12345));
+        }
+    }
+
+    @Test
+    public void testReadingEmptyFile()
+            throws IOException
+    {
+        try (TempBlob tempBlob = randomBlobLocation("inputStream")) {
+            tempBlob.outputFile().createOrOverwrite(new byte[0]);
+
+            TrinoInputFile inputFile = getFileSystem().newInputFile(tempBlob.location());
+            try (TrinoInputStream inputStream = inputFile.newStream()) {
+                assertThat(inputStream.readAllBytes()).isEmpty();
+            }
+
+            try (TrinoInputStream inputStream = inputFile.newStream()) {
+                assertThat(inputStream.read()).isEqualTo(-1);
+            }
+
+            try (TrinoInput input = inputFile.newInput()) {
+                assertThat(input.readFully(0, 0))
+                        .extracting(Slice::length).isEqualTo(0);
+                assertThat(input.readTail(13))
+                        .extracting(Slice::length).isEqualTo(0);
+            }
         }
     }
 
@@ -406,6 +489,10 @@ public abstract class AbstractTestTrinoFileSystem
                 assertThatThrownBy(() -> inputStream.read(new byte[1], 1, 3))
                         .isInstanceOf(IndexOutOfBoundsException.class);
 
+                // negative seek is not allowed
+                assertThatThrownBy(() -> inputStream.seek(-1))
+                        .isInstanceOf(IOException.class);
+
                 // verify all the methods throw after close
                 inputStream.close();
                 assertThatThrownBy(inputStream::available)
@@ -464,6 +551,10 @@ public abstract class AbstractTestTrinoFileSystem
                     assertThat(slice.getInt(4 + i * 4)).isEqualTo(totalPositions - 9 + i);
                 }
 
+                // negative position is not allowed
+                assertThatThrownBy(() -> trinoInput.readFully(-1, 10))
+                        .isInstanceOf(IOException.class);
+
                 // verify all the methods throw after close
                 trinoInput.close();
                 assertThatThrownBy(() -> trinoInput.readFully(0, 10))
@@ -479,11 +570,17 @@ public abstract class AbstractTestTrinoFileSystem
                         .isInstanceOf(IOException.class)
                         .hasMessageContaining(tempBlob.location().toString());
             }
+
+            // overwrite with an empty file and verify that reading it doesn't throw errors
+            tempBlob.outputFile().createOrOverwrite(new byte[0]);
+            try (TrinoInputStream inputStream = tempBlob.inputFile().newStream()) {
+                assertThat(inputStream.read()).isLessThan(0);
+            }
         }
     }
 
     @Test
-    void testOutputFile()
+    public void testOutputFile()
             throws IOException
     {
         // an output file cannot be created at the root of the file system
@@ -508,26 +605,12 @@ public abstract class AbstractTestTrinoFileSystem
                 outputStream.write("initial".getBytes(UTF_8));
             }
 
-            if (isCreateExclusive()) {
+            boolean isCreateExclusive = isCreateExclusive();
+            if (isCreateExclusive) {
                 // re-create without overwrite is an error
                 assertThatThrownBy(() -> outputFile.create().close())
                         .isInstanceOf(FileAlreadyExistsException.class)
                         .hasMessageContaining(tempBlob.location().toString());
-
-                // verify nothing changed
-                assertThat(tempBlob.read()).isEqualTo("initial");
-
-                // re-create exclusive is an error
-                if (supportsCreateExclusive()) {
-                    assertThatThrownBy(() -> outputFile.createExclusive(new byte[0]))
-                            .isInstanceOf(FileAlreadyExistsException.class)
-                            .hasMessageContaining(tempBlob.location().toString());
-                }
-                else {
-                    assertThatThrownBy(() -> outputFile.createExclusive(new byte[0]))
-                            .isInstanceOf(UnsupportedOperationException.class)
-                            .hasMessageStartingWith("createExclusive not supported");
-                }
 
                 // verify nothing changed
                 assertThat(tempBlob.read()).isEqualTo("initial");
@@ -540,19 +623,29 @@ public abstract class AbstractTestTrinoFileSystem
 
                 // verify contents changed
                 assertThat(tempBlob.read()).isEqualTo("replaced");
-
-                // create exclusive is an error
-                if (supportsCreateExclusive()) {
-                    assertThatThrownBy(() -> outputFile.createExclusive(new byte[0]))
-                            .isInstanceOf(FileAlreadyExistsException.class)
-                            .hasMessageContaining(tempBlob.location().toString());
-                }
-                else {
-                    assertThatThrownBy(() -> outputFile.createExclusive(new byte[0]))
-                            .isInstanceOf(UnsupportedOperationException.class)
-                            .hasMessageStartingWith("createExclusive not supported");
-                }
             }
+
+            // re-create exclusive is an error
+            if (supportsCreateExclusive()) {
+                assertThatThrownBy(() -> outputFile.createExclusive(new byte[0]))
+                        .isInstanceOf(FileAlreadyExistsException.class)
+                        .hasMessageContaining(tempBlob.location().toString());
+
+                // likely larger than any internal buffering or potential multipart threshold a filesystem may have
+                byte[] largerData = new byte[toIntExact(LARGER_FILE_DATA_SIZE.toBytes())];
+                assertThatThrownBy(() -> outputFile.createExclusive(largerData))
+                        .isInstanceOf(FileAlreadyExistsException.class)
+                        .hasMessageContaining(tempBlob.location().toString());
+            }
+            else {
+                assertThatThrownBy(() -> outputFile.createExclusive(new byte[0]))
+                        .isInstanceOf(UnsupportedOperationException.class)
+                        .hasMessageStartingWith("createExclusive not supported");
+            }
+
+            // verify re-create did not change the file
+            assertThat(tempBlob.read())
+                    .isEqualTo(isCreateExclusive ? "initial" : "replaced");
 
             // overwrite file
             outputFile.createOrOverwrite("overwrite".getBytes(UTF_8));
@@ -831,7 +924,7 @@ public abstract class AbstractTestTrinoFileSystem
     }
 
     @Test
-    void testRenameFile()
+    protected void testRenameFile()
             throws IOException
     {
         if (!supportsRenameFile()) {
@@ -907,6 +1000,33 @@ public abstract class AbstractTestTrinoFileSystem
                 }
             }
         }
+        finally {
+            // clean up manually created parent directory
+            try {
+                getFileSystem().deleteFile(createLocation("renameTarget"));
+            }
+            catch (IOException ignored) {
+            }
+        }
+
+        // rename to a file with special characters in the name
+        try (TempBlob sourceBlob = randomBlobLocation("renameSource");
+                TempBlob targetBlob = randomBlobLocation("renameTarget%25special")) {
+            sourceBlob.createOrOverwrite("data");
+            getFileSystem().createDirectory(targetBlob.location().parentDirectory());
+            getFileSystem().renameFile(sourceBlob.location(), targetBlob.location());
+            assertThat(sourceBlob.exists()).isFalse();
+            assertThat(targetBlob.exists()).isTrue();
+            assertThat(targetBlob.read()).isEqualTo("data");
+        }
+        finally {
+            // clean up manually created parent directory
+            try {
+                getFileSystem().deleteFile(createLocation("renameTarget%25special"));
+            }
+            catch (IOException ignored) {
+            }
+        }
     }
 
     @Test
@@ -914,6 +1034,71 @@ public abstract class AbstractTestTrinoFileSystem
             throws IOException
     {
         testListFiles(isHierarchical());
+    }
+
+    @Test
+    public void testPreSignedUris()
+            throws IOException
+    {
+        try (Closer closer = Closer.create()) {
+            Location location = createBlob(closer, "pre_signed");
+
+            if (!supportsPreSignedUri()) {
+                assertThatThrownBy(() -> getFileSystem().preSignedUri(location, new Duration(1, SECONDS)))
+                        .isInstanceOf(UnsupportedOperationException.class);
+                abort("Generating pre-signed URI is not supported");
+            }
+
+            Optional<UriLocation> directLocation = getFileSystem()
+                    .preSignedUri(location, new Duration(30, SECONDS));
+
+            Optional<UriLocation> expiredDirectLocation = getFileSystem()
+                    .preSignedUri(location, new Duration(1, SECONDS));
+
+            assertThat(directLocation).isPresent();
+
+            assertEventually(new Duration(5, SECONDS), () -> assertThat(retrieveUri(directLocation.get()))
+                    .isEqualTo(TEST_BLOB_CONTENT_PREFIX + location));
+
+            // Check if it can be retrieved more than once
+            assertEventually(new Duration(5, SECONDS), () -> assertThat(retrieveUri(directLocation.get()))
+                    .isEqualTo(TEST_BLOB_CONTENT_PREFIX + location));
+
+            // Check if after a timeout the pre-signed URI is no longer valid
+            assertEventually(new Duration(5, SECONDS), new Duration(1, SECONDS), () -> assertThatThrownBy(() -> retrieveUri(expiredDirectLocation.get()))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("Failed to retrieve"));
+        }
+    }
+
+    private static String retrieveUri(UriLocation uriLocation)
+            throws IOException
+    {
+        try (HttpClient client = HttpClient.newHttpClient()) {
+            HttpRequest request = addHeaders(HttpRequest.newBuilder(), uriLocation.headers())
+                    .uri(uriLocation.uri())
+                    .GET()
+                    .build();
+
+            try {
+                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() != 200) {
+                    throw new IOException("Failed to retrieve, got response code: %d, body: %s"
+                            .formatted(response.statusCode(), response.body()));
+                }
+                return response.body();
+            }
+            catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    private static HttpRequest.Builder addHeaders(HttpRequest.Builder builder, Map<String, List<String>> headers)
+    {
+        headers.forEach((headerName, headerValues) -> headerValues.forEach((headerValue) -> builder.header(headerName, headerValue)));
+        return builder;
     }
 
     protected void testListFiles(boolean hierarchicalNamingConstraints)
@@ -1008,7 +1193,7 @@ public abstract class AbstractTestTrinoFileSystem
             TrinoInputFile inputFile = getFileSystem().newInputFile(location);
             assertThat(inputFile.exists()).as("exists").isTrue();
             try (TrinoInputStream inputStream = inputFile.newStream()) {
-                byte[] bytes = ByteStreams.toByteArray(inputStream);
+                byte[] bytes = inputStream.readAllBytes();
                 assertThat(bytes).isEqualTo(("test blob content for " + location).getBytes(UTF_8));
             }
 
@@ -1020,7 +1205,7 @@ public abstract class AbstractTestTrinoFileSystem
             // This can break some file system read operations (e.g., TrinoInput.readTail for most filesystems, newStream for caching file systems).
             TrinoInputFile newInputFile = getFileSystem().newInputFile(location);
             try (TrinoInputStream inputStream = newInputFile.newStream()) {
-                byte[] bytes = ByteStreams.toByteArray(inputStream);
+                byte[] bytes = inputStream.readAllBytes();
                 assertThat(bytes).isEqualTo(newContents);
             }
 
@@ -1037,13 +1222,29 @@ public abstract class AbstractTestTrinoFileSystem
                 assertThat(getFileSystem().newInputFile(target).exists()).as("target exists after rename").isTrue();
 
                 try (TrinoInputStream inputStream = getFileSystem().newInputFile(target).newStream()) {
-                    byte[] bytes = ByteStreams.toByteArray(inputStream);
+                    byte[] bytes = inputStream.readAllBytes();
                     assertThat(bytes).isEqualTo(("test blob content for " + source).getBytes(UTF_8));
                 }
 
                 getFileSystem().deleteFile(target);
                 assertThat(getFileSystem().newInputFile(target).exists()).as("target exists after delete").isFalse();
             }
+        }
+    }
+
+    @Test
+    public void testListLexicographicalOrder()
+            throws IOException
+    {
+        try (Closer closer = Closer.create()) {
+            List<TempBlob> blobs = randomBlobs(closer, 100);
+
+            List<Location> sortedLocations = blobs.stream()
+                    .map(TempBlob::location)
+                    .sorted(comparing(Location::fileName))
+                    .toList();
+
+            assertThat(listPath("")).isEqualTo(sortedLocations);
         }
     }
 
@@ -1231,14 +1432,14 @@ public abstract class AbstractTestTrinoFileSystem
         Location location = getRootLocation().appendPath("testFileDoesNotExistUntilClosed-%s".formatted(UUID.randomUUID()));
         getFileSystem().deleteFile(location);
         try (OutputStream out = getFileSystem().newOutputFile(location).create()) {
-            assertFalse(fileExistsInListing(location));
-            assertFalse(fileExists(location));
+            assertThat(fileExistsInListing(location)).isFalse();
+            assertThat(fileExists(location)).isFalse();
             out.write("test".getBytes(UTF_8));
-            assertFalse(fileExistsInListing(location));
-            assertFalse(fileExists(location));
+            assertThat(fileExistsInListing(location)).isFalse();
+            assertThat(fileExists(location)).isFalse();
         }
-        assertTrue(fileExistsInListing(location));
-        assertTrue(fileExists(location));
+        assertThat(fileExistsInListing(location)).isTrue();
+        assertThat(fileExists(location)).isTrue();
         getFileSystem().deleteFile(location);
     }
 
@@ -1260,13 +1461,49 @@ public abstract class AbstractTestTrinoFileSystem
                 outputStream.write(bytes);
                 count += bytes.length;
                 if (count + bytes.length >= target) {
-                    assertFalse(fileExistsInListing(location));
-                    assertFalse(fileExists(location));
+                    assertThat(fileExistsInListing(location)).isFalse();
+                    assertThat(fileExists(location)).isFalse();
                 }
             }
         }
-        assertTrue(fileExistsInListing(location));
-        assertTrue(fileExists(location));
+        assertThat(fileExistsInListing(location)).isTrue();
+        assertThat(fileExists(location)).isTrue();
+        getFileSystem().deleteFile(location);
+    }
+
+    @Test
+    void testServerSideEncryptionWithCustomerKey()
+            throws IOException
+    {
+        if (!useServerSideEncryptionWithCustomerKey()) {
+            abort("Test is specific to SSE-C");
+        }
+
+        Location location = getRootLocation().appendPath("encrypted");
+
+        byte[] data = "this is encrypted data".getBytes(UTF_8);
+
+        // Create encrypted file
+        getFileSystem().newOutputFile(location)
+                .createOrOverwrite(data);
+
+        if (!(getFileSystem() instanceof EncryptionEnforcingFileSystem encryptionEnforcingFileSystem)) {
+            fail("Expected file system to enforce server side encryption");
+            return;
+        }
+
+        // Try to read it without a key
+        assertThatThrownBy(() -> {
+            try (InputStream stream = encryptionEnforcingFileSystem.getDelegate().newInputFile(location).newStream()) {
+                stream.readAllBytes();
+            }
+        }).isInstanceOf(IOException.class);
+
+        try (InputStream stream = getFileSystem().newInputFile(location).newStream()) {
+            assertThat(stream.readAllBytes())
+                    .isEqualTo(data);
+        }
+
         getFileSystem().deleteFile(location);
     }
 
@@ -1322,6 +1559,24 @@ public abstract class AbstractTestTrinoFileSystem
         TempBlob tempBlob = new TempBlob(createLocation("%s/%s".formatted(nameHint, UUID.randomUUID())));
         assertThat(tempBlob.exists()).isFalse();
         return tempBlob;
+    }
+
+    protected List<TempBlob> randomBlobs(Closer closer, int count)
+    {
+        char[] chars = new char[] {'a', 'b', 'c', 'd', 'A', 'B', 'C', 'D'};
+        ImmutableList.Builder<TempBlob> names = ImmutableList.builder();
+        for (int i = 0; i < count; i++) {
+            StringBuilder name = new StringBuilder();
+            for (int j = 0; j < 10; j++) {
+                name.append(chars[ThreadLocalRandom.current().nextInt(chars.length)]);
+            }
+            TempBlob tempBlob = new TempBlob(createLocation(name.toString()));
+            assertThat(tempBlob.exists()).isFalse();
+            tempBlob.createOrOverwrite(TEST_BLOB_CONTENT_PREFIX + tempBlob.location().toString());
+            closer.register(tempBlob);
+            names.add(tempBlob);
+        }
+        return names.build();
     }
 
     private Set<Location> createTestDirectoryStructure(Closer closer, boolean hierarchicalNamingConstraints)
@@ -1407,7 +1662,7 @@ public abstract class AbstractTestTrinoFileSystem
             try {
                 fileSystem.deleteFile(location);
             }
-            catch (IOException ignored) {
+            catch (IOException _) {
             }
         }
     }

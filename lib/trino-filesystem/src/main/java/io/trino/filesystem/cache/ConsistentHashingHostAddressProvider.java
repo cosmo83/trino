@@ -14,7 +14,6 @@
 package io.trino.filesystem.cache;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import com.google.inject.Inject;
 import io.airlift.log.Logger;
@@ -54,16 +53,16 @@ public class ConsistentHashingHostAddressProvider
             .build();
 
     @Inject
-    public ConsistentHashingHostAddressProvider(NodeManager nodeManager, ConsistentHashingHostAddressProviderConfiguration configuration)
+    public ConsistentHashingHostAddressProvider(NodeManager nodeManager, ConsistentHashingHostAddressProviderConfig configuration)
     {
         this.nodeManager = requireNonNull(nodeManager, "nodeManager is null");
         this.replicationFactor = configuration.getPreferredHostsCount();
     }
 
     @Override
-    public List<HostAddress> getHosts(String splitPath, List<HostAddress> defaultAddresses)
+    public List<HostAddress> getHosts(String splitKey, List<HostAddress> defaultAddresses)
     {
-        return consistentHashRing.locate(splitPath, replicationFactor)
+        return consistentHashRing.locate(splitKey, replicationFactor)
                 .stream()
                 .map(TrinoNode::getHostAndPort)
                 .sorted(hostAddressComparator)
@@ -87,7 +86,7 @@ public class ConsistentHashingHostAddressProvider
     synchronized void refreshHashRing()
     {
         try {
-            ImmutableSet<TrinoNode> trinoNodes = nodeManager.getWorkerNodes().stream().map(TrinoNode::of).collect(toImmutableSet());
+            Set<TrinoNode> trinoNodes = nodeManager.getWorkerNodes().stream().map(TrinoNode::of).collect(toImmutableSet());
             Set<TrinoNode> hashRingNodes = consistentHashRing.getNodes();
             Set<TrinoNode> removedNodes = Sets.difference(hashRingNodes, trinoNodes);
             Set<TrinoNode> newNodes = Sets.difference(trinoNodes, hashRingNodes);

@@ -49,7 +49,6 @@ public class PatternRecognitionNode
 {
     private final PlanNode source;
     private final DataOrganizationSpecification specification;
-    private final Optional<Symbol> hashSymbol;
     private final Set<Symbol> prePartitionedInputs;
     private final int preSortedOrderPrefix;
     private final Map<Symbol, WindowNode.Function> windowFunctions;
@@ -77,7 +76,6 @@ public class PatternRecognitionNode
             @JsonProperty("id") PlanNodeId id,
             @JsonProperty("source") PlanNode source,
             @JsonProperty("specification") DataOrganizationSpecification specification,
-            @JsonProperty("hashSymbol") Optional<Symbol> hashSymbol,
             @JsonProperty("prePartitionedInputs") Set<Symbol> prePartitionedInputs,
             @JsonProperty("preSortedOrderPrefix") int preSortedOrderPrefix,
             @JsonProperty("windowFunctions") Map<Symbol, WindowNode.Function> windowFunctions,
@@ -95,11 +93,10 @@ public class PatternRecognitionNode
 
         requireNonNull(source, "source is null");
         requireNonNull(specification, "specification is null");
-        requireNonNull(hashSymbol, "hashSymbol is null");
-        checkArgument(specification.getPartitionBy().containsAll(prePartitionedInputs), "prePartitionedInputs must be contained in partitionBy");
-        Optional<OrderingScheme> orderingScheme = specification.getOrderingScheme();
-        checkArgument(preSortedOrderPrefix == 0 || (orderingScheme.isPresent() && preSortedOrderPrefix <= orderingScheme.get().getOrderBy().size()), "Cannot have sorted more symbols than those requested");
-        checkArgument(preSortedOrderPrefix == 0 || ImmutableSet.copyOf(prePartitionedInputs).equals(ImmutableSet.copyOf(specification.getPartitionBy())), "preSortedOrderPrefix can only be greater than zero if all partition symbols are pre-partitioned");
+        checkArgument(specification.partitionBy().containsAll(prePartitionedInputs), "prePartitionedInputs must be contained in partitionBy");
+        Optional<OrderingScheme> orderingScheme = specification.orderingScheme();
+        checkArgument(preSortedOrderPrefix == 0 || (orderingScheme.isPresent() && preSortedOrderPrefix <= orderingScheme.get().orderBy().size()), "Cannot have sorted more symbols than those requested");
+        checkArgument(preSortedOrderPrefix == 0 || ImmutableSet.copyOf(prePartitionedInputs).equals(ImmutableSet.copyOf(specification.partitionBy())), "preSortedOrderPrefix can only be greater than zero if all partition symbols are pre-partitioned");
         requireNonNull(windowFunctions, "windowFunctions is null");
         requireNonNull(measures, "measures is null");
         requireNonNull(commonBaseFrame, "commonBaseFrame is null");
@@ -115,7 +112,6 @@ public class PatternRecognitionNode
 
         this.source = source;
         this.specification = specification;
-        this.hashSymbol = hashSymbol;
         this.prePartitionedInputs = ImmutableSet.copyOf(prePartitionedInputs);
         this.preSortedOrderPrefix = preSortedOrderPrefix;
         this.windowFunctions = ImmutableMap.copyOf(windowFunctions);
@@ -171,18 +167,12 @@ public class PatternRecognitionNode
 
     public List<Symbol> getPartitionBy()
     {
-        return specification.getPartitionBy();
+        return specification.partitionBy();
     }
 
     public Optional<OrderingScheme> getOrderingScheme()
     {
-        return specification.getOrderingScheme();
-    }
-
-    @JsonProperty
-    public Optional<Symbol> getHashSymbol()
-    {
-        return hashSymbol;
+        return specification.orderingScheme();
     }
 
     @JsonProperty
@@ -264,7 +254,6 @@ public class PatternRecognitionNode
                 getId(),
                 Iterables.getOnlyElement(newChildren),
                 specification,
-                hashSymbol,
                 prePartitionedInputs,
                 preSortedOrderPrefix,
                 windowFunctions,

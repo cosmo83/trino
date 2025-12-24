@@ -17,13 +17,16 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Inject;
+import io.airlift.configuration.secrets.SecretsResolver;
+import io.airlift.tracing.Tracing;
+import io.opentelemetry.api.OpenTelemetry;
+import io.trino.client.NodeVersion;
 import io.trino.eventlistener.EventListenerConfig;
 import io.trino.eventlistener.EventListenerManager;
 import io.trino.spi.eventlistener.EventListener;
 import io.trino.spi.eventlistener.EventListenerFactory;
 import io.trino.spi.eventlistener.QueryCompletedEvent;
 import io.trino.spi.eventlistener.QueryCreatedEvent;
-import io.trino.spi.eventlistener.SplitCompletedEvent;
 
 import java.util.Collections;
 import java.util.HashSet;
@@ -34,21 +37,21 @@ public class TestingEventListenerManager
 {
     public static TestingEventListenerManager emptyEventListenerManager()
     {
-        return new TestingEventListenerManager(new EventListenerConfig());
+        return new TestingEventListenerManager(new EventListenerConfig(), new SecretsResolver(ImmutableMap.of()));
     }
 
     private final Set<EventListener> configuredEventListeners = Collections.synchronizedSet(new HashSet<>());
 
     @Inject
-    public TestingEventListenerManager(EventListenerConfig config)
+    public TestingEventListenerManager(EventListenerConfig config, SecretsResolver secretsResolver)
     {
-        super(config);
+        super(config, secretsResolver, OpenTelemetry.noop(), Tracing.noopTracer(), new NodeVersion("test-version"));
     }
 
     @Override
     public void addEventListenerFactory(EventListenerFactory eventListenerFactory)
     {
-        configuredEventListeners.add(eventListenerFactory.create(ImmutableMap.of()));
+        configuredEventListeners.add(eventListenerFactory.create(ImmutableMap.of(), new TestingEventListenerContext()));
     }
 
     @Override
@@ -70,14 +73,6 @@ public class TestingEventListenerManager
     {
         for (EventListener listener : configuredEventListeners) {
             listener.queryCreated(queryCreatedEvent);
-        }
-    }
-
-    @Override
-    public void splitCompleted(SplitCompletedEvent splitCompletedEvent)
-    {
-        for (EventListener listener : configuredEventListeners) {
-            listener.splitCompleted(splitCompletedEvent);
         }
     }
 

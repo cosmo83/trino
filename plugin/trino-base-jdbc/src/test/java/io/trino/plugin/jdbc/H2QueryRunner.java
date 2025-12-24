@@ -81,10 +81,10 @@ public final class H2QueryRunner
 
             createSchema(properties, "tpch");
 
-            queryRunner.installPlugin(new JdbcPlugin("base_jdbc", module));
+            queryRunner.installPlugin(new JdbcPlugin("base_jdbc", () -> module));
             queryRunner.createCatalog("jdbc", "base_jdbc", properties);
 
-            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, createSession(), tables);
+            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, tables);
 
             return queryRunner;
         }

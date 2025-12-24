@@ -5,24 +5,16 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>443</version>
+        <version>480-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-delta-lake</artifactId>
     <packaging>trino-plugin</packaging>
+    <name>${project.artifactId}</name>
     <description>Trino - Delta Lake connector</description>
 
-    <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
-    </properties>
-
     <dependencies>
-        <dependency>
-            <groupId>com.amazonaws</groupId>
-            <artifactId>aws-java-sdk-glue</artifactId>
-        </dependency>
-
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
@@ -47,6 +39,7 @@
         <dependency>
             <groupId>com.google.inject</groupId>
             <artifactId>guice</artifactId>
+            <classifier>classes</classifier>
         </dependency>
 
         <dependency>
@@ -71,16 +64,6 @@
 
         <dependency>
             <groupId>io.airlift</groupId>
-            <artifactId>event</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>io.airlift</groupId>
-            <artifactId>jmx</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>io.airlift</groupId>
             <artifactId>json</artifactId>
         </dependency>
 
@@ -97,6 +80,12 @@
         <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>units</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.delta</groupId>
+            <artifactId>delta-kernel-api</artifactId>
+            <version>4.0.0</version>
         </dependency>
 
         <dependency>
@@ -126,12 +115,22 @@
 
         <dependency>
             <groupId>io.trino</groupId>
+            <artifactId>trino-metastore</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
             <artifactId>trino-parquet</artifactId>
         </dependency>
 
         <dependency>
             <groupId>io.trino</groupId>
             <artifactId>trino-plugin-toolkit</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino.hive</groupId>
+            <artifactId>hive-thrift</artifactId>
         </dependency>
 
         <dependency>
@@ -167,6 +166,12 @@
         <dependency>
             <groupId>org.apache.parquet</groupId>
             <artifactId>parquet-format-structures</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>javax.annotation</groupId>
+                    <artifactId>javax.annotation-api</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -177,6 +182,11 @@
         <dependency>
             <groupId>org.weakref</groupId>
             <artifactId>jmxutils</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>glue</artifactId>
         </dependency>
 
         <dependency>
@@ -194,6 +204,18 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api-incubator</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-common</artifactId>
             <scope>provided</scope>
         </dependency>
 
@@ -233,14 +255,16 @@
             <scope>runtime</scope>
             <exclusions>
                 <exclusion>
-                    <groupId>com.azure</groupId>
-                    <artifactId>azure-core-http-netty</artifactId>
-                </exclusion>
-                <exclusion>
                     <groupId>com.fasterxml.jackson.dataformat</groupId>
                     <artifactId>jackson-dataformat-xml</artifactId>
                 </exclusion>
             </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp</artifactId>
+            <scope>runtime</scope>
         </dependency>
 
         <dependency>
@@ -250,8 +274,32 @@
         </dependency>
 
         <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-common</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.netty</groupId>
+            <artifactId>netty-transport</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-sdk-trace</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.projectreactor.netty</groupId>
+            <artifactId>reactor-netty-core</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
+            <artifactId>trino-filesystem-azure</artifactId>
             <scope>runtime</scope>
         </dependency>
 
@@ -264,6 +312,12 @@
         <dependency>
             <groupId>com.github.docker-java</groupId>
             <artifactId>docker-java-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
+            <artifactId>configuration-testing</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -301,13 +355,6 @@
         <dependency>
             <groupId>io.trino</groupId>
             <artifactId>trino-filesystem</artifactId>
-            <type>test-jar</type>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>io.trino</groupId>
-            <artifactId>trino-filesystem-cache-alluxio</artifactId>
             <type>test-jar</type>
             <scope>test</scope>
         </dependency>
@@ -358,14 +405,14 @@
 
         <dependency>
             <groupId>io.trino</groupId>
-            <artifactId>trino-parser</artifactId>
+            <artifactId>trino-parquet</artifactId>
+            <type>test-jar</type>
             <scope>test</scope>
         </dependency>
 
         <dependency>
             <groupId>io.trino</groupId>
-            <artifactId>trino-spi</artifactId>
-            <type>test-jar</type>
+            <artifactId>trino-parser</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -458,27 +505,41 @@
             <artifactId>testcontainers</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <dependency>
+            <!-- Allow running tests when locally `aws sso login` is required to access AWS services -->
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sso</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <!-- Allow running tests when locally `aws sso login` is required to access AWS services -->
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>ssooidc</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
         <plugins>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-dependency-plugin</artifactId>
-                <configuration>
-                    <ignoredNonTestScopedDependencies>
-                        <!-- dependency plugin fails to recognize aws-java-sdk-core as a compile-time dependency, because
-                             we only explicitly use a class from aws-java-sdk-glue, which in turn extends from a class from
-                             aws-java-sdk-core -->
-                        <ignoredDependency>com.amazonaws:aws-java-sdk-core</ignoredDependency>
-                        <ignoredDependency>org.apache.iceberg:iceberg-api</ignoredDependency>
-                    </ignoredNonTestScopedDependencies>
-                </configuration>
-            </plugin>
-
-            <plugin>
                 <groupId>org.antlr</groupId>
                 <artifactId>antlr4-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <configuration>
+                    <rules>
+                        <bannedDependencies>
+                            <includes combine.children="append">
+                                <!-- Legacy HDFS file system uses AWS S3 SDK v1 -->
+                                <include>com.amazonaws:*:*</include>
+                            </includes>
+                        </bannedDependencies>
+                    </rules>
+                </configuration>
             </plugin>
         </plugins>
     </build>

@@ -21,6 +21,7 @@ import io.trino.spi.predicate.TupleDomain;
 
 import java.util.Optional;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static java.util.Objects.requireNonNull;
@@ -65,9 +66,12 @@ public class JdbcSplit
     }
 
     @Override
-    public Object getInfo()
+    public String toString()
     {
-        return this;
+        return toStringHelper(this)
+                .add("additionalPredicate", additionalPredicate)
+                .add("dynamicFilter", dynamicFilter)
+                .toString();
     }
 
     @Override

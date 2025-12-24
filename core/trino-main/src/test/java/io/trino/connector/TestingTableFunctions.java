@@ -13,8 +13,6 @@
  */
 package io.trino.connector;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
@@ -678,7 +676,7 @@ public class TestingTableFunctions
                 }
 
                 Page page = getOnlyElement(input).orElseThrow();
-                BlockBuilder builder = BIGINT.createBlockBuilder(null, page.getPositionCount());
+                BlockBuilder builder = BIGINT.createFixedSizeBlockBuilder(page.getPositionCount());
                 for (long index = processedPositions; index < processedPositions + page.getPositionCount(); index++) {
                     // TODO check for long overflow
                     BIGINT.writeLong(builder, index);
@@ -728,23 +726,8 @@ public class TestingTableFunctions
                     .build();
         }
 
-        public static class RepeatFunctionHandle
-                implements ConnectorTableFunctionHandle
-        {
-            private final long count;
-
-            @JsonCreator
-            public RepeatFunctionHandle(@JsonProperty("count") long count)
-            {
-                this.count = count;
-            }
-
-            @JsonProperty
-            public long getCount()
-            {
-                return count;
-            }
-        }
+        public record RepeatFunctionHandle(long count)
+                implements ConnectorTableFunctionHandle {}
 
         public static class RepeatFunctionProcessorProvider
                 implements TableFunctionProcessorProvider
@@ -752,7 +735,7 @@ public class TestingTableFunctions
             @Override
             public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
-                return new RepeatFunctionProcessor(((RepeatFunctionHandle) handle).getCount());
+                return new RepeatFunctionProcessor(((RepeatFunctionHandle) handle).count());
             }
         }
 
@@ -785,7 +768,7 @@ public class TestingTableFunctions
 
                 Page page = getOnlyElement(input).orElseThrow();
                 if (processedRounds == 0) {
-                    BlockBuilder builder = BIGINT.createBlockBuilder(null, page.getPositionCount());
+                    BlockBuilder builder = BIGINT.createFixedSizeBlockBuilder(page.getPositionCount());
                     for (long index = processedPositions; index < processedPositions + page.getPositionCount(); index++) {
                         // TODO check for long overflow
                         BIGINT.writeLong(builder, index);
@@ -858,7 +841,7 @@ public class TestingTableFunctions
         private static class EmptyOutputProcessor
                 implements TableFunctionDataProcessor
         {
-            private static final Page EMPTY_PAGE = new Page(BOOLEAN.createBlockBuilder(null, 0).build());
+            private static final Page EMPTY_PAGE = new Page(BOOLEAN.createFixedSizeBlockBuilder(0).build());
 
             @Override
             public TableFunctionProcessorState process(List<Optional<Page>> input)
@@ -918,8 +901,8 @@ public class TestingTableFunctions
         {
             // one proper channel, and one pass-through index channel
             private static final Page EMPTY_PAGE = new Page(
-                    BOOLEAN.createBlockBuilder(null, 0).build(),
-                    BIGINT.createBlockBuilder(null, 0).build());
+                    BOOLEAN.createFixedSizeBlockBuilder(0).build(),
+                    BIGINT.createFixedSizeBlockBuilder(0).build());
 
             @Override
             public TableFunctionProcessorState process(List<Optional<Page>> input)
@@ -984,7 +967,7 @@ public class TestingTableFunctions
             @Override
             public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
-                BlockBuilder resultBuilder = BOOLEAN.createBlockBuilder(null, 1);
+                BlockBuilder resultBuilder = BOOLEAN.createFixedSizeBlockBuilder(1);
                 BOOLEAN.writeBoolean(resultBuilder, true);
 
                 Page result = new Page(resultBuilder.build());
@@ -1068,15 +1051,15 @@ public class TestingTableFunctions
                     finished = true;
 
                     // proper column input_1_present
-                    BlockBuilder input1Builder = BOOLEAN.createBlockBuilder(null, 1);
+                    BlockBuilder input1Builder = BOOLEAN.createFixedSizeBlockBuilder(1);
                     BOOLEAN.writeBoolean(input1Builder, input1Present);
 
                     // proper column input_2_present
-                    BlockBuilder input2Builder = BOOLEAN.createBlockBuilder(null, 1);
+                    BlockBuilder input2Builder = BOOLEAN.createFixedSizeBlockBuilder(1);
                     BOOLEAN.writeBoolean(input2Builder, input2Present);
 
                     // pass-through index for input_1
-                    BlockBuilder input1PassThroughBuilder = BIGINT.createBlockBuilder(null, 1);
+                    BlockBuilder input1PassThroughBuilder = BIGINT.createFixedSizeBlockBuilder(1);
                     if (input1Present) {
                         BIGINT.writeLong(input1PassThroughBuilder, input1EndIndex - 1);
                     }
@@ -1085,7 +1068,7 @@ public class TestingTableFunctions
                     }
 
                     // pass-through index for input_2
-                    BlockBuilder input2PassThroughBuilder = BIGINT.createBlockBuilder(null, 1);
+                    BlockBuilder input2PassThroughBuilder = BIGINT.createFixedSizeBlockBuilder(1);
                     if (input2Present) {
                         BIGINT.writeLong(input2PassThroughBuilder, input2EndIndex - 1);
                     }
@@ -1162,7 +1145,7 @@ public class TestingTableFunctions
                 }
                 if (input == null) {
                     finished = true;
-                    BlockBuilder builder = BOOLEAN.createBlockBuilder(null, 1);
+                    BlockBuilder builder = BOOLEAN.createFixedSizeBlockBuilder(1);
                     BOOLEAN.writeBoolean(builder, processorGotInput);
                     return produced(new Page(builder.build()));
                 }
@@ -1208,7 +1191,7 @@ public class TestingTableFunctions
             @Override
             public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
-                BlockBuilder builder = BOOLEAN.createBlockBuilder(null, 1);
+                BlockBuilder builder = BOOLEAN.createFixedSizeBlockBuilder(1);
                 BOOLEAN.writeBoolean(builder, true);
                 Page result = new Page(builder.build());
 
@@ -1261,31 +1244,8 @@ public class TestingTableFunctions
                     .build();
         }
 
-        public static class ConstantFunctionHandle
-                implements ConnectorTableFunctionHandle
-        {
-            private final Long value;
-            private final long count;
-
-            @JsonCreator
-            public ConstantFunctionHandle(@JsonProperty("value") Long value, @JsonProperty("count") long count)
-            {
-                this.value = value;
-                this.count = count;
-            }
-
-            @JsonProperty
-            public Long getValue()
-            {
-                return value;
-            }
-
-            @JsonProperty
-            public long getCount()
-            {
-                return count;
-            }
-        }
+        public record ConstantFunctionHandle(Long value, long count)
+                implements ConnectorTableFunctionHandle {}
 
         public static class ConstantFunctionProcessorProvider
                 implements TableFunctionProcessorProvider
@@ -1293,7 +1253,7 @@ public class TestingTableFunctions
             @Override
             public TableFunctionSplitProcessor getSplitProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle, ConnectorSplit split)
             {
-                return new ConstantFunctionProcessor(((ConstantFunctionHandle) handle).getValue(), (ConstantFunctionSplit) split);
+                return new ConstantFunctionProcessor(((ConstantFunctionHandle) handle).value(), (ConstantFunctionSplit) split);
             }
         }
 
@@ -1310,7 +1270,7 @@ public class TestingTableFunctions
             public ConstantFunctionProcessor(Long value, ConstantFunctionSplit split)
             {
                 this.value = nativeValueToBlock(INTEGER, value);
-                long count = split.getCount();
+                long count = split.count();
                 this.fullPagesCount = count / PAGE_SIZE;
                 this.reminder = toIntExact(count % PAGE_SIZE);
             }
@@ -1338,41 +1298,21 @@ public class TestingTableFunctions
         {
             long splitSize = DEFAULT_SPLIT_SIZE;
             ImmutableList.Builder<ConnectorSplit> splits = ImmutableList.builder();
-            for (long i = 0; i < handle.getCount() / splitSize; i++) {
+            for (long i = 0; i < handle.count() / splitSize; i++) {
                 splits.add(new ConstantFunctionSplit(splitSize));
             }
-            long remainingSize = handle.getCount() % splitSize;
+            long remainingSize = handle.count() % splitSize;
             if (remainingSize > 0) {
                 splits.add(new ConstantFunctionSplit(remainingSize));
             }
             return new FixedSplitSource(splits.build());
         }
 
-        public static final class ConstantFunctionSplit
+        public record ConstantFunctionSplit(long count)
                 implements ConnectorSplit
         {
             private static final int INSTANCE_SIZE = instanceSize(ConstantFunctionSplit.class);
             public static final int DEFAULT_SPLIT_SIZE = 5500;
-
-            private final long count;
-
-            @JsonCreator
-            public ConstantFunctionSplit(@JsonProperty("count") long count)
-            {
-                this.count = count;
-            }
-
-            @JsonProperty
-            public long getCount()
-            {
-                return count;
-            }
-
-            @Override
-            public Object getInfo()
-            {
-                return count;
-            }
 
             @Override
             public long getRetainedSizeInBytes()
@@ -1421,7 +1361,7 @@ public class TestingTableFunctions
         public static class EmptySourceFunctionProcessor
                 implements TableFunctionSplitProcessor
         {
-            private static final Page EMPTY_PAGE = new Page(BOOLEAN.createBlockBuilder(null, 0).build());
+            private static final Page EMPTY_PAGE = new Page(BOOLEAN.createFixedSizeBlockBuilder(0).build());
 
             private boolean produced;
 

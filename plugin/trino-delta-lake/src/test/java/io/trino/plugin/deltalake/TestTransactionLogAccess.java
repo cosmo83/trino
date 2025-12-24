@@ -21,18 +21,20 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multiset;
 import io.airlift.units.Duration;
 import io.opentelemetry.sdk.trace.data.SpanData;
+import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
 import io.trino.filesystem.tracing.TracingFileSystemFactory;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
+import io.trino.plugin.deltalake.metastore.NoOpVendedCredentialsProvider;
 import io.trino.plugin.deltalake.transactionlog.AddFileEntry;
-import io.trino.plugin.deltalake.transactionlog.CommitInfoEntry;
 import io.trino.plugin.deltalake.transactionlog.MetadataEntry;
 import io.trino.plugin.deltalake.transactionlog.ProtocolEntry;
-import io.trino.plugin.deltalake.transactionlog.RemoveFileEntry;
 import io.trino.plugin.deltalake.transactionlog.TableSnapshot;
 import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
 import io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointSchemaManager;
+import io.trino.plugin.deltalake.transactionlog.checkpoint.MetadataAndProtocolEntries;
+import io.trino.plugin.deltalake.transactionlog.reader.FileSystemTransactionLogReaderFactory;
 import io.trino.plugin.deltalake.transactionlog.statistics.DeltaLakeFileStatistics;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.plugin.hive.parquet.ParquetWriterConfig;
 import io.trino.spi.connector.ColumnMetadata;
@@ -68,11 +70,12 @@ import static com.google.common.base.Predicates.alwaysTrue;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.collect.Sets.union;
+import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
 import static io.airlift.slice.Slices.utf8Slice;
-import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static io.trino.filesystem.tracing.FileSystemAttributes.FILE_LOCATION;
 import static io.trino.plugin.deltalake.DeltaLakeColumnType.REGULAR;
 import static io.trino.plugin.deltalake.DeltaTestingConnectorSession.SESSION;
+import static io.trino.plugin.deltalake.TestingDeltaLakeUtils.createTable;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.extractColumnMetadata;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogParser.LAST_CHECKPOINT_FILENAME;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.TRANSACTION_LOG_DIRECTORY;
@@ -105,19 +108,12 @@ public class TestTransactionLogAccess
             "age=28/part-00000-40dd1707-1d42-4328-a59a-21f5c945fe60.c000.snappy.parquet",
             "age=29/part-00000-3794c463-cb0c-4beb-8d07-7cc1e3b5920f.c000.snappy.parquet");
 
-    private static final Set<RemoveFileEntry> EXPECTED_REMOVE_ENTRIES = ImmutableSet.of(
-            new RemoveFileEntry("age=30/part-00000-7e43a3c3-ea26-4ae7-8eac-8f60cbb4df03.c000.snappy.parquet", null, 1579190163932L, false),
-            new RemoveFileEntry("age=30/part-00000-72a56c23-01ba-483a-9062-dd0accc86599.c000.snappy.parquet", null, 1579190163932L, false),
-            new RemoveFileEntry("age=42/part-00000-951068bd-bcf4-4094-bb94-536f3c41d31f.c000.snappy.parquet", null, 1579190155406L, false),
-            new RemoveFileEntry("age=25/part-00000-609e34b1-5466-4dbc-a780-2708166e7adb.c000.snappy.parquet", null, 1579190163932L, false),
-            new RemoveFileEntry("age=42/part-00000-6aed618a-2beb-4edd-8466-653e67a9b380.c000.snappy.parquet", null, 1579190155406L, false),
-            new RemoveFileEntry("age=42/part-00000-b82d8859-84a0-4f05-872c-206b07dd54f0.c000.snappy.parquet", null, 1579190163932L, false));
-
     private final TestingTelemetry testingTelemetry = TestingTelemetry.create("transaction-log-access");
-    private final TracingFileSystemFactory tracingFileSystemFactory = new TracingFileSystemFactory(testingTelemetry.getTracer(), new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS));
+    private final DefaultDeltaLakeFileSystemFactory tracingFileSystemFactory = new DefaultDeltaLakeFileSystemFactory(new TracingFileSystemFactory(testingTelemetry.getTracer(), new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS)), new NoOpVendedCredentialsProvider());
 
     private TransactionLogAccess transactionLogAccess;
     private TableSnapshot tableSnapshot;
+    private String tableLocation;
 
     private void setupTransactionLogAccessFromResources(String tableName, String resourcePath)
             throws Exception
@@ -128,10 +124,10 @@ public class TestTransactionLogAccess
     private void setupTransactionLogAccess(String tableName, String tableLocation)
             throws IOException
     {
-        setupTransactionLogAccess(tableName, tableLocation, new DeltaLakeConfig());
+        setupTransactionLogAccess(tableName, tableLocation, new DeltaLakeConfig(), Optional.empty());
     }
 
-    private void setupTransactionLogAccess(String tableName, String tableLocation, DeltaLakeConfig deltaLakeConfig)
+    private void setupTransactionLogAccess(String tableName, String tableLocation, DeltaLakeConfig deltaLakeConfig, Optional<Long> endVersion)
             throws IOException
     {
         TestingConnectorContext context = new TestingConnectorContext();
@@ -145,25 +141,12 @@ public class TestTransactionLogAccess
                 deltaLakeConfig,
                 fileFormatDataSourceStats,
                 tracingFileSystemFactory,
-                new ParquetReaderConfig());
+                new ParquetReaderConfig(),
+                newDirectExecutorService(),
+                new FileSystemTransactionLogReaderFactory(tracingFileSystemFactory));
 
-        DeltaLakeTableHandle tableHandle = new DeltaLakeTableHandle(
-                "schema",
-                tableName,
-                true,
-                "location",
-                new MetadataEntry("id", "test", "description", null, "", ImmutableList.of(), ImmutableMap.of(), 0),
-                new ProtocolEntry(1, 2, Optional.empty(), Optional.empty()),
-                TupleDomain.none(),
-                TupleDomain.none(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                0);
-
-        tableSnapshot = transactionLogAccess.loadSnapshot(SESSION, tableHandle.getSchemaTableName(), tableLocation);
+        tableSnapshot = transactionLogAccess.loadSnapshot(SESSION, createTable(new SchemaTableName("schema", tableName), tableLocation), endVersion);
+        this.tableLocation = requireNonNull(tableLocation, "tableLocation is null");
     }
 
     @Test
@@ -172,7 +155,7 @@ public class TestTransactionLogAccess
     {
         setupTransactionLogAccessFromResources("person", "databricks73/person");
 
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
 
         assertThat(metadataEntry.getCreatedTime()).isEqualTo(1579190100722L);
         assertThat(metadataEntry.getId()).isEqualTo("b6aeffad-da73-4dde-b68e-937e468b1fdf");
@@ -180,8 +163,8 @@ public class TestTransactionLogAccess
         assertThat(metadataEntry.getLowercasePartitionColumns()).containsOnly("age");
 
         MetadataEntry.Format format = metadataEntry.getFormat();
-        assertThat(format.getOptions().keySet().size()).isEqualTo(0);
-        assertThat(format.getProvider()).isEqualTo("parquet");
+        assertThat(format.options().keySet()).isEmpty();
+        assertThat(format.provider()).isEqualTo("parquet");
 
         assertThat(tableSnapshot.getCachedMetadata()).isEqualTo(Optional.of(metadataEntry));
     }
@@ -191,7 +174,7 @@ public class TestTransactionLogAccess
             throws Exception
     {
         setupTransactionLogAccessFromResources("uppercase_columns", "databricks73/uppercase_columns");
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
         assertThat(metadataEntry.getOriginalPartitionColumns()).containsOnly("ALA");
         assertThat(metadataEntry.getLowercasePartitionColumns()).containsOnly("ala");
         assertThat(tableSnapshot.getCachedMetadata()).isEqualTo(Optional.of(metadataEntry));
@@ -203,10 +186,10 @@ public class TestTransactionLogAccess
     {
         setupTransactionLogAccessFromResources("person", "databricks73/person");
 
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
         List<AddFileEntry> addFileEntries;
-        try (Stream<AddFileEntry> addFileEntriesStream = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        try (Stream<AddFileEntry> addFileEntriesStream = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             addFileEntries = addFileEntriesStream.collect(toImmutableList());
         }
         Set<String> paths = addFileEntries
@@ -215,7 +198,7 @@ public class TestTransactionLogAccess
                 .collect(Collectors.toSet());
         assertThat(paths).isEqualTo(EXPECTED_ADD_FILE_PATHS);
 
-        try (Stream<AddFileEntry> checkpointFilteredAddFileEntriesStream = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        try (Stream<AddFileEntry> checkpointFilteredAddFileEntriesStream = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             assertThat(checkpointFilteredAddFileEntriesStream.collect(toImmutableList())).isEqualTo(addFileEntries);
         }
 
@@ -242,10 +225,10 @@ public class TestTransactionLogAccess
     {
         setupTransactionLogAccessFromResources("uppercase_columns", "databricks73/uppercase_columns");
 
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
 
-        try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             AddFileEntry addFileEntry = addFileEntries
                     .filter(entry -> entry.getPath().equals("ALA=1/part-00000-20a863e0-890d-4776-8825-f9dccc8973ba.c000.snappy.parquet"))
                     .collect(onlyElement());
@@ -267,9 +250,9 @@ public class TestTransactionLogAccess
         // - Added in the parquet checkpoint but removed in a JSON commit
         // - Added in a JSON commit and removed in a later JSON commit
         setupTransactionLogAccessFromResources("person_test_pruning", "databricks73/person_test_pruning");
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
-        try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             Set<String> paths = addFileEntries
                     .map(AddFileEntry::getPath)
                     .collect(Collectors.toSet());
@@ -284,10 +267,10 @@ public class TestTransactionLogAccess
             throws Exception
     {
         setupTransactionLogAccessFromResources("person_test_pruning", "databricks73/person_test_pruning");
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
         List<AddFileEntry> addFileEntries;
-        try (Stream<AddFileEntry> addFileEntryStream = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        try (Stream<AddFileEntry> addFileEntryStream = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             addFileEntries = addFileEntryStream.collect(toImmutableList());
         }
 
@@ -300,7 +283,7 @@ public class TestTransactionLogAccess
             List<AddFileEntry> activeEntries = addFileEntries.stream()
                     .filter(addFileEntry -> addFileEntry.getPath().equals(path))
                     .toList();
-            assertThat(activeEntries.size()).isEqualTo(1);
+            assertThat(activeEntries).hasSize(1);
             assertThat(activeEntries.get(0).getModificationTime()).isEqualTo(9999999L);
         }
     }
@@ -310,48 +293,16 @@ public class TestTransactionLogAccess
             throws Exception
     {
         setupTransactionLogAccessFromResources("person_test_pruning", "databricks73/person_test_pruning");
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
-        try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             // Test data contains an entry added by the parquet checkpoint, removed by a JSON action, and then added back by a later JSON action
             List<AddFileEntry> activeEntries = addFileEntries
                     .filter(addFileEntry -> addFileEntry.getPath().equals("age=30/part-00002-5800be2e-2373-47d8-8b86-776a8ea9d69f.c000.snappy.parquet"))
                     .toList();
 
-            assertThat(activeEntries.size()).isEqualTo(1);
+            assertThat(activeEntries).hasSize(1);
             assertThat(activeEntries.get(0).getModificationTime()).isEqualTo(9999999L);
-        }
-    }
-
-    @Test
-    public void testGetRemoveEntries()
-            throws Exception
-    {
-        setupTransactionLogAccessFromResources("person", "databricks73/person");
-
-        try (Stream<RemoveFileEntry> removeEntries = transactionLogAccess.getRemoveEntries(SESSION, tableSnapshot)) {
-            Set<RemoveFileEntry> removedEntries = removeEntries.collect(Collectors.toSet());
-            assertThat(removedEntries).isEqualTo(EXPECTED_REMOVE_ENTRIES);
-        }
-    }
-
-    @Test
-    public void testGetCommitInfoEntries()
-            throws Exception
-    {
-        setupTransactionLogAccessFromResources("person", "databricks73/person");
-        try (Stream<CommitInfoEntry> commitInfoEntries = transactionLogAccess.getCommitInfoEntries(SESSION, tableSnapshot)) {
-            Set<CommitInfoEntry> entrySet = commitInfoEntries.collect(Collectors.toSet());
-            assertThat(entrySet).isEqualTo(ImmutableSet.of(
-                    new CommitInfoEntry(11, 1579190200860L, "671960514434781", "michal.slizak@starburstdata.com", "WRITE",
-                            ImmutableMap.of("mode", "Append", "partitionBy", "[\"age\"]"), null, new CommitInfoEntry.Notebook("3040849856940931"),
-                            "0116-154224-guppy476", 10L, "WriteSerializable", Optional.of(true)),
-                    new CommitInfoEntry(12, 1579190206644L, "671960514434781", "michal.slizak@starburstdata.com", "WRITE",
-                            ImmutableMap.of("mode", "Append", "partitionBy", "[\"age\"]"), null, new CommitInfoEntry.Notebook("3040849856940931"),
-                            "0116-154224-guppy476", 11L, "WriteSerializable", Optional.of(true)),
-                    new CommitInfoEntry(13, 1579190210571L, "671960514434781", "michal.slizak@starburstdata.com", "WRITE",
-                            ImmutableMap.of("mode", "Append", "partitionBy", "[\"age\"]"), null, new CommitInfoEntry.Notebook("3040849856940931"),
-                            "0116-154224-guppy476", 12L, "WriteSerializable", Optional.of(true))));
         }
     }
 
@@ -370,14 +321,44 @@ public class TestTransactionLogAccess
     {
         setupTransactionLogAccessFromResources(tableName, resourcePath);
 
-        transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
+        transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
 
         assertThat(metadataEntry.getOriginalPartitionColumns()).containsOnly("age");
 
         MetadataEntry.Format format = metadataEntry.getFormat();
-        assertThat(format.getOptions().keySet().size()).isEqualTo(0);
-        assertThat(format.getProvider()).isEqualTo("parquet");
+        assertThat(format.options().keySet()).isEmpty();
+        assertThat(format.provider()).isEqualTo("parquet");
+    }
+
+    @Test
+    void testGetMetadataAndProtocolEntry()
+            throws Exception
+    {
+        testGetMetadataAndProtocolEntry("person", "databricks73/person");
+        testGetMetadataAndProtocolEntry("person_without_last_checkpoint", "databricks73/person_without_last_checkpoint");
+        testGetMetadataAndProtocolEntry("person_without_old_jsons", "databricks73/person_without_old_jsons");
+        testGetMetadataAndProtocolEntry("person_without_checkpoints", "databricks73/person_without_checkpoints");
+    }
+
+    private void testGetMetadataAndProtocolEntry(String tableName, String resourcePath)
+            throws Exception
+    {
+        setupTransactionLogAccessFromResources(tableName, resourcePath);
+
+        TrinoFileSystem fileSystem = tracingFileSystemFactory.create(SESSION, tableLocation);
+        transactionLogAccess.getMetadataAndProtocolEntry(SESSION, fileSystem, tableSnapshot);
+        MetadataAndProtocolEntries logEntries = transactionLogAccess.getMetadataAndProtocolEntry(SESSION, fileSystem, tableSnapshot);
+
+        MetadataEntry metadataEntry = logEntries.metadata().orElseThrow();
+        assertThat(metadataEntry.getOriginalPartitionColumns()).containsOnly("age");
+        MetadataEntry.Format format = metadataEntry.getFormat();
+        assertThat(format.options().keySet()).isEmpty();
+        assertThat(format.provider()).isEqualTo("parquet");
+
+        ProtocolEntry protocolEntry = logEntries.protocol().orElseThrow();
+        assertThat(protocolEntry.minReaderVersion()).isEqualTo(1);
+        assertThat(protocolEntry.minWriterVersion()).isEqualTo(2);
     }
 
     @Test
@@ -394,9 +375,9 @@ public class TestTransactionLogAccess
             throws Exception
     {
         setupTransactionLogAccessFromResources(tableName, resourcePath);
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
-        try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             Set<String> paths = addFileEntries
                     .map(AddFileEntry::getPath)
                     .collect(Collectors.toSet());
@@ -406,49 +387,23 @@ public class TestTransactionLogAccess
     }
 
     @Test
-    public void testAllGetRemoveEntries()
+    public void testGetProtocolEntry()
             throws Exception
     {
-        testAllGetRemoveEntries("person", "databricks73/person");
-        testAllGetRemoveEntries("person_without_last_checkpoint", "databricks73/person_without_last_checkpoint");
-        testAllGetRemoveEntries("person_without_old_jsons", "databricks73/person_without_old_jsons");
-        testAllGetRemoveEntries("person_without_checkpoints", "databricks73/person_without_checkpoints");
+        testGetProtocolEntry("person", "databricks73/person");
+        testGetProtocolEntry("person_without_last_checkpoint", "databricks73/person_without_last_checkpoint");
+        testGetProtocolEntry("person_without_old_jsons", "databricks73/person_without_old_jsons");
+        testGetProtocolEntry("person_without_checkpoints", "databricks73/person_without_checkpoints");
     }
 
-    private void testAllGetRemoveEntries(String tableName, String resourcePath)
+    private void testGetProtocolEntry(String tableName, String resourcePath)
             throws Exception
     {
         setupTransactionLogAccessFromResources(tableName, resourcePath);
 
-        try (Stream<RemoveFileEntry> removeEntries = transactionLogAccess.getRemoveEntries(SESSION, tableSnapshot)) {
-            Set<String> removedPaths = removeEntries.map(RemoveFileEntry::getPath).collect(Collectors.toSet());
-            Set<String> expectedPaths = EXPECTED_REMOVE_ENTRIES.stream().map(RemoveFileEntry::getPath).collect(Collectors.toSet());
-
-            assertThat(removedPaths).isEqualTo(expectedPaths);
-        }
-    }
-
-    @Test
-    public void testAllGetProtocolEntries()
-            throws Exception
-    {
-        testAllGetProtocolEntries("person", "databricks73/person");
-        testAllGetProtocolEntries("person_without_last_checkpoint", "databricks73/person_without_last_checkpoint");
-        testAllGetProtocolEntries("person_without_old_jsons", "databricks73/person_without_old_jsons");
-        testAllGetProtocolEntries("person_without_checkpoints", "databricks73/person_without_checkpoints");
-    }
-
-    private void testAllGetProtocolEntries(String tableName, String resourcePath)
-            throws Exception
-    {
-        setupTransactionLogAccessFromResources(tableName, resourcePath);
-
-        try (Stream<ProtocolEntry> protocolEntryStream = transactionLogAccess.getProtocolEntries(SESSION, tableSnapshot)) {
-            List<ProtocolEntry> protocolEntries = protocolEntryStream.toList();
-            assertThat(protocolEntries.size()).isEqualTo(1);
-            assertThat(protocolEntries.get(0).getMinReaderVersion()).isEqualTo(1);
-            assertThat(protocolEntries.get(0).getMinWriterVersion()).isEqualTo(2);
-        }
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        assertThat(protocolEntry.minReaderVersion()).isEqualTo(1);
+        assertThat(protocolEntry.minWriterVersion()).isEqualTo(2);
     }
 
     @Test
@@ -474,7 +429,7 @@ public class TestTransactionLogAccess
 
         String lastTransactionName = format("%020d.json", 12);
         Files.copy(resourceDir.resolve(lastTransactionName), new File(transactionLogDir, lastTransactionName).toPath());
-        TableSnapshot updatedSnapshot = transactionLogAccess.loadSnapshot(SESSION, new SchemaTableName("schema", tableName), tableDir.toURI().toString());
+        TableSnapshot updatedSnapshot = transactionLogAccess.loadSnapshot(SESSION, createTable(new SchemaTableName("schema", tableName), tableDir.toURI().toString()), Optional.empty());
         assertThat(updatedSnapshot.getVersion()).isEqualTo(12);
     }
 
@@ -491,9 +446,9 @@ public class TestTransactionLogAccess
         File resourceDir = new File(getClass().getClassLoader().getResource("databricks73/person/_delta_log").toURI());
         copyTransactionLogEntry(0, 7, resourceDir, transactionLogDir);
         setupTransactionLogAccess(tableName, tableDir.toURI().toString());
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
-        try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             Set<String> dataFiles = ImmutableSet.of(
                     "age=42/part-00000-b82d8859-84a0-4f05-872c-206b07dd54f0.c000.snappy.parquet",
                     "age=30/part-00000-72a56c23-01ba-483a-9062-dd0accc86599.c000.snappy.parquet",
@@ -502,12 +457,12 @@ public class TestTransactionLogAccess
                     "age=21/part-00000-3d546786-bedc-407f-b9f7-e97aa12cce0f.c000.snappy.parquet",
                     "age=21/part-00001-290f0f26-19cf-4772-821e-36d55d9b7872.c000.snappy.parquet");
 
-            assertEqualsIgnoreOrder(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet()), dataFiles);
+            assertThat(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet())).containsExactlyInAnyOrderElementsOf(dataFiles);
         }
 
         copyTransactionLogEntry(7, 9, resourceDir, transactionLogDir);
-        TableSnapshot updatedSnapshot = transactionLogAccess.loadSnapshot(SESSION, new SchemaTableName("schema", tableName), tableDir.toURI().toString());
-        try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(SESSION, updatedSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        TableSnapshot updatedSnapshot = transactionLogAccess.loadSnapshot(SESSION, createTable(new SchemaTableName("schema", tableName), tableDir.toURI().toString()), Optional.empty());
+        try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), updatedSnapshot, TupleDomain.all(), alwaysTrue())) {
             Set<String> dataFiles = ImmutableSet.of(
                     "age=21/part-00000-3d546786-bedc-407f-b9f7-e97aa12cce0f.c000.snappy.parquet",
                     "age=21/part-00001-290f0f26-19cf-4772-821e-36d55d9b7872.c000.snappy.parquet",
@@ -517,7 +472,7 @@ public class TestTransactionLogAccess
                     "age=42/part-00003-0f53cae3-3e34-4876-b651-e1db9584dbc3.c000.snappy.parquet",
                     "age=25/part-00000-b7fbbe31-c7f9-44ed-8757-5c47d10c3e81.c000.snappy.parquet");
 
-            assertEqualsIgnoreOrder(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet()), dataFiles);
+            assertThat(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet())).containsExactlyInAnyOrderElementsOf(dataFiles);
         }
     }
 
@@ -535,9 +490,9 @@ public class TestTransactionLogAccess
         copyTransactionLogEntry(0, 8, resourceDir, transactionLogDir);
         setupTransactionLogAccess(tableName, tableDir.toURI().toString());
 
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
-        try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             Set<String> dataFiles = ImmutableSet.of(
                     "age=21/part-00000-3d546786-bedc-407f-b9f7-e97aa12cce0f.c000.snappy.parquet",
                     "age=21/part-00001-290f0f26-19cf-4772-821e-36d55d9b7872.c000.snappy.parquet",
@@ -546,13 +501,13 @@ public class TestTransactionLogAccess
                     "age=30/part-00002-5800be2e-2373-47d8-8b86-776a8ea9d69f.c000.snappy.parquet",
                     "age=42/part-00003-0f53cae3-3e34-4876-b651-e1db9584dbc3.c000.snappy.parquet");
 
-            assertEqualsIgnoreOrder(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet()), dataFiles);
+            assertThat(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet())).containsExactlyInAnyOrderElementsOf(dataFiles);
         }
 
         copyTransactionLogEntry(8, 12, resourceDir, transactionLogDir);
         Files.copy(new File(resourceDir, LAST_CHECKPOINT_FILENAME).toPath(), new File(transactionLogDir, LAST_CHECKPOINT_FILENAME).toPath());
-        TableSnapshot updatedSnapshot = transactionLogAccess.loadSnapshot(SESSION, new SchemaTableName("schema", tableName), tableDir.toURI().toString());
-        try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(SESSION, updatedSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        TableSnapshot updatedSnapshot = transactionLogAccess.loadSnapshot(SESSION, createTable(new SchemaTableName("schema", tableName), tableDir.toURI().toString()), Optional.empty());
+        try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), updatedSnapshot, TupleDomain.all(), alwaysTrue())) {
             Set<String> dataFiles = ImmutableSet.of(
                     "age=21/part-00000-3d546786-bedc-407f-b9f7-e97aa12cce0f.c000.snappy.parquet",
                     "age=21/part-00001-290f0f26-19cf-4772-821e-36d55d9b7872.c000.snappy.parquet",
@@ -565,7 +520,7 @@ public class TestTransactionLogAccess
                     "age=42/part-00000-b26c891a-7288-4d96-9d3b-bef648f12a34.c000.snappy.parquet",
                     "age=30/part-00000-37ccfcd3-b44b-4d04-a1e6-d2837da75f7a.c000.snappy.parquet");
 
-            assertEqualsIgnoreOrder(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet()), dataFiles);
+            assertThat(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet())).containsExactlyInAnyOrderElementsOf(dataFiles);
         }
     }
 
@@ -586,13 +541,13 @@ public class TestTransactionLogAccess
         Files.copy(new File(resourceDir, LAST_CHECKPOINT_FILENAME).toPath(), new File(transactionLogDir, LAST_CHECKPOINT_FILENAME).toPath());
         ConnectorSession activeDataFileCacheSession = TestingConnectorSession.builder()
                 .setPropertyMetadata(new DeltaLakeSessionProperties(
-                        new DeltaLakeConfig().setCheckpointFilteringEnabled(false),
+                        new DeltaLakeConfig(),
                         new ParquetReaderConfig(),
                         new ParquetWriterConfig())
                         .getSessionProperties())
                 .build();
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(activeDataFileCacheSession, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(activeDataFileCacheSession, tableSnapshot);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(activeDataFileCacheSession, tracingFileSystemFactory.create(activeDataFileCacheSession, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(activeDataFileCacheSession, tracingFileSystemFactory.create(activeDataFileCacheSession, tableLocation), tableSnapshot);
 
         Set<String> originalDataFiles = ImmutableSet.of(
                 "age=42/part-00000-b26c891a-7288-4d96-9d3b-bef648f12a34.c000.snappy.parquet",
@@ -609,8 +564,8 @@ public class TestTransactionLogAccess
         assertFileSystemAccesses(
                 () -> {
                     setupTransactionLogAccess(tableName, tableDir.toURI().toString());
-                    try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(activeDataFileCacheSession, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
-                        assertEqualsIgnoreOrder(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet()), originalDataFiles);
+                    try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(activeDataFileCacheSession, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
+                        assertThat(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet())).containsExactlyInAnyOrderElementsOf(originalDataFiles);
                     }
                 },
                 ImmutableMultiset.<FileOperation>builder()
@@ -618,7 +573,8 @@ public class TestTransactionLogAccess
                         .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.length"))
                         .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.newInput"))
                         .add(new FileOperation("00000000000000000011.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000012.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000011.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000012.json", "InputFile.length"))
                         .build());
 
         copyTransactionLogEntry(12, 14, resourceDir, transactionLogDir);
@@ -627,16 +583,40 @@ public class TestTransactionLogAccess
                 "age=29/part-00000-3794c463-cb0c-4beb-8d07-7cc1e3b5920f.c000.snappy.parquet");
         assertFileSystemAccesses(
                 () -> {
-                    TableSnapshot updatedTableSnapshot = transactionLogAccess.loadSnapshot(activeDataFileCacheSession, new SchemaTableName("schema", tableName), tableDir.toURI().toString());
-                    try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(activeDataFileCacheSession, updatedTableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
-                        assertEqualsIgnoreOrder(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet()), union(originalDataFiles, newDataFiles));
+                    TableSnapshot updatedTableSnapshot = transactionLogAccess.loadSnapshot(activeDataFileCacheSession, createTable(new SchemaTableName("schema", tableName), tableDir.toURI().toString()), Optional.empty());
+                    try (Stream<AddFileEntry> activeDataFiles = transactionLogAccess.getActiveFiles(
+                            activeDataFileCacheSession,
+                            new DeltaLakeTableHandle(
+                                    "schema",
+                                    tableName,
+                                    true,
+                                    tableDir.toURI().toString(), // the location should keep the same as the previous test cases
+                                    metadataEntry,
+                                    protocolEntry,
+                                    TupleDomain.none(),
+                                    TupleDomain.none(),
+                                    Optional.empty(),
+                                    Optional.empty(),
+                                    Optional.empty(),
+                                    Optional.empty(),
+                                    Optional.empty(),
+                                    0,
+                                    false),
+                            updatedTableSnapshot,
+                            TupleDomain.all(),
+                            alwaysTrue())) {
+                        assertThat(activeDataFiles.map(AddFileEntry::getPath).collect(Collectors.toSet())).containsExactlyInAnyOrderElementsOf(union(originalDataFiles, newDataFiles));
                     }
                 },
                 ImmutableMultiset.<FileOperation>builder()
                         .add(new FileOperation("_last_checkpoint", "InputFile.newStream"))
-                        .addCopies(new FileOperation("00000000000000000012.json", "InputFile.newStream"), 2)
-                        .addCopies(new FileOperation("00000000000000000013.json", "InputFile.newStream"), 2)
-                        .add(new FileOperation("00000000000000000014.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.newInput"))
+                        .addCopies(new FileOperation("00000000000000000012.json", "InputFile.newStream"), 1)
+                        .addCopies(new FileOperation("00000000000000000013.json", "InputFile.newStream"), 1)
+                        .addCopies(new FileOperation("00000000000000000012.json", "InputFile.length"), 1)
+                        .addCopies(new FileOperation("00000000000000000013.json", "InputFile.length"), 1)
+                        .add(new FileOperation("00000000000000000014.json", "InputFile.length"))
                         .build());
     }
 
@@ -655,10 +635,10 @@ public class TestTransactionLogAccess
         Files.copy(new File(resourceDir, LAST_CHECKPOINT_FILENAME).toPath(), new File(transactionLogDir, LAST_CHECKPOINT_FILENAME).toPath());
 
         setupTransactionLogAccess(tableName, tableDir.toURI().toString());
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
         List<AddFileEntry> expectedDataFiles;
-        try (Stream<AddFileEntry> addFileEntryStream = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        try (Stream<AddFileEntry> addFileEntryStream = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             expectedDataFiles = addFileEntryStream.collect(toImmutableList());
         }
 
@@ -666,13 +646,13 @@ public class TestTransactionLogAccess
         Set<String> newDataFiles = ImmutableSet.of(
                 "age=28/part-00000-40dd1707-1d42-4328-a59a-21f5c945fe60.c000.snappy.parquet",
                 "age=29/part-00000-3794c463-cb0c-4beb-8d07-7cc1e3b5920f.c000.snappy.parquet");
-        TableSnapshot updatedTableSnapshot = transactionLogAccess.loadSnapshot(SESSION, new SchemaTableName("schema", tableName), tableDir.toURI().toString());
+        TableSnapshot updatedTableSnapshot = transactionLogAccess.loadSnapshot(SESSION, createTable(new SchemaTableName("schema", tableName), tableDir.toURI().toString()), Optional.empty());
         List<AddFileEntry> allDataFiles;
-        try (Stream<AddFileEntry> addFileEntryStream = transactionLogAccess.getActiveFiles(SESSION, updatedTableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        try (Stream<AddFileEntry> addFileEntryStream = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), updatedTableSnapshot, TupleDomain.all(), alwaysTrue())) {
             allDataFiles = addFileEntryStream.collect(toImmutableList());
         }
         List<AddFileEntry> dataFilesWithFixedVersion;
-        try (Stream<AddFileEntry> addFileEntryStream = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        try (Stream<AddFileEntry> addFileEntryStream = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             dataFilesWithFixedVersion = addFileEntryStream.collect(toImmutableList());
         }
         for (String newFilePath : newDataFiles) {
@@ -680,8 +660,8 @@ public class TestTransactionLogAccess
             assertThat(dataFilesWithFixedVersion.stream().noneMatch(entry -> entry.getPath().equals(newFilePath))).isTrue();
         }
 
-        assertThat(expectedDataFiles.size()).isEqualTo(dataFilesWithFixedVersion.size());
-        List<ColumnMetadata> columns = extractColumnMetadata(transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot), transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot), TESTING_TYPE_MANAGER);
+        assertThat(expectedDataFiles).hasSize(dataFilesWithFixedVersion.size());
+        List<ColumnMetadata> columns = extractColumnMetadata(transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot), transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot), TESTING_TYPE_MANAGER);
         for (int i = 0; i < expectedDataFiles.size(); i++) {
             AddFileEntry expected = expectedDataFiles.get(i);
             AddFileEntry actual = dataFilesWithFixedVersion.get(i);
@@ -693,14 +673,14 @@ public class TestTransactionLogAccess
             assertThat(expected.isDataChange()).isEqualTo(actual.isDataChange());
             assertThat(expected.getTags()).isEqualTo(actual.getTags());
 
-            assertThat(expected.getStats().isPresent()).isTrue();
-            assertThat(actual.getStats().isPresent()).isTrue();
+            assertThat(expected.getStats()).isPresent();
+            assertThat(actual.getStats()).isPresent();
 
             for (ColumnMetadata column : columns) {
                 DeltaLakeColumnHandle columnHandle = new DeltaLakeColumnHandle(column.getName(), column.getType(), OptionalInt.empty(), column.getName(), column.getType(), REGULAR, Optional.empty());
                 assertThat(expected.getStats().get().getMinColumnValue(columnHandle)).isEqualTo(actual.getStats().get().getMinColumnValue(columnHandle));
                 assertThat(expected.getStats().get().getMaxColumnValue(columnHandle)).isEqualTo(actual.getStats().get().getMaxColumnValue(columnHandle));
-                assertThat(expected.getStats().get().getNullCount(columnHandle.getBaseColumnName())).isEqualTo(actual.getStats().get().getNullCount(columnHandle.getBaseColumnName()));
+                assertThat(expected.getStats().get().getNullCount(columnHandle.baseColumnName())).isEqualTo(actual.getStats().get().getNullCount(columnHandle.baseColumnName()));
                 assertThat(expected.getStats().get().getNumRecords()).isEqualTo(actual.getStats().get().getNumRecords());
             }
         }
@@ -726,11 +706,11 @@ public class TestTransactionLogAccess
         assertThat(tableSnapshot.getVersion()).isEqualTo(0L);
 
         copyTransactionLogEntry(1, 2, resourceDir, transactionLogDir);
-        TableSnapshot firstUpdate = transactionLogAccess.loadSnapshot(SESSION, schemaTableName, tableLocation);
+        TableSnapshot firstUpdate = transactionLogAccess.loadSnapshot(SESSION, createTable(schemaTableName, tableLocation), Optional.empty());
         assertThat(firstUpdate.getVersion()).isEqualTo(1L);
 
         copyTransactionLogEntry(2, 3, resourceDir, transactionLogDir);
-        TableSnapshot secondUpdate = transactionLogAccess.loadSnapshot(SESSION, schemaTableName, tableLocation);
+        TableSnapshot secondUpdate = transactionLogAccess.loadSnapshot(SESSION, createTable(schemaTableName, tableLocation), Optional.empty());
         assertThat(secondUpdate.getVersion()).isEqualTo(2L);
     }
 
@@ -742,10 +722,10 @@ public class TestTransactionLogAccess
         String tableName = "parquet_struct_statistics";
         setupTransactionLogAccess(tableName, getClass().getClassLoader().getResource("databricks73/pruning/" + tableName).toURI().toString());
 
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
         List<AddFileEntry> addFileEntries;
-        try (Stream<AddFileEntry> addFileEntryStream = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
+        try (Stream<AddFileEntry> addFileEntryStream = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
             addFileEntries = addFileEntryStream.collect(toImmutableList());
         }
 
@@ -791,168 +771,109 @@ public class TestTransactionLogAccess
 
         assertFileSystemAccesses(
                 () -> {
-                    setupTransactionLogAccess(tableName, tableDir, cacheDisabledConfig);
+                    setupTransactionLogAccess(tableName, tableDir, cacheDisabledConfig, Optional.empty());
                 },
                 ImmutableMultiset.<FileOperation>builder()
                         .add(new FileOperation("_last_checkpoint", "InputFile.newStream"))
                         .add(new FileOperation("00000000000000000011.json", "InputFile.newStream"))
                         .add(new FileOperation("00000000000000000012.json", "InputFile.newStream"))
                         .add(new FileOperation("00000000000000000013.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000014.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000011.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000012.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000013.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000014.json", "InputFile.length"))
                         .build());
 
         // With the transaction log cache disabled, when loading the snapshot again, all the needed files will be opened again
         assertFileSystemAccesses(
                 () -> {
-                    transactionLogAccess.loadSnapshot(SESSION, new SchemaTableName("schema", tableName), tableDir);
+                    transactionLogAccess.loadSnapshot(SESSION, createTable(new SchemaTableName("schema", tableName), tableDir), Optional.empty());
                 },
                 ImmutableMultiset.<FileOperation>builder()
                         .add(new FileOperation("_last_checkpoint", "InputFile.newStream"))
                         .add(new FileOperation("00000000000000000011.json", "InputFile.newStream"))
                         .add(new FileOperation("00000000000000000012.json", "InputFile.newStream"))
                         .add(new FileOperation("00000000000000000013.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000014.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000011.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000012.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000013.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000014.json", "InputFile.length"))
                         .build());
     }
 
     @Test
-    public void testTableSnapshotsActiveDataFilesCache()
+    public void testLoadSnapshotWithEndVersion()
             throws Exception
     {
-        setupTransactionLogAccessFromResources("person", "databricks73/person");
-
         String tableName = "person";
         String tableDir = getClass().getClassLoader().getResource("databricks73/" + tableName).toURI().toString();
-        DeltaLakeConfig shortLivedActiveDataFilesCacheConfig = new DeltaLakeConfig();
-        shortLivedActiveDataFilesCacheConfig.setDataFileCacheTtl(new Duration(10, TimeUnit.MINUTES));
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
+        setupTransactionLogAccess("person", getClass().getClassLoader().getResource("databricks73/person").toString(), new DeltaLakeConfig(), Optional.of(9L));
+        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
+        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tracingFileSystemFactory.create(SESSION, tableLocation), tableSnapshot);
 
-        ConnectorSession activeDataFileCacheSession = TestingConnectorSession.builder()
-                .setPropertyMetadata(new DeltaLakeSessionProperties(
-                        new DeltaLakeConfig().setCheckpointFilteringEnabled(false),
-                        new ParquetReaderConfig(),
-                        new ParquetWriterConfig())
-                        .getSessionProperties())
-                .build();
-        assertFileSystemAccesses(
-                () -> {
-                    setupTransactionLogAccess(tableName, tableDir, shortLivedActiveDataFilesCacheConfig);
-                    try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(activeDataFileCacheSession, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
-                        assertThat(addFileEntries.count()).isEqualTo(12L);
-                    }
-                },
-                ImmutableMultiset.<FileOperation>builder()
-                        .add(new FileOperation("_last_checkpoint", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000011.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000012.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000013.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000014.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.length"))
-                        .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.newInput"))
-                        .build());
-
-        // The internal data cache should still contain the data files for the table
-        assertFileSystemAccesses(
-                () -> {
-                    try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(activeDataFileCacheSession, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
-                        assertThat(addFileEntries.count()).isEqualTo(12L);
-                    }
-                },
-                ImmutableMultiset.of());
-    }
-
-    @Test
-    public void testFlushSnapshotAndActiveFileCache()
-            throws Exception
-    {
-        setupTransactionLogAccessFromResources("person", "databricks73/person");
-
-        String tableName = "person";
-        String tableDir = getClass().getClassLoader().getResource("databricks73/" + tableName).toURI().toString();
-        DeltaLakeConfig shortLivedActiveDataFilesCacheConfig = new DeltaLakeConfig();
-        shortLivedActiveDataFilesCacheConfig.setDataFileCacheTtl(new Duration(10, TimeUnit.MINUTES));
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
-
-        assertFileSystemAccesses(
-                () -> {
-                    setupTransactionLogAccess(tableName, tableDir, shortLivedActiveDataFilesCacheConfig);
-                    try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
-                        assertThat(addFileEntries.count()).isEqualTo(12L);
-                    }
-                },
-                ImmutableMultiset.<FileOperation>builder()
-                        .add(new FileOperation("_last_checkpoint", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000011.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000012.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000013.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000014.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.length"))
-                        .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.newInput"))
-                        .build());
-
-        // Flush all cache and then load snapshot and get active files
+        // Version 10 has a checkpoint file
         transactionLogAccess.flushCache();
         assertFileSystemAccesses(
                 () -> {
-                    transactionLogAccess.loadSnapshot(SESSION, new SchemaTableName("schema", tableName), tableDir);
-                    try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
-                        assertThat(addFileEntries.count()).isEqualTo(12L);
+                    transactionLogAccess.loadSnapshot(SESSION, createTable(new SchemaTableName("schema", tableName), tableDir), Optional.of(9L));
+                    try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
+                        assertThat(addFileEntries.count()).isEqualTo(8L);
                     }
                 },
                 ImmutableMultiset.<FileOperation>builder()
                         .add(new FileOperation("_last_checkpoint", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000011.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000012.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000013.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000014.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.length"))
-                        .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.newInput"))
+                        .add(new FileOperation("00000000000000000000.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000001.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000002.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000004.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000005.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000006.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000007.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000008.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000009.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000003.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000004.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000005.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000006.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000007.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000008.json", "InputFile.length"))
+                        .add(new FileOperation("00000000000000000009.json", "InputFile.length"))
                         .build());
-    }
 
-    @Test
-    public void testTableSnapshotsActiveDataFilesCacheDisabled()
-            throws Exception
-    {
-        setupTransactionLogAccessFromResources("person", "databricks73/person");
-
-        String tableName = "person";
-        String tableDir = getClass().getClassLoader().getResource("databricks73/" + tableName).toURI().toString();
-        DeltaLakeConfig shortLivedActiveDataFilesCacheConfig = new DeltaLakeConfig();
-        shortLivedActiveDataFilesCacheConfig.setDataFileCacheTtl(new Duration(0, TimeUnit.SECONDS));
-        MetadataEntry metadataEntry = transactionLogAccess.getMetadataEntry(SESSION, tableSnapshot);
-        ProtocolEntry protocolEntry = transactionLogAccess.getProtocolEntry(SESSION, tableSnapshot);
-
+        setupTransactionLogAccess("person", getClass().getClassLoader().getResource("databricks73/person").toString(), new DeltaLakeConfig(), Optional.of(10L));
+        transactionLogAccess.flushCache();
         assertFileSystemAccesses(
                 () -> {
-                    setupTransactionLogAccess(tableName, tableDir, shortLivedActiveDataFilesCacheConfig);
-                    try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
-                        assertThat(addFileEntries.count()).isEqualTo(12L);
+                    transactionLogAccess.loadSnapshot(SESSION, createTable(new SchemaTableName("schema", tableName), tableDir), Optional.of(10L));
+                    try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
+                        assertThat(addFileEntries.count()).isEqualTo(9L);
                     }
                 },
                 ImmutableMultiset.<FileOperation>builder()
                         .add(new FileOperation("_last_checkpoint", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000011.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000012.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000013.json", "InputFile.newStream"))
-                        .add(new FileOperation("00000000000000000014.json", "InputFile.newStream"))
                         .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.length"))
                         .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.newInput"))
                         .build());
 
-        // With no caching for the transaction log entries, when loading the snapshot again,
-        // the checkpoint file will be read again
+        setupTransactionLogAccess("person", getClass().getClassLoader().getResource("databricks73/person").toString(), new DeltaLakeConfig(), Optional.of(11L));
+        transactionLogAccess.flushCache();
         assertFileSystemAccesses(
                 () -> {
-                    try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, tableSnapshot, metadataEntry, protocolEntry, TupleDomain.all(), alwaysTrue())) {
-                        assertThat(addFileEntries.count()).isEqualTo(12L);
+                    transactionLogAccess.loadSnapshot(SESSION, createTable(new SchemaTableName("schema", tableName), tableDir), Optional.of(11L));
+                    try (Stream<AddFileEntry> addFileEntries = transactionLogAccess.getActiveFiles(SESSION, createTable(metadataEntry, protocolEntry), tableSnapshot, TupleDomain.all(), alwaysTrue())) {
+                        assertThat(addFileEntries.count()).isEqualTo(10L);
                     }
                 },
                 ImmutableMultiset.<FileOperation>builder()
+                        .add(new FileOperation("_last_checkpoint", "InputFile.newStream"))
                         .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.length"))
                         .add(new FileOperation("00000000000000000010.checkpoint.parquet", "InputFile.newInput"))
+                        .add(new FileOperation("00000000000000000011.json", "InputFile.newStream"))
+                        .add(new FileOperation("00000000000000000011.json", "InputFile.length"))
                         .build());
     }
 

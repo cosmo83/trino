@@ -18,18 +18,17 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import io.trino.Session;
 import io.trino.connector.MockConnectorFactory;
+import io.trino.connector.TestingColumnHandle;
 import io.trino.metadata.AbstractMockMetadata;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TableHandle;
 import io.trino.metadata.TestingFunctionResolution;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.SchemaTableName;
-import io.trino.spi.connector.TestingColumnHandle;
 import io.trino.spi.function.OperatorType;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.FunctionCall;
 import io.trino.sql.ir.Row;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.RuleTester;
@@ -43,16 +42,17 @@ import java.util.Map;
 import java.util.Optional;
 
 import static io.trino.spi.connector.RowChangeParadigm.DELETE_ROW_AND_INSERT_ROW;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
 
 public class TestPushMergeWriterUpdateIntoConnector
 {
     private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
-    private static final ResolvedFunction MULTIPLY_INTEGER = FUNCTIONS.resolveOperator(OperatorType.MULTIPLY, ImmutableList.of(INTEGER, INTEGER));
+    private static final ResolvedFunction MULTIPLY_BIGINT = FUNCTIONS.resolveOperator(OperatorType.MULTIPLY, ImmutableList.of(BIGINT, BIGINT));
 
     private static final String TEST_SCHEMA = "test_schema";
     private static final String TEST_TABLE = "test_table";
@@ -70,7 +70,7 @@ public class TestPushMergeWriterUpdateIntoConnector
                         Symbol rowId = p.symbol("row_id");
                         Symbol rowCount = p.symbol("row_count");
                         // set column name and constant update
-                        Expression updateMergeRowExpression = new Row(ImmutableList.of(p.symbol("column_1").toSymbolReference(), new Constant(INTEGER, 1L), TRUE_LITERAL, new Constant(INTEGER, 1L), new Constant(INTEGER, 1L)));
+                        Expression updateMergeRowExpression = new Row(ImmutableList.of(p.symbol("column_1").toSymbolReference(), new Constant(INTEGER, 1L), TRUE, new Constant(INTEGER, 1L), new Constant(INTEGER, 1L)));
 
                         return p.tableFinish(
                                 p.merge(
@@ -109,7 +109,7 @@ public class TestPushMergeWriterUpdateIntoConnector
                         Symbol rowCount = p.symbol("row_count");
                         // set arithmetic expression which we don't support yet
                         Expression updateMergeRowExpression = new Row(ImmutableList.of(p.symbol("column_1").toSymbolReference(),
-                                new ArithmeticBinaryExpression(MULTIPLY_INTEGER, ArithmeticBinaryExpression.Operator.MULTIPLY, p.symbol("col1").toSymbolReference(), new Constant(INTEGER, 5L))));
+                                new Call(MULTIPLY_BIGINT, ImmutableList.of(p.symbol("col1").toSymbolReference(), new Constant(BIGINT, 5L)))));
 
                         return p.tableFinish(
                                 p.merge(
@@ -147,7 +147,7 @@ public class TestPushMergeWriterUpdateIntoConnector
                         Symbol rowId = p.symbol("row_id");
                         Symbol rowCount = p.symbol("row_count");
                         // set function call, which represents update all columns statement
-                        Expression updateMergeRowExpression = new Row(ImmutableList.of(new FunctionCall(
+                        Expression updateMergeRowExpression = new Row(ImmutableList.of(new Call(
                                 ruleTester.getMetadata().resolveBuiltinFunction("from_base64", fromTypes(VARCHAR)),
                                 ImmutableList.of(new Constant(VARCHAR, Slices.utf8Slice(""))))));
 

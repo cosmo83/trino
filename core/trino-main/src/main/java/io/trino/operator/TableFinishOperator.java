@@ -21,6 +21,7 @@ import io.trino.Session;
 import io.trino.execution.TableExecuteContext;
 import io.trino.execution.TableExecuteContextManager;
 import io.trino.operator.OperationTimer.OperationTiming;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.QueryId;
@@ -30,7 +31,6 @@ import io.trino.spi.statistics.ComputedStatistics;
 import io.trino.spi.type.Type;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.StatisticAggregationsDescriptor;
-import io.trino.util.AutoCloseableCloser;
 
 import java.util.Collection;
 import java.util.List;
@@ -40,7 +40,6 @@ import java.util.function.Supplier;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
-import static io.trino.SystemSessionProperties.isStatisticsCpuTimerEnabled;
 import static io.trino.operator.TableWriterOperator.FRAGMENT_CHANNEL;
 import static io.trino.operator.TableWriterOperator.ROW_COUNT_CHANNEL;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -92,7 +91,7 @@ public class TableFinishOperator
             checkState(!closed, "Factory is already closed");
             OperatorContext context = driverContext.addOperatorContext(operatorId, planNodeId, TableFinishOperator.class.getSimpleName());
             Operator statisticsAggregationOperator = statisticsAggregationOperatorFactory.createOperator(driverContext);
-            boolean statisticsCpuTimerEnabled = !(statisticsAggregationOperator instanceof DevNullOperator) && isStatisticsCpuTimerEnabled(session);
+            boolean statisticsCpuTimerEnabled = !(statisticsAggregationOperator instanceof DevNullOperator);
             QueryId queryId = driverContext.getPipelineContext().getTaskContext().getQueryContext().getQueryId();
             TableExecuteContext tableExecuteContext = tableExecuteContextManager.getTableExecuteContextForQuery(queryId);
             return new TableFinishOperator(context, tableFinisher, statisticsAggregationOperator, descriptor, statisticsCpuTimerEnabled, tableExecuteContext, outputRowCount);
@@ -133,8 +132,6 @@ public class TableFinishOperator
     private final TableExecuteContext tableExecuteContext;
     private final boolean outputRowCount;
 
-    private final Supplier<TableFinishInfo> tableFinishInfoSupplier;
-
     public TableFinishOperator(
             OperatorContext operatorContext,
             TableFinisher tableFinisher,
@@ -150,9 +147,8 @@ public class TableFinishOperator
         this.descriptor = requireNonNull(descriptor, "descriptor is null");
         this.statisticsCpuTimerEnabled = statisticsCpuTimerEnabled;
         this.tableExecuteContext = requireNonNull(tableExecuteContext, "tableExecuteContext is null");
-        this.tableFinishInfoSupplier = createTableFinishInfoSupplier(outputMetadata, statisticsTiming);
         this.outputRowCount = outputRowCount;
-        operatorContext.setInfoSupplier(tableFinishInfoSupplier);
+        operatorContext.setInfoSupplier(createTableFinishInfoSupplier(outputMetadata, statisticsTiming));
     }
 
     @Override

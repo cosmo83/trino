@@ -16,6 +16,7 @@ package io.trino.sql.planner.iterative.rule;
 import com.google.common.base.Enums;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
 import io.trino.Session;
 import io.trino.metadata.ResolvedFunction;
@@ -28,16 +29,15 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 import io.trino.sql.InterpretedFunctionInvoker;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.BetweenPredicate;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Between;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.ir.ExpressionTreeRewriter;
-import io.trino.sql.ir.FunctionCall;
-import io.trino.sql.ir.IsNullPredicate;
-import io.trino.sql.ir.NotExpression;
-import io.trino.sql.planner.IrExpressionInterpreter;
-import io.trino.sql.planner.NoOpSymbolResolver;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.optimizer.IrExpressionEvaluator;
+import io.trino.sql.ir.optimizer.IrExpressionOptimizer;
 
 import java.lang.invoke.MethodHandle;
 import java.time.LocalDate;
@@ -55,14 +55,16 @@ import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.TimestampType.createTimestampType;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
-import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
-import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
-import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Booleans.FALSE;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.IrExpressions.not;
 import static io.trino.sql.ir.IrUtils.or;
+import static io.trino.sql.ir.Logical.and;
+import static io.trino.sql.ir.optimizer.IrExpressionOptimizer.newOptimizer;
 import static io.trino.sql.planner.iterative.rule.UnwrapCastInComparison.falseIfNotNull;
-import static io.trino.sql.planner.iterative.rule.UnwrapCastInComparison.trueIfNotNull;
 import static io.trino.type.DateTimes.PICOSECONDS_PER_MICROSECOND;
 import static io.trino.type.DateTimes.scaleFactor;
 import static java.lang.Math.floorDiv;
@@ -116,60 +118,57 @@ public class UnwrapDateTruncInComparison
         private final PlannerContext plannerContext;
         private final Session session;
         private final InterpretedFunctionInvoker functionInvoker;
+        private final IrExpressionEvaluator evaluator;
+        private final IrExpressionOptimizer optimizer;
 
         public Visitor(PlannerContext plannerContext, Session session)
         {
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
             this.session = requireNonNull(session, "session is null");
             this.functionInvoker = new InterpretedFunctionInvoker(plannerContext.getFunctionManager());
+            evaluator = new IrExpressionEvaluator(plannerContext);
+            optimizer = newOptimizer(plannerContext);
         }
 
         @Override
-        public Expression rewriteComparisonExpression(ComparisonExpression node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
+        public Expression rewriteComparison(Comparison node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
         {
-            ComparisonExpression expression = treeRewriter.defaultRewrite(node, null);
+            Comparison expression = treeRewriter.defaultRewrite(node, null);
             return unwrapDateTrunc(expression);
         }
 
         // Simplify `date_trunc(unit, d) ? value`
-        private Expression unwrapDateTrunc(ComparisonExpression expression)
+        private Expression unwrapDateTrunc(Comparison expression)
         {
             // Expect date_trunc on the left side and value on the right side of the comparison.
             // This is provided by CanonicalizeExpressionRewriter.
 
-            if (!(expression.getLeft() instanceof FunctionCall call) ||
-                    !call.getFunction().getName().equals(builtinFunctionName("date_trunc")) ||
-                    call.getArguments().size() != 2) {
+            if (!(expression.left() instanceof Call call) ||
+                    !call.function().name().equals(builtinFunctionName("date_trunc")) ||
+                    call.arguments().size() != 2) {
                 return expression;
             }
 
-            Expression unitExpression = call.getArguments().get(0);
+            Expression unitExpression = call.arguments().get(0);
             if (!(unitExpression.type() instanceof VarcharType) || !(unitExpression instanceof Constant)) {
                 return expression;
             }
-            Slice unitName = (Slice) new IrExpressionInterpreter(unitExpression, plannerContext, session)
-                    .optimize(NoOpSymbolResolver.INSTANCE);
+            Slice unitName = (Slice) evaluator.evaluate(unitExpression, session, ImmutableMap.of());
             if (unitName == null) {
                 return expression;
             }
 
-            Expression argument = call.getArguments().get(1);
-            Type argumentType = argument.type();
+            Expression argument = call.arguments().get(1);
+            Expression right = optimizer.process(expression.right(), session, ImmutableMap.of()).orElse(expression.right());
 
-            Type rightType = expression.right().type();
-            verify(argumentType.equals(rightType), "Mismatched types: %s and %s", argumentType, rightType);
-
-            Object right = new IrExpressionInterpreter(expression.getRight(), plannerContext, session)
-                    .optimize(NoOpSymbolResolver.INSTANCE);
-
-            if (right == null) {
-                return switch (expression.getOperator()) {
+            if (right instanceof Constant constant && constant.value() == null) {
+                return switch (expression.operator()) {
                     case EQUAL, NOT_EQUAL, LESS_THAN, LESS_THAN_OR_EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL -> new Constant(BOOLEAN, null);
-                    case IS_DISTINCT_FROM -> new NotExpression(new IsNullPredicate(argument));
+                    case IDENTICAL -> new IsNull(argument);
                 };
             }
 
-            if (right instanceof Expression) {
+            if (!(right instanceof Constant(Type rightType, Object rightValue))) {
                 return expression;
             }
             if (rightType instanceof TimestampWithTimeZoneType) {
@@ -178,7 +177,7 @@ public class UnwrapDateTruncInComparison
                 return expression;
             }
 
-            ResolvedFunction resolvedFunction = call.getFunction();
+            ResolvedFunction resolvedFunction = call.function();
 
             Optional<SupportedUnit> unitIfSupported = Enums.getIfPresent(SupportedUnit.class, unitName.toStringUtf8().toUpperCase(Locale.ENGLISH)).toJavaUtil();
             if (unitIfSupported.isEmpty()) {
@@ -190,12 +189,12 @@ public class UnwrapDateTruncInComparison
                 return expression;
             }
 
-            Object rangeLow = functionInvoker.invoke(resolvedFunction, session.toConnectorSession(), ImmutableList.of(unitName, right));
-            int compare = compare(rightType, rangeLow, right);
-            verify(compare <= 0, "Truncation of %s value %s resulted in a bigger value %s", rightType, right, rangeLow);
+            Object rangeLow = functionInvoker.invoke(resolvedFunction, session.toConnectorSession(), ImmutableList.of(unitName, rightValue));
+            int compare = compare(rightType, rangeLow, rightValue);
+            verify(compare <= 0, "Truncation of %s value %s resulted in a bigger value %s", rightType, rightValue, rangeLow);
             boolean rightValueAtRangeLow = compare == 0;
 
-            return switch (expression.getOperator()) {
+            return switch (expression.operator()) {
                 case EQUAL -> {
                     if (!rightValueAtRangeLow) {
                         yield falseIfNotNull(argument);
@@ -206,35 +205,40 @@ public class UnwrapDateTruncInComparison
                     if (!rightValueAtRangeLow) {
                         yield trueIfNotNull(argument);
                     }
-                    yield new NotExpression(between(argument, rightType, rangeLow, calculateRangeEndInclusive(rangeLow, rightType, unit)));
+                    yield not(plannerContext.getMetadata(), between(argument, rightType, rangeLow, calculateRangeEndInclusive(rangeLow, rightType, unit)));
                 }
-                case IS_DISTINCT_FROM -> {
+                case IDENTICAL -> {
                     if (!rightValueAtRangeLow) {
-                        yield TRUE_LITERAL;
+                        yield FALSE;
                     }
-                    yield or(
-                            new IsNullPredicate(argument),
-                            new NotExpression(between(argument, rightType, rangeLow, calculateRangeEndInclusive(rangeLow, rightType, unit))));
+                    yield and(
+                            not(plannerContext.getMetadata(), new IsNull(argument)),
+                            between(argument, rightType, rangeLow, calculateRangeEndInclusive(rangeLow, rightType, unit)));
                 }
                 case LESS_THAN -> {
                     if (rightValueAtRangeLow) {
-                        yield new ComparisonExpression(LESS_THAN, argument, new Constant(rightType, rangeLow));
+                        yield new Comparison(LESS_THAN, argument, new Constant(rightType, rangeLow));
                     }
-                    yield new ComparisonExpression(LESS_THAN_OR_EQUAL, argument, new Constant(rightType, calculateRangeEndInclusive(rangeLow, rightType, unit)));
+                    yield new Comparison(LESS_THAN_OR_EQUAL, argument, new Constant(rightType, calculateRangeEndInclusive(rangeLow, rightType, unit)));
                 }
                 case LESS_THAN_OR_EQUAL -> {
-                    yield new ComparisonExpression(LESS_THAN_OR_EQUAL, argument, new Constant(rightType, calculateRangeEndInclusive(rangeLow, rightType, unit)));
+                    yield new Comparison(LESS_THAN_OR_EQUAL, argument, new Constant(rightType, calculateRangeEndInclusive(rangeLow, rightType, unit)));
                 }
                 case GREATER_THAN -> {
-                    yield new ComparisonExpression(GREATER_THAN, argument, new Constant(rightType, calculateRangeEndInclusive(rangeLow, rightType, unit)));
+                    yield new Comparison(GREATER_THAN, argument, new Constant(rightType, calculateRangeEndInclusive(rangeLow, rightType, unit)));
                 }
                 case GREATER_THAN_OR_EQUAL -> {
                     if (rightValueAtRangeLow) {
-                        yield new ComparisonExpression(GREATER_THAN_OR_EQUAL, argument, new Constant(rightType, rangeLow));
+                        yield new Comparison(GREATER_THAN_OR_EQUAL, argument, new Constant(rightType, rangeLow));
                     }
-                    yield new ComparisonExpression(GREATER_THAN, argument, new Constant(rightType, calculateRangeEndInclusive(rangeLow, rightType, unit)));
+                    yield new Comparison(GREATER_THAN, argument, new Constant(rightType, calculateRangeEndInclusive(rangeLow, rightType, unit)));
                 }
             };
+        }
+
+        public Expression trueIfNotNull(Expression argument)
+        {
+            return or(not(plannerContext.getMetadata(), new IsNull(argument)), new Constant(BOOLEAN, null));
         }
 
         private Object calculateRangeEndInclusive(Object rangeStart, Type type, SupportedUnit rangeUnit)
@@ -273,9 +277,9 @@ public class UnwrapDateTruncInComparison
             throw new UnsupportedOperationException("Unsupported type: " + type);
         }
 
-        private BetweenPredicate between(Expression argument, Type type, Object minInclusive, Object maxInclusive)
+        private Between between(Expression argument, Type type, Object minInclusive, Object maxInclusive)
         {
-            return new BetweenPredicate(
+            return new Between(
                     argument,
                     new Constant(type, minInclusive),
                     new Constant(type, maxInclusive));

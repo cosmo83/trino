@@ -13,10 +13,10 @@
  */
 package io.trino.plugin.ignite;
 
-import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import io.airlift.log.Logger;
 import io.airlift.log.Logging;
-import io.trino.Session;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
@@ -30,62 +30,80 @@ import static io.airlift.testing.Closeables.closeAllSuppress;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.testing.QueryAssertions.copyTpchTables;
 import static io.trino.testing.TestingSession.testSessionBuilder;
+import static java.util.Objects.requireNonNull;
 
 public final class IgniteQueryRunner
 {
-    private static final String IGNITE_SCHEMA = "public";
-
     private IgniteQueryRunner() {}
 
-    public static QueryRunner createIgniteQueryRunner(
-            TestingIgniteServer server,
-            Map<String, String> extraProperties,
-            Map<String, String> connectorProperties,
-            List<TpchTable<?>> tables)
-            throws Exception
+    private static final String IGNITE_SCHEMA = "public";
+
+    public static Builder builder(TestingIgniteServer server)
     {
-        QueryRunner queryRunner = null;
-        try {
-            queryRunner = DistributedQueryRunner.builder(createSession())
-                    .setExtraProperties(extraProperties)
-                    .build();
+        return new Builder()
+                .addConnectorProperty("connection-url", server.getJdbcUrl());
+    }
 
-            queryRunner.installPlugin(new TpchPlugin());
-            queryRunner.createCatalog("tpch", "tpch");
+    public static final class Builder
+            extends DistributedQueryRunner.Builder<Builder>
+    {
+        private final Map<String, String> connectorProperties = new HashMap<>();
+        private List<TpchTable<?>> initialTables = ImmutableList.of();
 
-            connectorProperties = new HashMap<>(ImmutableMap.copyOf(connectorProperties));
-            connectorProperties.putIfAbsent("connection-url", server.getJdbcUrl());
-
-            queryRunner.installPlugin(new IgnitePlugin());
-            queryRunner.createCatalog("ignite", "ignite", connectorProperties);
-
-            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, createSession(), tables);
-            return queryRunner;
+        private Builder()
+        {
+            super(testSessionBuilder()
+                    .setCatalog("ignite")
+                    .setSchema(IGNITE_SCHEMA)
+                    .build());
         }
-        catch (Throwable e) {
-            closeAllSuppress(e, queryRunner);
-            throw e;
+
+        @CanIgnoreReturnValue
+        public Builder addConnectorProperty(String key, String value)
+        {
+            this.connectorProperties.put(key, value);
+            return this;
+        }
+
+        @CanIgnoreReturnValue
+        public Builder setInitialTables(Iterable<TpchTable<?>> initialTables)
+        {
+            this.initialTables = ImmutableList.copyOf(requireNonNull(initialTables, "initialTables is null"));
+            return this;
+        }
+
+        @Override
+        public DistributedQueryRunner build()
+                throws Exception
+        {
+            DistributedQueryRunner queryRunner = super.build();
+            try {
+                queryRunner.installPlugin(new TpchPlugin());
+                queryRunner.createCatalog("tpch", "tpch");
+
+                queryRunner.installPlugin(new IgnitePlugin());
+                queryRunner.createCatalog("ignite", "ignite", connectorProperties);
+
+                copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, initialTables);
+
+                return queryRunner;
+            }
+            catch (Throwable e) {
+                closeAllSuppress(e, queryRunner);
+                throw e;
+            }
         }
     }
 
-    public static Session createSession()
-    {
-        return testSessionBuilder()
-                .setCatalog("ignite")
-                .setSchema(IGNITE_SCHEMA)
-                .build();
-    }
-
-    public static void main(String[] args)
+    static void main()
             throws Exception
     {
         Logging.initialize();
 
-        QueryRunner queryRunner = createIgniteQueryRunner(
-                TestingIgniteServer.getInstance().get(),
-                ImmutableMap.of("http-server.http.port", "8080"),
-                ImmutableMap.of(),
-                TpchTable.getTables());
+        QueryRunner queryRunner = builder(TestingIgniteServer.getInstance().get())
+                .addCoordinatorProperty("http-server.http.port", "8080")
+                .setInitialTables(TpchTable.getTables())
+                .build();
 
         Logger log = Logger.get(IgniteQueryRunner.class);
         log.info("======== SERVER STARTED ========");

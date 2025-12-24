@@ -17,6 +17,8 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.memory.context.AggregatedMemoryContext;
+import io.trino.parquet.metadata.FileMetadata;
+import io.trino.parquet.metadata.ParquetMetadata;
 import io.trino.parquet.predicate.TupleDomainParquetPredicate;
 import io.trino.parquet.reader.ParquetReader;
 import io.trino.parquet.reader.RowGroupInfo;
@@ -34,7 +36,6 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.format.CompressionCodec;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.io.MessageColumnIO;
 import org.apache.parquet.schema.MessageType;
 import org.joda.time.DateTimeZone;
@@ -52,6 +53,7 @@ import java.util.Random;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.parquet.ParquetTypeUtils.constructField;
 import static io.trino.parquet.ParquetTypeUtils.getColumnIO;
 import static io.trino.parquet.ParquetTypeUtils.getDescriptors;
@@ -77,7 +79,7 @@ public class ParquetTestUtils
             throws IOException
     {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-        ParquetWriter writer = createParquetWriter(outputStream, writerOptions, types, columnNames);
+        ParquetWriter writer = createParquetWriter(outputStream, writerOptions, types, columnNames, CompressionCodec.SNAPPY);
 
         for (io.trino.spi.Page inputPage : inputPages) {
             checkArgument(types.size() == inputPage.getChannelCount());
@@ -87,7 +89,7 @@ public class ParquetTestUtils
         return Slices.wrappedBuffer(outputStream.toByteArray());
     }
 
-    public static ParquetWriter createParquetWriter(OutputStream outputStream, ParquetWriterOptions writerOptions, List<Type> types, List<String> columnNames)
+    public static ParquetWriter createParquetWriter(OutputStream outputStream, ParquetWriterOptions writerOptions, List<Type> types, List<String> columnNames, CompressionCodec compression)
     {
         checkArgument(types.size() == columnNames.size());
         ParquetSchemaConverter schemaConverter = new ParquetSchemaConverter(types, columnNames, false, false);
@@ -96,10 +98,20 @@ public class ParquetTestUtils
                 schemaConverter.getMessageType(),
                 schemaConverter.getPrimitiveTypes(),
                 writerOptions,
-                CompressionCodec.SNAPPY,
+                compression,
                 "test-version",
                 Optional.of(DateTimeZone.getDefault()),
                 Optional.empty());
+    }
+
+    public static ParquetReader createParquetReader(
+            ParquetDataSource input,
+            ParquetMetadata parquetMetadata,
+            List<Type> types,
+            List<String> columnNames)
+            throws IOException
+    {
+        return createParquetReader(input, parquetMetadata, ParquetReaderOptions.defaultOptions(), newSimpleAggregatedMemoryContext(), types, columnNames, TupleDomain.all());
     }
 
     public static ParquetReader createParquetReader(
@@ -110,19 +122,20 @@ public class ParquetTestUtils
             List<String> columnNames)
             throws IOException
     {
-        return createParquetReader(input, parquetMetadata, memoryContext, types, columnNames, TupleDomain.all());
+        return createParquetReader(input, parquetMetadata, ParquetReaderOptions.defaultOptions(), memoryContext, types, columnNames, TupleDomain.all());
     }
 
     public static ParquetReader createParquetReader(
             ParquetDataSource input,
             ParquetMetadata parquetMetadata,
+            ParquetReaderOptions options,
             AggregatedMemoryContext memoryContext,
             List<Type> types,
             List<String> columnNames,
             TupleDomain<String> predicate)
             throws IOException
     {
-        org.apache.parquet.hadoop.metadata.FileMetaData fileMetaData = parquetMetadata.getFileMetaData();
+        FileMetadata fileMetaData = parquetMetadata.getFileMetaData();
         MessageType fileSchema = fileMetaData.getSchema();
         MessageColumnIO messageColumnIO = getColumnIO(fileSchema, fileSchema);
         ImmutableList.Builder<Column> columnFields = ImmutableList.builder();
@@ -138,12 +151,11 @@ public class ParquetTestUtils
         TupleDomain<ColumnDescriptor> parquetTupleDomain = predicate.transformKeys(
                 columnName -> descriptorsByPath.get(ImmutableList.of(columnName.toLowerCase(ENGLISH))));
         TupleDomainParquetPredicate parquetPredicate = buildPredicate(fileSchema, parquetTupleDomain, descriptorsByPath, UTC);
-        ParquetReaderOptions options = new ParquetReaderOptions();
         List<RowGroupInfo> rowGroups = getFilteredRowGroups(
                 0,
                 input.getEstimatedSize(),
                 input,
-                parquetMetadata.getBlocks(),
+                parquetMetadata,
                 ImmutableList.of(parquetTupleDomain),
                 ImmutableList.of(parquetPredicate),
                 descriptorsByPath,
@@ -153,6 +165,7 @@ public class ParquetTestUtils
         return new ParquetReader(
                 Optional.ofNullable(fileMetaData.getCreatedBy()),
                 columnFields.build(),
+                false,
                 rowGroups,
                 input,
                 UTC,
@@ -163,6 +176,7 @@ public class ParquetTestUtils
                     return new RuntimeException(exception);
                 },
                 Optional.of(parquetPredicate),
+                Optional.empty(),
                 Optional.empty());
     }
 
@@ -172,6 +186,19 @@ public class ParquetTestUtils
         for (int i = 0; i < pageCount; i++) {
             List<Block> blocks = types.stream()
                     .map(type -> generateBlock(type, positionsPerPage))
+                    .collect(toImmutableList());
+            pagesBuilder.add(new Page(blocks.toArray(Block[]::new)));
+        }
+        return pagesBuilder.build();
+    }
+
+    public static List<io.trino.spi.Page> generateInputPages(List<Type> types, int positionsPerPage, List<?> data)
+    {
+        ImmutableList.Builder<io.trino.spi.Page> pagesBuilder = ImmutableList.builder();
+        for (int i = 0; i < data.size(); i += positionsPerPage) {
+            int index = i;
+            List<Block> blocks = types.stream()
+                    .map(type -> generateBlock(type, data.subList(index, index + positionsPerPage)))
                     .collect(toImmutableList());
             pagesBuilder.add(new Page(blocks.toArray(Block[]::new)));
         }
@@ -258,6 +285,15 @@ public class ParquetTestUtils
         BlockBuilder blockBuilder = type.createBlockBuilder(null, positions);
         for (int i = 0; i < positions; i++) {
             writeNativeValue(type, blockBuilder, (long) i);
+        }
+        return blockBuilder.build();
+    }
+
+    private static <T> Block generateBlock(Type type, List<T> data)
+    {
+        BlockBuilder blockBuilder = type.createBlockBuilder(null, data.size());
+        for (T value : data) {
+            writeNativeValue(type, blockBuilder, value);
         }
         return blockBuilder.build();
     }

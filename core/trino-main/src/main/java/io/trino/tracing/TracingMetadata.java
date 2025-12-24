@@ -14,12 +14,14 @@
 package io.trino.tracing;
 
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.inject.Inject;
 import io.airlift.slice.Slice;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.trino.Session;
+import io.trino.connector.CatalogHandle;
 import io.trino.metadata.AnalyzeMetadata;
 import io.trino.metadata.AnalyzeTableHandle;
 import io.trino.metadata.CatalogFunctionMetadata;
@@ -31,6 +33,8 @@ import io.trino.metadata.Metadata;
 import io.trino.metadata.OperatorNotFoundException;
 import io.trino.metadata.OutputTableHandle;
 import io.trino.metadata.QualifiedObjectName;
+import io.trino.metadata.QualifiedObjectPrefix;
+import io.trino.metadata.QualifiedSchemaPrefix;
 import io.trino.metadata.QualifiedTablePrefix;
 import io.trino.metadata.RedirectionAwareTableHandle;
 import io.trino.metadata.ResolvedFunction;
@@ -45,16 +49,18 @@ import io.trino.metadata.TableSchema;
 import io.trino.metadata.TableVersion;
 import io.trino.metadata.ViewDefinition;
 import io.trino.metadata.ViewInfo;
+import io.trino.spi.RefreshType;
 import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
 import io.trino.spi.connector.BeginTableExecuteResult;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnPosition;
 import io.trino.spi.connector.ConnectorCapabilities;
+import io.trino.spi.connector.ConnectorName;
 import io.trino.spi.connector.ConnectorOutputMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.Constraint;
@@ -91,11 +97,15 @@ import io.trino.spi.function.FunctionId;
 import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.function.OperatorType;
+import io.trino.spi.metrics.Metrics;
 import io.trino.spi.predicate.TupleDomain;
+import io.trino.spi.security.FunctionAuthorization;
 import io.trino.spi.security.GrantInfo;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.Privilege;
 import io.trino.spi.security.RoleGrant;
+import io.trino.spi.security.SchemaAuthorization;
+import io.trino.spi.security.TableAuthorization;
 import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.statistics.ComputedStatistics;
 import io.trino.spi.statistics.TableStatistics;
@@ -140,7 +150,7 @@ public class TracingMetadata
     public Set<ConnectorCapabilities> getConnectorCapabilities(Session session, CatalogHandle catalogHandle)
     {
         Span span = startSpan("getConnectorCapabilities", catalogHandle.getCatalogName());
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getConnectorCapabilities(session, catalogHandle);
         }
     }
@@ -149,7 +159,7 @@ public class TracingMetadata
     public boolean catalogExists(Session session, String catalogName)
     {
         Span span = startSpan("catalogExists", catalogName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.catalogExists(session, catalogName);
         }
     }
@@ -158,7 +168,7 @@ public class TracingMetadata
     public boolean schemaExists(Session session, CatalogSchemaName schema)
     {
         Span span = startSpan("schemaExists", schema);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.schemaExists(session, schema);
         }
     }
@@ -167,7 +177,7 @@ public class TracingMetadata
     public List<String> listSchemaNames(Session session, String catalogName)
     {
         Span span = startSpan("listSchemaNames", catalogName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listSchemaNames(session, catalogName);
         }
     }
@@ -176,7 +186,7 @@ public class TracingMetadata
     public Optional<TableHandle> getTableHandle(Session session, QualifiedObjectName tableName)
     {
         Span span = startSpan("getTableHandle", tableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getTableHandle(session, tableName);
         }
     }
@@ -185,7 +195,7 @@ public class TracingMetadata
     public Optional<SystemTable> getSystemTable(Session session, QualifiedObjectName tableName)
     {
         Span span = startSpan("getSystemTable", tableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getSystemTable(session, tableName);
         }
     }
@@ -195,7 +205,7 @@ public class TracingMetadata
     {
         Span span = startSpan("getTableHandleForExecute", tableHandle)
                 .setAttribute(TrinoAttributes.PROCEDURE, procedureName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getTableHandleForExecute(session, tableHandle, procedureName, executeProperties);
         }
     }
@@ -204,7 +214,7 @@ public class TracingMetadata
     public Optional<TableLayout> getLayoutForTableExecute(Session session, TableExecuteHandle tableExecuteHandle)
     {
         Span span = startSpan("getLayoutForTableExecute", tableExecuteHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getLayoutForTableExecute(session, tableExecuteHandle);
         }
     }
@@ -213,7 +223,7 @@ public class TracingMetadata
     public BeginTableExecuteResult<TableExecuteHandle, TableHandle> beginTableExecute(Session session, TableExecuteHandle handle, TableHandle updatedSourceTableHandle)
     {
         Span span = startSpan("beginTableExecute", handle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.beginTableExecute(session, handle, updatedSourceTableHandle);
         }
     }
@@ -222,17 +232,17 @@ public class TracingMetadata
     public void finishTableExecute(Session session, TableExecuteHandle handle, Collection<Slice> fragments, List<Object> tableExecuteState)
     {
         Span span = startSpan("finishTableExecute", handle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.finishTableExecute(session, handle, fragments, tableExecuteState);
         }
     }
 
     @Override
-    public void executeTableExecute(Session session, TableExecuteHandle handle)
+    public Map<String, Long> executeTableExecute(Session session, TableExecuteHandle handle)
     {
         Span span = startSpan("executeTableExecute", handle);
-        try (var ignored = scopedSpan(span)) {
-            delegate.executeTableExecute(session, handle);
+        try (var _ = scopedSpan(span)) {
+            return delegate.executeTableExecute(session, handle);
         }
     }
 
@@ -240,17 +250,17 @@ public class TracingMetadata
     public TableProperties getTableProperties(Session session, TableHandle handle)
     {
         Span span = startSpan("getTableProperties", handle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getTableProperties(session, handle);
         }
     }
 
     @Override
-    public TableHandle makeCompatiblePartitioning(Session session, TableHandle table, PartitioningHandle partitioningHandle)
+    public Optional<TableHandle> applyPartitioning(Session session, TableHandle tableHandle, Optional<PartitioningHandle> partitioning, List<ColumnHandle> columns)
     {
-        Span span = startSpan("makeCompatiblePartitioning", table);
-        try (var ignored = scopedSpan(span)) {
-            return delegate.makeCompatiblePartitioning(session, table, partitioningHandle);
+        Span span = startSpan("applyPartitioning", tableHandle);
+        try (var _ = scopedSpan(span)) {
+            return delegate.applyPartitioning(session, tableHandle, partitioning, columns);
         }
     }
 
@@ -261,7 +271,7 @@ public class TracingMetadata
         if (span.isRecording() && left.getCatalogHandle().equals(right.getCatalogHandle()) && left.getCatalogHandle().isPresent()) {
             span.setAttribute(TrinoAttributes.CATALOG, left.getCatalogHandle().get().getCatalogName().toString());
         }
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getCommonPartitioning(session, left, right);
         }
     }
@@ -270,16 +280,24 @@ public class TracingMetadata
     public Optional<Object> getInfo(Session session, TableHandle handle)
     {
         Span span = startSpan("getInfo", handle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getInfo(session, handle);
         }
+    }
+
+    @Override
+    public Metrics getMetrics(Session session, String catalogName)
+    {
+        // Do not trace getMetrics as this is expected to be a quick local jvm call,
+        // and adding this span would only obfuscate the trace
+        return delegate.getMetrics(session, catalogName);
     }
 
     @Override
     public CatalogSchemaTableName getTableName(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("getTableName", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getTableName(session, tableHandle);
         }
     }
@@ -288,7 +306,7 @@ public class TracingMetadata
     public TableSchema getTableSchema(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("getTableSchema", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getTableSchema(session, tableHandle);
         }
     }
@@ -297,7 +315,7 @@ public class TracingMetadata
     public TableMetadata getTableMetadata(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("getTableMetadata", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getTableMetadata(session, tableHandle);
         }
     }
@@ -306,7 +324,7 @@ public class TracingMetadata
     public TableStatistics getTableStatistics(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("getTableStatistics", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getTableStatistics(session, tableHandle);
         }
     }
@@ -315,7 +333,7 @@ public class TracingMetadata
     public List<QualifiedObjectName> listTables(Session session, QualifiedTablePrefix prefix)
     {
         Span span = startSpan("listTables", prefix);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listTables(session, prefix);
         }
     }
@@ -324,7 +342,7 @@ public class TracingMetadata
     public Map<SchemaTableName, RelationType> getRelationTypes(Session session, QualifiedTablePrefix prefix)
     {
         Span span = startSpan("getRelationTypes", prefix);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getRelationTypes(session, prefix);
         }
     }
@@ -333,7 +351,7 @@ public class TracingMetadata
     public Map<String, ColumnHandle> getColumnHandles(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("getColumnHandles", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getColumnHandles(session, tableHandle);
         }
     }
@@ -342,7 +360,7 @@ public class TracingMetadata
     public ColumnMetadata getColumnMetadata(Session session, TableHandle tableHandle, ColumnHandle columnHandle)
     {
         Span span = startSpan("getColumnMetadata", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getColumnMetadata(session, tableHandle, columnHandle);
         }
     }
@@ -351,7 +369,7 @@ public class TracingMetadata
     public List<TableColumnsMetadata> listTableColumns(Session session, QualifiedTablePrefix prefix, UnaryOperator<Set<SchemaTableName>> relationFilter)
     {
         Span span = startSpan("listTableColumns", prefix);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listTableColumns(session, prefix, relationFilter);
         }
     }
@@ -360,8 +378,26 @@ public class TracingMetadata
     public List<RelationCommentMetadata> listRelationComments(Session session, String catalogName, Optional<String> schemaName, UnaryOperator<Set<SchemaTableName>> relationFilter)
     {
         Span span = startSpan("listRelationComments", new QualifiedTablePrefix(catalogName, schemaName, Optional.empty()));
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listRelationComments(session, catalogName, schemaName, relationFilter);
+        }
+    }
+
+    @Override
+    public void createCatalog(Session session, CatalogName catalog, ConnectorName connectorName, Map<String, String> properties, boolean notExists)
+    {
+        Span span = startSpan("createCatalog", catalog);
+        try (var _ = scopedSpan(span)) {
+            delegate.createCatalog(session, catalog, connectorName, properties, notExists);
+        }
+    }
+
+    @Override
+    public void dropCatalog(Session session, CatalogName catalog, boolean cascade)
+    {
+        Span span = startSpan("dropCatalog", catalog);
+        try (var _ = scopedSpan(span)) {
+            delegate.dropCatalog(session, catalog, cascade);
         }
     }
 
@@ -369,7 +405,7 @@ public class TracingMetadata
     public void createSchema(Session session, CatalogSchemaName schema, Map<String, Object> properties, TrinoPrincipal principal)
     {
         Span span = startSpan("createSchema", schema);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.createSchema(session, schema, properties, principal);
         }
     }
@@ -378,7 +414,7 @@ public class TracingMetadata
     public void dropSchema(Session session, CatalogSchemaName schema, boolean cascade)
     {
         Span span = startSpan("dropSchema", schema);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.dropSchema(session, schema, cascade);
         }
     }
@@ -387,17 +423,8 @@ public class TracingMetadata
     public void renameSchema(Session session, CatalogSchemaName source, String target)
     {
         Span span = startSpan("renameSchema", source);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.renameSchema(session, source, target);
-        }
-    }
-
-    @Override
-    public void setSchemaAuthorization(Session session, CatalogSchemaName source, TrinoPrincipal principal)
-    {
-        Span span = startSpan("setSchemaAuthorization", source);
-        try (var ignored = scopedSpan(span)) {
-            delegate.setSchemaAuthorization(session, source, principal);
         }
     }
 
@@ -405,7 +432,7 @@ public class TracingMetadata
     public void createTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata, SaveMode saveMode)
     {
         Span span = startSpan("createTable", catalogName, tableMetadata);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.createTable(session, catalogName, tableMetadata, saveMode);
         }
     }
@@ -414,7 +441,7 @@ public class TracingMetadata
     public void renameTable(Session session, TableHandle tableHandle, CatalogSchemaTableName currentTableName, QualifiedObjectName newTableName)
     {
         Span span = startSpan("renameTable", currentTableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.renameTable(session, tableHandle, currentTableName, newTableName);
         }
     }
@@ -423,7 +450,7 @@ public class TracingMetadata
     public void setTableProperties(Session session, TableHandle tableHandle, Map<String, Optional<Object>> properties)
     {
         Span span = startSpan("setTableProperties", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.setTableProperties(session, tableHandle, properties);
         }
     }
@@ -432,7 +459,7 @@ public class TracingMetadata
     public void setTableComment(Session session, TableHandle tableHandle, Optional<String> comment)
     {
         Span span = startSpan("setTableComment", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.setTableComment(session, tableHandle, comment);
         }
     }
@@ -441,7 +468,7 @@ public class TracingMetadata
     public void setViewComment(Session session, QualifiedObjectName viewName, Optional<String> comment)
     {
         Span span = startSpan("setViewComment", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.setViewComment(session, viewName, comment);
         }
     }
@@ -450,7 +477,7 @@ public class TracingMetadata
     public void setViewColumnComment(Session session, QualifiedObjectName viewName, String columnName, Optional<String> comment)
     {
         Span span = startSpan("setViewColumnComment", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.setViewColumnComment(session, viewName, columnName, comment);
         }
     }
@@ -459,7 +486,7 @@ public class TracingMetadata
     public void setColumnComment(Session session, TableHandle tableHandle, ColumnHandle column, Optional<String> comment)
     {
         Span span = startSpan("setColumnComment", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.setColumnComment(session, tableHandle, column, comment);
         }
     }
@@ -468,7 +495,7 @@ public class TracingMetadata
     public void renameColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnHandle source, String target)
     {
         Span span = startSpan("renameColumn", table);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.renameColumn(session, tableHandle, table, source, target);
         }
     }
@@ -477,17 +504,17 @@ public class TracingMetadata
     public void renameField(Session session, TableHandle tableHandle, List<String> fieldPath, String target)
     {
         Span span = startSpan("renameField", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.renameField(session, tableHandle, fieldPath, target);
         }
     }
 
     @Override
-    public void addColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnMetadata column)
+    public void addColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnMetadata column, ColumnPosition position)
     {
         Span span = startSpan("addColumn", table);
-        try (var ignored = scopedSpan(span)) {
-            delegate.addColumn(session, tableHandle, table, column);
+        try (var _ = scopedSpan(span)) {
+            delegate.addColumn(session, tableHandle, table, column, position);
         }
     }
 
@@ -495,8 +522,26 @@ public class TracingMetadata
     public void addField(Session session, TableHandle tableHandle, List<String> parentPath, String fieldName, Type type, boolean ignoreExisting)
     {
         Span span = startSpan("addField", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.addField(session, tableHandle, parentPath, fieldName, type, ignoreExisting);
+        }
+    }
+
+    @Override
+    public void setDefaultValue(Session session, TableHandle tableHandle, ColumnHandle column, String defaultValue)
+    {
+        Span span = startSpan("setDefaultValue", tableHandle);
+        try (var _ = scopedSpan(span)) {
+            delegate.setDefaultValue(session, tableHandle, column, defaultValue);
+        }
+    }
+
+    @Override
+    public void dropDefaultValue(Session session, TableHandle tableHandle, ColumnHandle column)
+    {
+        Span span = startSpan("dropDefaultValue", tableHandle);
+        try (var _ = scopedSpan(span)) {
+            delegate.dropDefaultValue(session, tableHandle, column);
         }
     }
 
@@ -504,7 +549,7 @@ public class TracingMetadata
     public void setColumnType(Session session, TableHandle tableHandle, ColumnHandle column, Type type)
     {
         Span span = startSpan("setColumnType", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.setColumnType(session, tableHandle, column, type);
         }
     }
@@ -513,7 +558,7 @@ public class TracingMetadata
     public void setFieldType(Session session, TableHandle tableHandle, List<String> fieldPath, Type type)
     {
         Span span = startSpan("setFieldType", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.setFieldType(session, tableHandle, fieldPath, type);
         }
     }
@@ -522,17 +567,8 @@ public class TracingMetadata
     public void dropNotNullConstraint(Session session, TableHandle tableHandle, ColumnHandle column)
     {
         Span span = startSpan("dropNotNullConstraint", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.dropNotNullConstraint(session, tableHandle, column);
-        }
-    }
-
-    @Override
-    public void setTableAuthorization(Session session, CatalogSchemaTableName table, TrinoPrincipal principal)
-    {
-        Span span = startSpan("setTableAuthorization", table);
-        try (var ignored = scopedSpan(span)) {
-            delegate.setTableAuthorization(session, table, principal);
         }
     }
 
@@ -540,7 +576,7 @@ public class TracingMetadata
     public void dropColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnHandle column)
     {
         Span span = startSpan("dropColumn", table);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.dropColumn(session, tableHandle, table, column);
         }
     }
@@ -549,7 +585,7 @@ public class TracingMetadata
     public void dropField(Session session, TableHandle tableHandle, ColumnHandle column, List<String> fieldPath)
     {
         Span span = startSpan("dropField", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.dropField(session, tableHandle, column, fieldPath);
         }
     }
@@ -558,7 +594,7 @@ public class TracingMetadata
     public void dropTable(Session session, TableHandle tableHandle, CatalogSchemaTableName tableName)
     {
         Span span = startSpan("dropTable", tableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.dropTable(session, tableHandle, tableName);
         }
     }
@@ -567,7 +603,7 @@ public class TracingMetadata
     public void truncateTable(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("truncateTable", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.truncateTable(session, tableHandle);
         }
     }
@@ -576,7 +612,7 @@ public class TracingMetadata
     public Optional<TableLayout> getNewTableLayout(Session session, String catalogName, ConnectorTableMetadata tableMetadata)
     {
         Span span = startSpan("getNewTableLayout", catalogName, tableMetadata);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getNewTableLayout(session, catalogName, tableMetadata);
         }
     }
@@ -585,7 +621,7 @@ public class TracingMetadata
     public Optional<Type> getSupportedType(Session session, CatalogHandle catalogHandle, Map<String, Object> tableProperties, Type type)
     {
         Span span = startSpan("getSupportedType", catalogHandle.getCatalogName());
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getSupportedType(session, catalogHandle, tableProperties, type);
         }
     }
@@ -594,7 +630,7 @@ public class TracingMetadata
     public OutputTableHandle beginCreateTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata, Optional<TableLayout> layout, boolean replace)
     {
         Span span = startSpan("beginCreateTable", catalogName, tableMetadata);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.beginCreateTable(session, catalogName, tableMetadata, layout, replace);
         }
     }
@@ -602,11 +638,11 @@ public class TracingMetadata
     @Override
     public Optional<ConnectorOutputMetadata> finishCreateTable(Session session, OutputTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
-        Span span = startSpan("finishCreateTable", tableHandle.getCatalogHandle().getCatalogName());
+        Span span = startSpan("finishCreateTable", tableHandle.catalogHandle().getCatalogName());
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.TABLE, tableHandle.getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.TABLE, tableHandle.connectorHandle().toString());
         }
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.finishCreateTable(session, tableHandle, fragments, computedStatistics);
         }
     }
@@ -615,17 +651,17 @@ public class TracingMetadata
     public Optional<TableLayout> getInsertLayout(Session session, TableHandle target)
     {
         Span span = startSpan("getInsertLayout", target);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getInsertLayout(session, target);
         }
     }
 
     @Override
-    public TableStatisticsMetadata getStatisticsCollectionMetadataForWrite(Session session, CatalogHandle catalogHandle, ConnectorTableMetadata tableMetadata)
+    public TableStatisticsMetadata getStatisticsCollectionMetadataForWrite(Session session, CatalogHandle catalogHandle, ConnectorTableMetadata tableMetadata, boolean tableReplace)
     {
         Span span = startSpan("getStatisticsCollectionMetadataForWrite", catalogHandle.getCatalogName().toString(), tableMetadata);
-        try (var ignored = scopedSpan(span)) {
-            return delegate.getStatisticsCollectionMetadataForWrite(session, catalogHandle, tableMetadata);
+        try (var _ = scopedSpan(span)) {
+            return delegate.getStatisticsCollectionMetadataForWrite(session, catalogHandle, tableMetadata, tableReplace);
         }
     }
 
@@ -633,7 +669,7 @@ public class TracingMetadata
     public AnalyzeMetadata getStatisticsCollectionMetadata(Session session, TableHandle tableHandle, Map<String, Object> analyzeProperties)
     {
         Span span = startSpan("getStatisticsCollectionMetadata", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getStatisticsCollectionMetadata(session, tableHandle, analyzeProperties);
         }
     }
@@ -642,7 +678,7 @@ public class TracingMetadata
     public AnalyzeTableHandle beginStatisticsCollection(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("beginStatisticsCollection", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.beginStatisticsCollection(session, tableHandle);
         }
     }
@@ -650,11 +686,11 @@ public class TracingMetadata
     @Override
     public void finishStatisticsCollection(Session session, AnalyzeTableHandle tableHandle, Collection<ComputedStatistics> computedStatistics)
     {
-        Span span = startSpan("finishStatisticsCollection", tableHandle.getCatalogHandle().getCatalogName());
+        Span span = startSpan("finishStatisticsCollection", tableHandle.catalogHandle().getCatalogName());
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.TABLE, tableHandle.getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.TABLE, tableHandle.connectorHandle().toString());
         }
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.finishStatisticsCollection(session, tableHandle, computedStatistics);
         }
     }
@@ -663,7 +699,7 @@ public class TracingMetadata
     public void beginQuery(Session session)
     {
         Span span = startSpan("beginQuery");
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.beginQuery(session);
         }
     }
@@ -672,7 +708,7 @@ public class TracingMetadata
     public void cleanupQuery(Session session)
     {
         Span span = startSpan("cleanupQuery");
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.cleanupQuery(session);
         }
     }
@@ -681,7 +717,7 @@ public class TracingMetadata
     public InsertTableHandle beginInsert(Session session, TableHandle tableHandle, List<ColumnHandle> columns)
     {
         Span span = startSpan("beginInsert", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.beginInsert(session, tableHandle, columns);
         }
     }
@@ -690,7 +726,7 @@ public class TracingMetadata
     public boolean supportsMissingColumnsOnInsert(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("supportsMissingColumnsOnInsert", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.supportsMissingColumnsOnInsert(session, tableHandle);
         }
     }
@@ -698,11 +734,11 @@ public class TracingMetadata
     @Override
     public Optional<ConnectorOutputMetadata> finishInsert(Session session, InsertTableHandle tableHandle, List<TableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
-        Span span = startSpan("finishInsert", tableHandle.getCatalogHandle().getCatalogName());
+        Span span = startSpan("finishInsert", tableHandle.catalogHandle().getCatalogName());
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.TABLE, tableHandle.getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.TABLE, tableHandle.connectorHandle().toString());
         }
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.finishInsert(session, tableHandle, sourceTableHandles, fragments, computedStatistics);
         }
     }
@@ -711,7 +747,7 @@ public class TracingMetadata
     public boolean delegateMaterializedViewRefreshToConnector(Session session, QualifiedObjectName viewName)
     {
         Span span = startSpan("delegateMaterializedViewRefreshToConnector", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.delegateMaterializedViewRefreshToConnector(session, viewName);
         }
     }
@@ -720,17 +756,17 @@ public class TracingMetadata
     public ListenableFuture<Void> refreshMaterializedView(Session session, QualifiedObjectName viewName)
     {
         Span span = startSpan("refreshMaterializedView", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.refreshMaterializedView(session, viewName);
         }
     }
 
     @Override
-    public InsertTableHandle beginRefreshMaterializedView(Session session, TableHandle tableHandle, List<TableHandle> sourceTableHandles)
+    public InsertTableHandle beginRefreshMaterializedView(Session session, TableHandle tableHandle, List<TableHandle> sourceTableHandles, RefreshType refreshType)
     {
         Span span = startSpan("beginRefreshMaterializedView", tableHandle);
-        try (var ignored = scopedSpan(span)) {
-            return delegate.beginRefreshMaterializedView(session, tableHandle, sourceTableHandles);
+        try (var _ = scopedSpan(span)) {
+            return delegate.beginRefreshMaterializedView(session, tableHandle, sourceTableHandles, refreshType);
         }
     }
 
@@ -745,7 +781,7 @@ public class TracingMetadata
             List<String> sourceTableFunctions)
     {
         Span span = startSpan("finishRefreshMaterializedView", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.finishRefreshMaterializedView(
                     session,
                     tableHandle,
@@ -761,7 +797,7 @@ public class TracingMetadata
     public Optional<TableHandle> applyUpdate(Session session, TableHandle tableHandle, Map<ColumnHandle, Constant> assignments)
     {
         Span span = startSpan("applyUpdate", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.applyUpdate(session, tableHandle, assignments);
         }
     }
@@ -770,7 +806,7 @@ public class TracingMetadata
     public OptionalLong executeUpdate(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("executeUpdate", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.executeUpdate(session, tableHandle);
         }
     }
@@ -779,7 +815,7 @@ public class TracingMetadata
     public Optional<TableHandle> applyDelete(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("applyDelete", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.applyDelete(session, tableHandle);
         }
     }
@@ -788,7 +824,7 @@ public class TracingMetadata
     public OptionalLong executeDelete(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("executeDelete", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.executeDelete(session, tableHandle);
         }
     }
@@ -797,7 +833,7 @@ public class TracingMetadata
     public RowChangeParadigm getRowChangeParadigm(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("getRowChangeParadigm", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getRowChangeParadigm(session, tableHandle);
         }
     }
@@ -806,7 +842,7 @@ public class TracingMetadata
     public ColumnHandle getMergeRowIdColumnHandle(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("getMergeRowIdColumnHandle", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getMergeRowIdColumnHandle(session, tableHandle);
         }
     }
@@ -815,29 +851,29 @@ public class TracingMetadata
     public Optional<PartitioningHandle> getUpdateLayout(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("getUpdateLayout", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getUpdateLayout(session, tableHandle);
         }
     }
 
     @Override
-    public MergeHandle beginMerge(Session session, TableHandle tableHandle)
+    public MergeHandle beginMerge(Session session, TableHandle tableHandle, Multimap<Integer, ColumnHandle> updateCaseColumns)
     {
         Span span = startSpan("beginMerge", tableHandle);
-        try (var ignored = scopedSpan(span)) {
-            return delegate.beginMerge(session, tableHandle);
+        try (var _ = scopedSpan(span)) {
+            return delegate.beginMerge(session, tableHandle, updateCaseColumns);
         }
     }
 
     @Override
-    public void finishMerge(Session session, MergeHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public void finishMerge(Session session, MergeHandle tableHandle, List<TableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
-        Span span = startSpan("finishMerge", tableHandle.getTableHandle().getCatalogHandle().getCatalogName());
+        Span span = startSpan("finishMerge", tableHandle.tableHandle().catalogHandle().getCatalogName());
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.TABLE, tableHandle.getTableHandle().getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.TABLE, tableHandle.tableHandle().connectorHandle().toString());
         }
-        try (var ignored = scopedSpan(span)) {
-            delegate.finishMerge(session, tableHandle, fragments, computedStatistics);
+        try (var _ = scopedSpan(span)) {
+            delegate.finishMerge(session, tableHandle, sourceTableHandles, fragments, computedStatistics);
         }
     }
 
@@ -845,7 +881,7 @@ public class TracingMetadata
     public Optional<CatalogHandle> getCatalogHandle(Session session, String catalogName)
     {
         Span span = startSpan("getCatalogHandle", catalogName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getCatalogHandle(session, catalogName);
         }
     }
@@ -854,8 +890,17 @@ public class TracingMetadata
     public List<CatalogInfo> listCatalogs(Session session)
     {
         Span span = startSpan("listCatalogs");
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listCatalogs(session);
+        }
+    }
+
+    @Override
+    public List<CatalogInfo> listActiveCatalogs(Session session)
+    {
+        Span span = startSpan("listActiveCatalogs");
+        try (var _ = scopedSpan(span)) {
+            return delegate.listActiveCatalogs(session);
         }
     }
 
@@ -863,7 +908,7 @@ public class TracingMetadata
     public List<QualifiedObjectName> listViews(Session session, QualifiedTablePrefix prefix)
     {
         Span span = startSpan("listViews", prefix);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listViews(session, prefix);
         }
     }
@@ -872,7 +917,7 @@ public class TracingMetadata
     public Map<QualifiedObjectName, ViewInfo> getViews(Session session, QualifiedTablePrefix prefix)
     {
         Span span = startSpan("getViews", prefix);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getViews(session, prefix);
         }
     }
@@ -881,7 +926,7 @@ public class TracingMetadata
     public boolean isView(Session session, QualifiedObjectName viewName)
     {
         Span span = startSpan("isView", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.isView(session, viewName);
         }
     }
@@ -890,8 +935,17 @@ public class TracingMetadata
     public Optional<ViewDefinition> getView(Session session, QualifiedObjectName viewName)
     {
         Span span = startSpan("getView", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getView(session, viewName);
+        }
+    }
+
+    @Override
+    public Map<String, Object> getViewProperties(Session session, QualifiedObjectName viewName)
+    {
+        Span span = startSpan("getViewProperties", viewName);
+        try (var _ = scopedSpan(span)) {
+            return delegate.getViewProperties(session, viewName);
         }
     }
 
@@ -899,7 +953,7 @@ public class TracingMetadata
     public Map<String, Object> getSchemaProperties(Session session, CatalogSchemaName schemaName)
     {
         Span span = startSpan("getSchemaProperties", schemaName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getSchemaProperties(session, schemaName);
         }
     }
@@ -908,17 +962,17 @@ public class TracingMetadata
     public Optional<TrinoPrincipal> getSchemaOwner(Session session, CatalogSchemaName schemaName)
     {
         Span span = startSpan("getSchemaOwner", schemaName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getSchemaOwner(session, schemaName);
         }
     }
 
     @Override
-    public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, boolean replace)
+    public void createView(Session session, QualifiedObjectName viewName, ViewDefinition definition, Map<String, Object> properties, boolean replace)
     {
         Span span = startSpan("createView", viewName);
-        try (var ignored = scopedSpan(span)) {
-            delegate.createView(session, viewName, definition, replace);
+        try (var _ = scopedSpan(span)) {
+            delegate.createView(session, viewName, definition, properties, replace);
         }
     }
 
@@ -926,17 +980,17 @@ public class TracingMetadata
     public void renameView(Session session, QualifiedObjectName existingViewName, QualifiedObjectName newViewName)
     {
         Span span = startSpan("renameView", existingViewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.renameView(session, existingViewName, newViewName);
         }
     }
 
     @Override
-    public void setViewAuthorization(Session session, CatalogSchemaTableName view, TrinoPrincipal principal)
+    public void refreshView(Session session, QualifiedObjectName viewName, ViewDefinition viewDefinition)
     {
-        Span span = startSpan("setViewAuthorization", view);
-        try (var ignored = scopedSpan(span)) {
-            delegate.setViewAuthorization(session, view, principal);
+        Span span = startSpan("refreshView", viewName);
+        try (var _ = scopedSpan(span)) {
+            delegate.refreshView(session, viewName, viewDefinition);
         }
     }
 
@@ -944,7 +998,7 @@ public class TracingMetadata
     public void dropView(Session session, QualifiedObjectName viewName)
     {
         Span span = startSpan("dropView", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.dropView(session, viewName);
         }
     }
@@ -953,7 +1007,7 @@ public class TracingMetadata
     public Optional<ResolvedIndex> resolveIndex(Session session, TableHandle tableHandle, Set<ColumnHandle> indexableColumns, Set<ColumnHandle> outputColumns, TupleDomain<ColumnHandle> tupleDomain)
     {
         Span span = startSpan("resolveIndex", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.resolveIndex(session, tableHandle, indexableColumns, outputColumns, tupleDomain);
         }
     }
@@ -962,7 +1016,7 @@ public class TracingMetadata
     public Optional<LimitApplicationResult<TableHandle>> applyLimit(Session session, TableHandle table, long limit)
     {
         Span span = startSpan("applyLimit", table);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.applyLimit(session, table, limit);
         }
     }
@@ -971,7 +1025,7 @@ public class TracingMetadata
     public Optional<ConstraintApplicationResult<TableHandle>> applyFilter(Session session, TableHandle table, Constraint constraint)
     {
         Span span = startSpan("applyFilter", table);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.applyFilter(session, table, constraint);
         }
     }
@@ -980,7 +1034,7 @@ public class TracingMetadata
     public Optional<ProjectionApplicationResult<TableHandle>> applyProjection(Session session, TableHandle table, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments)
     {
         Span span = startSpan("applyProjection", table);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.applyProjection(session, table, projections, assignments);
         }
     }
@@ -989,7 +1043,7 @@ public class TracingMetadata
     public Optional<SampleApplicationResult<TableHandle>> applySample(Session session, TableHandle table, SampleType sampleType, double sampleRatio)
     {
         Span span = startSpan("applySample", table);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.applySample(session, table, sampleType, sampleRatio);
         }
     }
@@ -998,7 +1052,7 @@ public class TracingMetadata
     public Optional<AggregationApplicationResult<TableHandle>> applyAggregation(Session session, TableHandle table, List<AggregateFunction> aggregations, Map<String, ColumnHandle> assignments, List<List<ColumnHandle>> groupingSets)
     {
         Span span = startSpan("applyAggregation", table);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.applyAggregation(session, table, aggregations, assignments, groupingSets);
         }
     }
@@ -1007,10 +1061,10 @@ public class TracingMetadata
     public Optional<JoinApplicationResult<TableHandle>> applyJoin(Session session, JoinType joinType, TableHandle left, TableHandle right, ConnectorExpression joinCondition, Map<String, ColumnHandle> leftAssignments, Map<String, ColumnHandle> rightAssignments, JoinStatistics statistics)
     {
         Span span = startSpan("applyJoin");
-        if (span.isRecording() && left.getCatalogHandle().equals(right.getCatalogHandle())) {
-            span.setAttribute(TrinoAttributes.CATALOG, left.getCatalogHandle().getCatalogName().toString());
+        if (span.isRecording() && left.catalogHandle().equals(right.catalogHandle())) {
+            span.setAttribute(TrinoAttributes.CATALOG, left.catalogHandle().getCatalogName().toString());
         }
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.applyJoin(session, joinType, left, right, joinCondition, leftAssignments, rightAssignments, statistics);
         }
     }
@@ -1019,7 +1073,7 @@ public class TracingMetadata
     public Optional<TopNApplicationResult<TableHandle>> applyTopN(Session session, TableHandle handle, long topNCount, List<SortItem> sortItems, Map<String, ColumnHandle> assignments)
     {
         Span span = startSpan("applyTopN", handle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.applyTopN(session, handle, topNCount, sortItems, assignments);
         }
     }
@@ -1028,9 +1082,9 @@ public class TracingMetadata
     public Optional<TableFunctionApplicationResult<TableHandle>> applyTableFunction(Session session, TableFunctionHandle handle)
     {
         Span span = startSpan("applyTableFunction")
-                .setAttribute(TrinoAttributes.CATALOG, handle.getCatalogHandle().getCatalogName().toString())
-                .setAttribute(TrinoAttributes.HANDLE, handle.getFunctionHandle().toString());
-        try (var ignored = scopedSpan(span)) {
+                .setAttribute(TrinoAttributes.CATALOG, handle.catalogHandle().getCatalogName().toString())
+                .setAttribute(TrinoAttributes.HANDLE, handle.functionHandle().toString());
+        try (var _ = scopedSpan(span)) {
             return delegate.applyTableFunction(session, handle);
         }
     }
@@ -1039,7 +1093,7 @@ public class TracingMetadata
     public void validateScan(Session session, TableHandle table)
     {
         Span span = startSpan("validateScan", table);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.validateScan(session, table);
         }
     }
@@ -1048,7 +1102,7 @@ public class TracingMetadata
     public boolean isCatalogManagedSecurity(Session session, String catalog)
     {
         Span span = startSpan("isCatalogManagedSecurity", catalog);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.isCatalogManagedSecurity(session, catalog);
         }
     }
@@ -1057,7 +1111,7 @@ public class TracingMetadata
     public boolean roleExists(Session session, String role, Optional<String> catalog)
     {
         Span span = startSpan("roleExists", catalog);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.roleExists(session, role, catalog);
         }
     }
@@ -1066,7 +1120,7 @@ public class TracingMetadata
     public void createRole(Session session, String role, Optional<TrinoPrincipal> grantor, Optional<String> catalog)
     {
         Span span = startSpan("createRole", catalog);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.createRole(session, role, grantor, catalog);
         }
     }
@@ -1075,7 +1129,7 @@ public class TracingMetadata
     public void dropRole(Session session, String role, Optional<String> catalog)
     {
         Span span = startSpan("dropRole", catalog);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.dropRole(session, role, catalog);
         }
     }
@@ -1084,7 +1138,7 @@ public class TracingMetadata
     public Set<String> listRoles(Session session, Optional<String> catalog)
     {
         Span span = startSpan("listRoles", catalog);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listRoles(session, catalog);
         }
     }
@@ -1093,7 +1147,7 @@ public class TracingMetadata
     public Set<RoleGrant> listRoleGrants(Session session, Optional<String> catalog, TrinoPrincipal principal)
     {
         Span span = startSpan("listRoleGrants", catalog);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listRoleGrants(session, catalog, principal);
         }
     }
@@ -1102,7 +1156,7 @@ public class TracingMetadata
     public void grantRoles(Session session, Set<String> roles, Set<TrinoPrincipal> grantees, boolean adminOption, Optional<TrinoPrincipal> grantor, Optional<String> catalog)
     {
         Span span = startSpan("grantRoles", catalog);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.grantRoles(session, roles, grantees, adminOption, grantor, catalog);
         }
     }
@@ -1111,7 +1165,7 @@ public class TracingMetadata
     public void revokeRoles(Session session, Set<String> roles, Set<TrinoPrincipal> grantees, boolean adminOption, Optional<TrinoPrincipal> grantor, Optional<String> catalog)
     {
         Span span = startSpan("revokeRoles", catalog);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.revokeRoles(session, roles, grantees, adminOption, grantor, catalog);
         }
     }
@@ -1120,7 +1174,7 @@ public class TracingMetadata
     public Set<RoleGrant> listApplicableRoles(Session session, TrinoPrincipal principal, Optional<String> catalog)
     {
         Span span = startSpan("listApplicableRoles", catalog);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listApplicableRoles(session, principal, catalog);
         }
     }
@@ -1129,7 +1183,7 @@ public class TracingMetadata
     public Set<String> listEnabledRoles(Identity identity)
     {
         Span span = startSpan("listEnabledRoles");
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listEnabledRoles(identity);
         }
     }
@@ -1138,7 +1192,7 @@ public class TracingMetadata
     public Set<String> listEnabledRoles(Session session, String catalog)
     {
         Span span = startSpan("listEnabledRoles", catalog);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listEnabledRoles(session, catalog);
         }
     }
@@ -1147,7 +1201,7 @@ public class TracingMetadata
     public void grantSchemaPrivileges(Session session, CatalogSchemaName schemaName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
         Span span = startSpan("grantSchemaPrivileges", schemaName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.grantSchemaPrivileges(session, schemaName, privileges, grantee, grantOption);
         }
     }
@@ -1156,7 +1210,7 @@ public class TracingMetadata
     public void denySchemaPrivileges(Session session, CatalogSchemaName schemaName, Set<Privilege> privileges, TrinoPrincipal grantee)
     {
         Span span = startSpan("denySchemaPrivileges", schemaName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.denySchemaPrivileges(session, schemaName, privileges, grantee);
         }
     }
@@ -1165,7 +1219,7 @@ public class TracingMetadata
     public void revokeSchemaPrivileges(Session session, CatalogSchemaName schemaName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
         Span span = startSpan("revokeSchemaPrivileges", schemaName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.revokeSchemaPrivileges(session, schemaName, privileges, grantee, grantOption);
         }
     }
@@ -1174,7 +1228,7 @@ public class TracingMetadata
     public void grantTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
         Span span = startSpan("grantTablePrivileges", tableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.grantTablePrivileges(session, tableName, privileges, grantee, grantOption);
         }
     }
@@ -1183,7 +1237,7 @@ public class TracingMetadata
     public void denyTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee)
     {
         Span span = startSpan("denyTablePrivileges", tableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.denyTablePrivileges(session, tableName, privileges, grantee);
         }
     }
@@ -1192,7 +1246,7 @@ public class TracingMetadata
     public void revokeTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
         Span span = startSpan("revokeTablePrivileges", tableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.revokeTablePrivileges(session, tableName, privileges, grantee, grantOption);
         }
     }
@@ -1201,8 +1255,35 @@ public class TracingMetadata
     public List<GrantInfo> listTablePrivileges(Session session, QualifiedTablePrefix prefix)
     {
         Span span = startSpan("listTablePrivileges", prefix);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listTablePrivileges(session, prefix);
+        }
+    }
+
+    @Override
+    public void grantTableBranchPrivileges(Session session, QualifiedObjectName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        Span span = startSpan("grantTableBranchPrivileges", tableName);
+        try (var _ = scopedSpan(span)) {
+            delegate.grantTableBranchPrivileges(session, tableName, branchName, privileges, grantee, grantOption);
+        }
+    }
+
+    @Override
+    public void denyTableBranchPrivileges(Session session, QualifiedObjectName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee)
+    {
+        Span span = startSpan("denyTableBranchPrivileges", tableName);
+        try (var _ = scopedSpan(span)) {
+            delegate.denyTableBranchPrivileges(session, tableName, branchName, privileges, grantee);
+        }
+    }
+
+    @Override
+    public void revokeTableBranchPrivileges(Session session, QualifiedObjectName tableName, String branchName, Set<Privilege> privileges, TrinoPrincipal grantee, boolean grantOption)
+    {
+        Span span = startSpan("revokeTableBranchPrivileges", tableName);
+        try (var _ = scopedSpan(span)) {
+            delegate.revokeTableBranchPrivileges(session, tableName, branchName, privileges, grantee, grantOption);
         }
     }
 
@@ -1216,7 +1297,7 @@ public class TracingMetadata
     public void grantEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
         Span span = startSpan("grantEntityPrivileges", entity, privileges, grantee, grantOption);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.grantEntityPrivileges(session, entity, privileges, grantee, grantOption);
         }
     }
@@ -1225,7 +1306,7 @@ public class TracingMetadata
     public void denyEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee)
     {
         Span span = startSpan("denyEntityPrivileges", entity, privileges, grantee, false);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.denyEntityPrivileges(session, entity, privileges, grantee);
         }
     }
@@ -1234,7 +1315,7 @@ public class TracingMetadata
     public void revokeEntityPrivileges(Session session, EntityKindAndName entity, Set<EntityPrivilege> privileges, TrinoPrincipal grantee, boolean grantOption)
     {
         Span span = startSpan("revokeEntityPrivileges", entity, privileges, grantee, grantOption);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.revokeEntityPrivileges(session, entity, privileges, grantee, grantOption);
         }
     }
@@ -1243,7 +1324,7 @@ public class TracingMetadata
     public Collection<FunctionMetadata> listGlobalFunctions(Session session)
     {
         Span span = startSpan("listGlobalFunctions");
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listGlobalFunctions(session);
         }
     }
@@ -1252,7 +1333,7 @@ public class TracingMetadata
     public Collection<FunctionMetadata> listFunctions(Session session, CatalogSchemaName schema)
     {
         Span span = startSpan("listFunctions", schema);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listFunctions(session, schema);
         }
     }
@@ -1261,7 +1342,7 @@ public class TracingMetadata
     public Collection<CatalogFunctionMetadata> getFunctions(Session session, CatalogSchemaFunctionName catalogSchemaFunctionName)
     {
         Span span = startSpan("getFunctions", catalogSchemaFunctionName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getFunctions(session, catalogSchemaFunctionName);
         }
     }
@@ -1271,7 +1352,7 @@ public class TracingMetadata
     {
         Span span = startSpan("resolveBuiltinFunction")
                 .setAttribute(TrinoAttributes.FUNCTION, name);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.resolveBuiltinFunction(name, parameterTypes);
         }
     }
@@ -1309,9 +1390,9 @@ public class TracingMetadata
     public AggregationFunctionMetadata getAggregationFunctionMetadata(Session session, ResolvedFunction resolvedFunction)
     {
         Span span = startSpan("getAggregationFunctionMetadata")
-                .setAttribute(TrinoAttributes.CATALOG, resolvedFunction.getCatalogHandle().getCatalogName().toString())
-                .setAttribute(TrinoAttributes.FUNCTION, resolvedFunction.getSignature().getName().toString());
-        try (var ignored = scopedSpan(span)) {
+                .setAttribute(TrinoAttributes.CATALOG, resolvedFunction.catalogHandle().getCatalogName().toString())
+                .setAttribute(TrinoAttributes.FUNCTION, resolvedFunction.signature().getName().toString());
+        try (var _ = scopedSpan(span)) {
             return delegate.getAggregationFunctionMetadata(session, resolvedFunction);
         }
     }
@@ -1321,8 +1402,17 @@ public class TracingMetadata
     {
         Span span = startSpan("getFunctionDependencies", catalogHandle.getCatalogName())
                 .setAttribute(TrinoAttributes.FUNCTION, functionId.toString());
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getFunctionDependencies(session, catalogHandle, functionId, boundSignature);
+        }
+    }
+
+    @Override
+    public Collection<LanguageFunction> getLanguageFunctions(Session session, QualifiedObjectName name)
+    {
+        Span span = startSpan("getLanguageFunctions", name);
+        try (var ignored = scopedSpan(span)) {
+            return delegate.getLanguageFunctions(session, name);
         }
     }
 
@@ -1330,7 +1420,7 @@ public class TracingMetadata
     public boolean languageFunctionExists(Session session, QualifiedObjectName name, String signatureToken)
     {
         Span span = startSpan("languageFunctionExists", name);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.languageFunctionExists(session, name, signatureToken);
         }
     }
@@ -1339,7 +1429,7 @@ public class TracingMetadata
     public void createLanguageFunction(Session session, QualifiedObjectName name, LanguageFunction function, boolean replace)
     {
         Span span = startSpan("createLanguageFunction", name);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.createLanguageFunction(session, name, function, replace);
         }
     }
@@ -1348,8 +1438,53 @@ public class TracingMetadata
     public void dropLanguageFunction(Session session, QualifiedObjectName name, String signatureToken)
     {
         Span span = startSpan("dropLanguageFunction", name);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.dropLanguageFunction(session, name, signatureToken);
+        }
+    }
+
+    @Override
+    public void createBranch(Session session, TableHandle tableHandle, String branch, Optional<String> fromBranch, SaveMode saveMode, Map<String, Object> properties)
+    {
+        Span span = startSpan("createBranch", tableHandle);
+        try (var _ = scopedSpan(span)) {
+            delegate.createBranch(session, tableHandle, branch, fromBranch, saveMode, properties);
+        }
+    }
+
+    @Override
+    public void dropBranch(Session session, TableHandle tableHandle, String branch)
+    {
+        Span span = startSpan("dropBranch", tableHandle);
+        try (var _ = scopedSpan(span)) {
+            delegate.dropBranch(session, tableHandle, branch);
+        }
+    }
+
+    @Override
+    public void fastForwardBranch(Session session, TableHandle tableHandle, String sourceBranch, String targetBranch)
+    {
+        Span span = startSpan("fastForwardBranch", tableHandle);
+        try (var _ = scopedSpan(span)) {
+            delegate.fastForwardBranch(session, tableHandle, sourceBranch, targetBranch);
+        }
+    }
+
+    @Override
+    public Collection<String> listBranches(Session session, QualifiedObjectName tableName)
+    {
+        Span span = startSpan("listBranches", tableName);
+        try (var _ = scopedSpan(span)) {
+            return delegate.listBranches(session, tableName);
+        }
+    }
+
+    @Override
+    public boolean branchExists(Session session, QualifiedObjectName tableName, String branch)
+    {
+        Span span = startSpan("branchExists", tableName);
+        try (var _ = scopedSpan(span)) {
+            return delegate.branchExists(session, tableName, branch);
         }
     }
 
@@ -1363,7 +1498,7 @@ public class TracingMetadata
             boolean ignoreExisting)
     {
         Span span = startSpan("createMaterializedView", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.createMaterializedView(session, viewName, definition, properties, replace, ignoreExisting);
         }
     }
@@ -1372,7 +1507,7 @@ public class TracingMetadata
     public void dropMaterializedView(Session session, QualifiedObjectName viewName)
     {
         Span span = startSpan("dropMaterializedView", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.dropMaterializedView(session, viewName);
         }
     }
@@ -1381,7 +1516,7 @@ public class TracingMetadata
     public List<QualifiedObjectName> listMaterializedViews(Session session, QualifiedTablePrefix prefix)
     {
         Span span = startSpan("listMaterializedViews", prefix);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.listMaterializedViews(session, prefix);
         }
     }
@@ -1390,7 +1525,7 @@ public class TracingMetadata
     public Map<QualifiedObjectName, ViewInfo> getMaterializedViews(Session session, QualifiedTablePrefix prefix)
     {
         Span span = startSpan("getMaterializedViews", prefix);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getMaterializedViews(session, prefix);
         }
     }
@@ -1399,7 +1534,7 @@ public class TracingMetadata
     public boolean isMaterializedView(Session session, QualifiedObjectName viewName)
     {
         Span span = startSpan("isMaterializedView", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.isMaterializedView(session, viewName);
         }
     }
@@ -1408,7 +1543,7 @@ public class TracingMetadata
     public Optional<MaterializedViewDefinition> getMaterializedView(Session session, QualifiedObjectName viewName)
     {
         Span span = startSpan("getMaterializedView", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getMaterializedView(session, viewName);
         }
     }
@@ -1417,7 +1552,7 @@ public class TracingMetadata
     public Map<String, Object> getMaterializedViewProperties(Session session, QualifiedObjectName objectName, MaterializedViewDefinition materializedViewDefinition)
     {
         Span span = startSpan("getMaterializedViewProperties", objectName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getMaterializedViewProperties(session, objectName, materializedViewDefinition);
         }
     }
@@ -1426,7 +1561,7 @@ public class TracingMetadata
     public MaterializedViewFreshness getMaterializedViewFreshness(Session session, QualifiedObjectName name)
     {
         Span span = startSpan("getMaterializedViewFreshness", name);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getMaterializedViewFreshness(session, name);
         }
     }
@@ -1435,7 +1570,7 @@ public class TracingMetadata
     public void renameMaterializedView(Session session, QualifiedObjectName existingViewName, QualifiedObjectName newViewName)
     {
         Span span = startSpan("renameMaterializedView", existingViewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.renameMaterializedView(session, existingViewName, newViewName);
         }
     }
@@ -1444,7 +1579,7 @@ public class TracingMetadata
     public void setMaterializedViewProperties(Session session, QualifiedObjectName viewName, Map<String, Optional<Object>> properties)
     {
         Span span = startSpan("setMaterializedViewProperties", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.setMaterializedViewProperties(session, viewName, properties);
         }
     }
@@ -1453,7 +1588,7 @@ public class TracingMetadata
     public void setMaterializedViewColumnComment(Session session, QualifiedObjectName viewName, String columnName, Optional<String> comment)
     {
         Span span = startSpan("setMaterializedViewColumnComment", viewName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             delegate.setMaterializedViewColumnComment(session, viewName, columnName, comment);
         }
     }
@@ -1462,7 +1597,7 @@ public class TracingMetadata
     public Optional<TableScanRedirectApplicationResult> applyTableScanRedirect(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("applyTableScanRedirect", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.applyTableScanRedirect(session, tableHandle);
         }
     }
@@ -1471,7 +1606,7 @@ public class TracingMetadata
     public RedirectionAwareTableHandle getRedirectionAwareTableHandle(Session session, QualifiedObjectName tableName)
     {
         Span span = startSpan("getRedirectionAwareTableHandle", tableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getRedirectionAwareTableHandle(session, tableName);
         }
     }
@@ -1480,7 +1615,7 @@ public class TracingMetadata
     public RedirectionAwareTableHandle getRedirectionAwareTableHandle(Session session, QualifiedObjectName tableName, Optional<TableVersion> startVersion, Optional<TableVersion> endVersion)
     {
         Span span = startSpan("getRedirectionAwareTableHandle", tableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getRedirectionAwareTableHandle(session, tableName, startVersion, endVersion);
         }
     }
@@ -1489,7 +1624,7 @@ public class TracingMetadata
     public Optional<TableHandle> getTableHandle(Session session, QualifiedObjectName tableName, Optional<TableVersion> startVersion, Optional<TableVersion> endVersion)
     {
         Span span = startSpan("getTableHandle", tableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getTableHandle(session, tableName, startVersion, endVersion);
         }
     }
@@ -1498,8 +1633,17 @@ public class TracingMetadata
     public OptionalInt getMaxWriterTasks(Session session, String catalogName)
     {
         Span span = startSpan("getMaxWriterTasks", catalogName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getMaxWriterTasks(session, catalogName);
+        }
+    }
+
+    @Override
+    public boolean allowSplittingReadIntoMultipleSubQueries(Session session, TableHandle tableHandle)
+    {
+        Span span = startSpan("allowSplittingReadIntoMultipleSubQueries", tableHandle);
+        try (var ignored = scopedSpan(span)) {
+            return delegate.allowSplittingReadIntoMultipleSubQueries(session, tableHandle);
         }
     }
 
@@ -1507,7 +1651,7 @@ public class TracingMetadata
     public WriterScalingOptions getNewTableWriterScalingOptions(Session session, QualifiedObjectName tableName, Map<String, Object> tableProperties)
     {
         Span span = startSpan("getNewTableWriterScalingOptions", tableName);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getNewTableWriterScalingOptions(session, tableName, tableProperties);
         }
     }
@@ -1516,8 +1660,44 @@ public class TracingMetadata
     public WriterScalingOptions getInsertWriterScalingOptions(Session session, TableHandle tableHandle)
     {
         Span span = startSpan("getInsertWriterScalingOptions", tableHandle);
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return delegate.getInsertWriterScalingOptions(session, tableHandle);
+        }
+    }
+
+    @Override
+    public void setEntityAuthorization(Session session, EntityKindAndName entityKindAndName, TrinoPrincipal principal)
+    {
+        Span span = startSpan("setEntityAuthorization", entityKindAndName.name().stream().collect(Collectors.joining(".")));
+        try (var ignored = scopedSpan(span)) {
+            delegate.setEntityAuthorization(session, entityKindAndName, principal);
+        }
+    }
+
+    @Override
+    public Set<SchemaAuthorization> getSchemasAuthorizationInfo(Session session, QualifiedSchemaPrefix prefix)
+    {
+        Span span = startSpan("getSchemasAuthorizationInfo", prefix);
+        try (var ignored = scopedSpan(span)) {
+            return delegate.getSchemasAuthorizationInfo(session, prefix);
+        }
+    }
+
+    @Override
+    public Set<TableAuthorization> getTablesAuthorizationInfo(Session session, QualifiedTablePrefix prefix)
+    {
+        Span span = startSpan("getTablesAuthorizationInfo", prefix);
+        try (var ignored = scopedSpan(span)) {
+            return delegate.getTablesAuthorizationInfo(session, prefix);
+        }
+    }
+
+    @Override
+    public Set<FunctionAuthorization> getFunctionsAuthorizationInfo(Session session, QualifiedObjectPrefix prefix)
+    {
+        Span span = startSpan("getFunctionsAuthorizationInfo", prefix);
+        try (var ignored = scopedSpan(span)) {
+            return delegate.getFunctionsAuthorizationInfo(session, prefix);
         }
     }
 
@@ -1553,9 +1733,9 @@ public class TracingMetadata
     private Span startSpan(String methodName, QualifiedObjectName table)
     {
         return startSpan(methodName)
-                .setAttribute(TrinoAttributes.CATALOG, table.getCatalogName())
-                .setAttribute(TrinoAttributes.SCHEMA, table.getSchemaName())
-                .setAttribute(TrinoAttributes.TABLE, table.getObjectName());
+                .setAttribute(TrinoAttributes.CATALOG, table.catalogName())
+                .setAttribute(TrinoAttributes.SCHEMA, table.schemaName())
+                .setAttribute(TrinoAttributes.TABLE, table.objectName());
     }
 
     private Span startSpan(String methodName, CatalogSchemaTableName table)
@@ -1574,6 +1754,21 @@ public class TracingMetadata
                 .setAttribute(TrinoAttributes.TABLE, prefix.getTableName().orElse(null));
     }
 
+    private Span startSpan(String methodName, QualifiedObjectPrefix prefix)
+    {
+        return startSpan(methodName)
+                .setAttribute(TrinoAttributes.CATALOG, prefix.catalogName())
+                .setAttribute(TrinoAttributes.SCHEMA, prefix.schemaName().orElse(null))
+                .setAttribute(TrinoAttributes.ENTITY, prefix.objectName().orElse(null));
+    }
+
+    private Span startSpan(String methodName, QualifiedSchemaPrefix prefix)
+    {
+        return startSpan(methodName)
+                .setAttribute(TrinoAttributes.CATALOG, prefix.catalogName())
+                .setAttribute(TrinoAttributes.SCHEMA, prefix.schemaName().orElse(null));
+    }
+
     private Span startSpan(String methodName, String catalogName, ConnectorTableMetadata tableMetadata)
     {
         return startSpan(methodName)
@@ -1586,8 +1781,8 @@ public class TracingMetadata
     {
         Span span = startSpan(methodName);
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.CATALOG, handle.getCatalogHandle().getCatalogName().toString());
-            span.setAttribute(TrinoAttributes.HANDLE, handle.getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.CATALOG, handle.catalogHandle().getCatalogName().toString());
+            span.setAttribute(TrinoAttributes.HANDLE, handle.connectorHandle().toString());
         }
         return span;
     }
@@ -1596,8 +1791,8 @@ public class TracingMetadata
     {
         Span span = startSpan(methodName);
         if (span.isRecording()) {
-            span.setAttribute(TrinoAttributes.CATALOG, handle.getCatalogHandle().getCatalogName().toString());
-            span.setAttribute(TrinoAttributes.HANDLE, handle.getConnectorHandle().toString());
+            span.setAttribute(TrinoAttributes.CATALOG, handle.catalogHandle().getCatalogName().toString());
+            span.setAttribute(TrinoAttributes.HANDLE, handle.connectorHandle().toString());
         }
         return span;
     }

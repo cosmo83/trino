@@ -34,12 +34,14 @@ final class TracingInputFile
     private final Tracer tracer;
     private final TrinoInputFile delegate;
     private Optional<Long> length;
+    private boolean isLastModifiedKnown;
 
-    public TracingInputFile(Tracer tracer, TrinoInputFile delegate, Optional<Long> length)
+    public TracingInputFile(Tracer tracer, TrinoInputFile delegate, Optional<Long> length, Optional<Instant> lastModified)
     {
         this.tracer = requireNonNull(tracer, "tracer is null");
         this.delegate = requireNonNull(delegate, "delegate is null");
         this.length = requireNonNull(length, "length is null");
+        this.isLastModifiedKnown = lastModified.isPresent();
     }
 
     @Override
@@ -47,7 +49,7 @@ final class TracingInputFile
             throws IOException
     {
         Span span = tracer.spanBuilder("InputFile.newInput")
-                .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
+                .setAttribute(FileSystemAttributes.FILE_LOCATION, location().toString())
                 .setAllAttributes(attribute(FileSystemAttributes.FILE_SIZE, length))
                 .startSpan();
         return withTracing(span, () -> new TracingInput(tracer, delegate.newInput(), location(), length));
@@ -58,7 +60,7 @@ final class TracingInputFile
             throws IOException
     {
         Span span = tracer.spanBuilder("InputFile.newStream")
-                .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
+                .setAttribute(FileSystemAttributes.FILE_LOCATION, location().toString())
                 .setAllAttributes(attribute(FileSystemAttributes.FILE_SIZE, length))
                 .startSpan();
         return withTracing(span, delegate::newStream);
@@ -74,7 +76,7 @@ final class TracingInputFile
         }
 
         Span span = tracer.spanBuilder("InputFile.length")
-                .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
+                .setAttribute(FileSystemAttributes.FILE_LOCATION, location().toString())
                 .startSpan();
         long fileLength = withTracing(span, delegate::length);
         length = Optional.of(fileLength);
@@ -85,10 +87,17 @@ final class TracingInputFile
     public Instant lastModified()
             throws IOException
     {
+        // skip tracing if lastModified is cached, but delegate anyway
+        if (isLastModifiedKnown) {
+            return delegate.lastModified();
+        }
+
         Span span = tracer.spanBuilder("InputFile.lastModified")
-                .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
+                .setAttribute(FileSystemAttributes.FILE_LOCATION, location().toString())
                 .startSpan();
-        return withTracing(span, delegate::lastModified);
+        Instant fileLastModified = withTracing(span, delegate::lastModified);
+        isLastModifiedKnown = true;
+        return fileLastModified;
     }
 
     @Override
@@ -96,7 +105,7 @@ final class TracingInputFile
             throws IOException
     {
         Span span = tracer.spanBuilder("InputFile.exists")
-                .setAttribute(FileSystemAttributes.FILE_LOCATION, toString())
+                .setAttribute(FileSystemAttributes.FILE_LOCATION, location().toString())
                 .startSpan();
         return withTracing(span, delegate::exists);
     }
@@ -110,6 +119,6 @@ final class TracingInputFile
     @Override
     public String toString()
     {
-        return location().toString();
+        return delegate.toString();
     }
 }

@@ -18,7 +18,6 @@ import com.google.inject.Inject;
 import io.trino.plugin.opensearch.client.OpenSearchClient;
 import io.trino.plugin.opensearch.client.OpenSearchNode;
 import io.trino.spi.Node;
-import io.trino.spi.NodeManager;
 import io.trino.spi.Page;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.connector.ColumnMetadata;
@@ -53,12 +52,10 @@ public class NodesSystemTable
     private final Node currentNode;
 
     @Inject
-    public NodesSystemTable(NodeManager nodeManager, OpenSearchClient client)
+    public NodesSystemTable(Node currentNode, OpenSearchClient client)
     {
-        requireNonNull(nodeManager, "nodeManager is null");
-
         this.client = requireNonNull(client, "client is null");
-        currentNode = nodeManager.getCurrentNode();
+        this.currentNode = currentNode;
     }
 
     @Override
@@ -86,10 +83,10 @@ public class NodesSystemTable
         for (OpenSearchNode node : nodes) {
             VARCHAR.writeString(nodeId, currentNode.getNodeIdentifier());
             VARCHAR.writeString(trinoAddress, currentNode.getHostAndPort().toString());
-            VARCHAR.writeString(opensearchNodeId, node.getId());
+            VARCHAR.writeString(opensearchNodeId, node.id());
 
-            if (node.getAddress().isPresent()) {
-                VARCHAR.writeString(opensearchAddress, node.getAddress().get());
+            if (node.address().isPresent()) {
+                VARCHAR.writeString(opensearchAddress, node.address().get());
             }
             else {
                 opensearchAddress.appendNull();

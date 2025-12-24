@@ -16,7 +16,7 @@ package io.trino.sql.planner.iterative.rule;
 import com.google.common.base.Predicates;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
@@ -44,10 +44,10 @@ public class TestPruneJoinColumns
     public void testNotAllOutputsReferenced()
     {
         tester().assertThat(new PruneJoinColumns())
-                .on(p -> buildProjectedJoin(p, symbol -> symbol.getName().equals("rightValue")))
+                .on(p -> buildProjectedJoin(p, symbol -> symbol.name().equals("rightValue")))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("rightValue", expression(new SymbolReference(BIGINT, "rightValue"))),
+                                ImmutableMap.of("rightValue", expression(new Reference(BIGINT, "rightValue"))),
                                 join(INNER, builder -> builder
                                         .equiCriteria("leftKey", "rightKey")
                                         .left(values(ImmutableList.of("leftKey", "leftValue")))
@@ -79,8 +79,6 @@ public class TestPruneJoinColumns
                                     ImmutableList.of(),
                                     ImmutableList.of(leftValue),
                                     ImmutableList.of(rightValue),
-                                    Optional.empty(),
-                                    Optional.empty(),
                                     Optional.empty()));
                 })
                 .matches(
@@ -112,8 +110,6 @@ public class TestPruneJoinColumns
                         ImmutableList.of(new JoinNode.EquiJoinClause(leftKey, rightKey)),
                         leftOutputs,
                         rightOutputs,
-                        Optional.empty(),
-                        Optional.empty(),
                         Optional.empty()));
     }
 }

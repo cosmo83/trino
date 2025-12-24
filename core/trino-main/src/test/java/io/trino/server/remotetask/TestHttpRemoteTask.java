@@ -35,6 +35,7 @@ import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
 import io.trino.block.BlockJsonSerde;
 import io.trino.client.NodeVersion;
+import io.trino.connector.TestingColumnHandle;
 import io.trino.execution.BaseTestSqlTaskManager;
 import io.trino.execution.DynamicFilterConfig;
 import io.trino.execution.DynamicFiltersCollector.VersionedDynamicFilterDomains;
@@ -54,20 +55,20 @@ import io.trino.execution.buffer.PipelinedOutputBuffers;
 import io.trino.metadata.BlockEncodingManager;
 import io.trino.metadata.HandleJsonModule;
 import io.trino.metadata.InternalBlockEncodingSerde;
-import io.trino.metadata.InternalNode;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.Split;
+import io.trino.node.InternalNode;
 import io.trino.server.DynamicFilterService;
 import io.trino.server.FailTaskRequest;
 import io.trino.server.HttpRemoteTaskFactory;
 import io.trino.server.TaskUpdateRequest;
+import io.trino.simd.BlockEncodingSimdSupport;
 import io.trino.spi.ErrorCode;
 import io.trino.spi.QueryId;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockEncodingSerde;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.DynamicFilter;
-import io.trino.spi.connector.TestingColumnHandle;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
@@ -75,7 +76,7 @@ import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeOperators;
 import io.trino.spi.type.TypeSignature;
 import io.trino.sql.DynamicFilters;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
 import io.trino.sql.planner.SymbolKeyDeserializer;
@@ -108,6 +109,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
@@ -115,14 +117,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
-import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.inject.Scopes.SINGLETON;
 import static io.airlift.json.JsonBinder.jsonBinder;
 import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
-import static io.airlift.testing.Assertions.assertGreaterThan;
-import static io.airlift.testing.Assertions.assertGreaterThanOrEqual;
-import static io.airlift.testing.Assertions.assertLessThan;
 import static io.airlift.tracing.SpanSerialization.SpanDeserializer;
 import static io.airlift.tracing.SpanSerialization.SpanSerializer;
 import static io.airlift.tracing.Tracing.noopTracer;
@@ -132,9 +130,10 @@ import static io.trino.SystemSessionProperties.REMOTE_TASK_GUARANTEED_SPLITS_PER
 import static io.trino.SystemSessionProperties.REMOTE_TASK_MAX_REQUEST_SIZE;
 import static io.trino.SystemSessionProperties.REMOTE_TASK_REQUEST_SIZE_HEADROOM;
 import static io.trino.execution.DynamicFiltersCollector.INITIAL_DYNAMIC_FILTERS_VERSION;
+import static io.trino.execution.TaskState.FAILED;
 import static io.trino.execution.TaskTestUtils.TABLE_SCAN_NODE_ID;
 import static io.trino.execution.buffer.PipelinedOutputBuffers.BufferType.BROADCAST;
-import static io.trino.metadata.MetadataManager.createTestMetadataManager;
+import static io.trino.metadata.TestMetadataManager.createTestMetadataManager;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.server.InternalHeaders.TRINO_CURRENT_VERSION;
 import static io.trino.server.InternalHeaders.TRINO_MAX_WAIT;
@@ -146,6 +145,7 @@ import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static io.trino.testing.assertions.Assert.assertEventually;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
+import static java.lang.Integer.MAX_VALUE;
 import static java.lang.Math.min;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -215,7 +215,114 @@ public class TestHttpRemoteTask
 
         remoteTask.cancel();
         poll(() -> remoteTask.getTaskStatus().getState().isDone());
-        poll(() -> remoteTask.getTaskInfo().getTaskStatus().getState().isDone());
+        poll(() -> remoteTask.getTaskInfo().taskStatus().getState().isDone());
+
+        httpRemoteTaskFactory.stop();
+    }
+
+    @Test
+    @Timeout(30)
+    public void testDynamicFilterFetcherFailure()
+            throws Exception
+    {
+        SymbolAllocator symbolAllocator = new SymbolAllocator();
+        Symbol symbol1 = symbolAllocator.newSymbol("DF_SYMBOL1", BIGINT);
+        Reference df1 = symbol1.toSymbolReference();
+        DynamicFilterId filterId1 = new DynamicFilterId("df1");
+        Map<DynamicFilterId, Domain> domain = ImmutableMap.of(filterId1, Domain.singleValue(BIGINT, 1L));
+        ColumnHandle handle1 = new TestingColumnHandle("column1");
+        QueryId queryId = new QueryId("test");
+
+        TestingTaskResource testingTaskResource = new TestingTaskResource(new AtomicLong(System.nanoTime()), FailureScenario.NO_FAILURE);
+        DynamicFilterService dynamicFilterService = new DynamicFilterService(
+                PLANNER_CONTEXT.getMetadata(),
+                PLANNER_CONTEXT.getFunctionManager(),
+                new TypeOperators(),
+                new DynamicFilterConfig());
+        HttpRemoteTaskFactory httpRemoteTaskFactory = createHttpRemoteTaskFactory(
+                testingTaskResource,
+                dynamicFilterService,
+                new QueryManagerConfig().setRemoteTaskMaxErrorDuration(new Duration(2, SECONDS)));
+        HttpRemoteTask remoteTask = createRemoteTask(httpRemoteTaskFactory, ImmutableSet.of());
+        testingTaskResource.setInitialTaskInfo(remoteTask.getTaskInfo());
+
+        dynamicFilterService.registerQuery(
+                queryId,
+                TEST_SESSION,
+                ImmutableSet.of(filterId1),
+                ImmutableSet.of(filterId1),
+                ImmutableSet.of());
+        dynamicFilterService.stageCannotScheduleMoreTasks(new StageId(queryId, 1), 0, 1);
+        DynamicFilter dynamicFilter = dynamicFilterService.createDynamicFilter(
+                queryId,
+                ImmutableList.of(new DynamicFilters.Descriptor(filterId1, df1)),
+                ImmutableMap.of(symbol1, handle1));
+
+        remoteTask.start();
+
+        // make sure fetching of DF retries requests
+        testingTaskResource.setDynamicFilterFailure(new RuntimeException("DF fetch failed"), 1);
+        testingTaskResource.setDynamicFilterDomains(new VersionedDynamicFilterDomains(1L, domain));
+        dynamicFilter.isBlocked().get();
+        assertThat(testingTaskResource.getDynamicFiltersFetchCounter())
+                .describedAs(testingTaskResource.getDynamicFiltersFetchRequests().toString())
+                .isGreaterThanOrEqualTo(2L);
+        assertThat(remoteTask.getDynamicFiltersFetcher().isRunning()).isTrue();
+
+        // make sure server failures while fetching dynamic filters cause task to fail
+        testingTaskResource.setDynamicFilterFailure(new RuntimeException("DF fetch failed"), MAX_VALUE);
+        testingTaskResource.setDynamicFilterDomains(new VersionedDynamicFilterDomains(2L, domain));
+        assertEventually(new Duration(30, SECONDS), () -> assertThat(remoteTask.getTaskStatus().getState()).isEqualTo(FAILED));
+        assertThat(remoteTask.getDynamicFiltersFetcher().isRunning()).isFalse();
+
+        httpRemoteTaskFactory.stop();
+    }
+
+    @Test
+    @Timeout(30)
+    public void testDynamicFilterFetcherVersionMismatch()
+            throws Exception
+    {
+        SymbolAllocator symbolAllocator = new SymbolAllocator();
+        Symbol symbol1 = symbolAllocator.newSymbol("DF_SYMBOL1", BIGINT);
+        Reference df1 = symbol1.toSymbolReference();
+        DynamicFilterId filterId1 = new DynamicFilterId("df1");
+        Map<DynamicFilterId, Domain> domain = ImmutableMap.of(filterId1, Domain.singleValue(BIGINT, 1L));
+        ColumnHandle handle1 = new TestingColumnHandle("column1");
+        QueryId queryId = new QueryId("test");
+
+        TestingTaskResource testingTaskResource = new TestingTaskResource(new AtomicLong(System.nanoTime()), FailureScenario.NO_FAILURE);
+        DynamicFilterService dynamicFilterService = new DynamicFilterService(
+                PLANNER_CONTEXT.getMetadata(),
+                PLANNER_CONTEXT.getFunctionManager(),
+                new TypeOperators(),
+                new DynamicFilterConfig());
+        HttpRemoteTaskFactory httpRemoteTaskFactory = createHttpRemoteTaskFactory(testingTaskResource, dynamicFilterService);
+        HttpRemoteTask remoteTask = createRemoteTask(httpRemoteTaskFactory, ImmutableSet.of());
+        testingTaskResource.setInitialTaskInfo(remoteTask.getTaskInfo());
+
+        dynamicFilterService.registerQuery(
+                queryId,
+                TEST_SESSION,
+                ImmutableSet.of(filterId1),
+                ImmutableSet.of(filterId1),
+                ImmutableSet.of());
+        dynamicFilterService.stageCannotScheduleMoreTasks(new StageId(queryId, 1), 0, 1);
+        DynamicFilter dynamicFilter = dynamicFilterService.createDynamicFilter(
+                queryId,
+                ImmutableList.of(new DynamicFilters.Descriptor(filterId1, df1)),
+                ImmutableMap.of(symbol1, handle1));
+
+        remoteTask.start();
+
+        testingTaskResource.setDynamicFilterDomains(new VersionedDynamicFilterDomains(1L, domain));
+        dynamicFilter.isBlocked().get();
+        assertThat(remoteTask.getDynamicFiltersFetcher().isRunning()).isTrue();
+
+        // make sure getting older DF version after newer version was observed causes task to fail
+        remoteTask.getDynamicFiltersFetcher().updateDynamicFiltersVersionAndFetchIfNecessary(10L);
+        assertEventually(new Duration(30, SECONDS), () -> assertThat(remoteTask.getTaskStatus().getState()).isEqualTo(FAILED));
+        assertThat(remoteTask.getDynamicFiltersFetcher().isRunning()).isFalse();
 
         httpRemoteTaskFactory.stop();
     }
@@ -230,8 +337,8 @@ public class TestHttpRemoteTask
         SymbolAllocator symbolAllocator = new SymbolAllocator();
         Symbol symbol1 = symbolAllocator.newSymbol("DF_SYMBOL1", BIGINT);
         Symbol symbol2 = symbolAllocator.newSymbol("DF_SYMBOL2", BIGINT);
-        SymbolReference df1 = symbol1.toSymbolReference();
-        SymbolReference df2 = symbol2.toSymbolReference();
+        Reference df1 = symbol1.toSymbolReference();
+        Reference df2 = symbol2.toSymbolReference();
         ColumnHandle handle1 = new TestingColumnHandle("column1");
         ColumnHandle handle2 = new TestingColumnHandle("column2");
         QueryId queryId = new QueryId("test");
@@ -279,7 +386,7 @@ public class TestHttpRemoteTask
         // make sure dynamic filters are not collected for every status update
         assertEventually(
                 new Duration(15, SECONDS),
-                () -> assertGreaterThanOrEqual(testingTaskResource.getStatusFetchCounter(), 3L));
+                () -> assertThat(testingTaskResource.getStatusFetchCounter()).isGreaterThanOrEqualTo(3L));
         assertThat(testingTaskResource.getDynamicFiltersFetchCounter())
                 .describedAs(testingTaskResource.getDynamicFiltersFetchRequests().toString())
                 .isEqualTo(1L);
@@ -295,7 +402,7 @@ public class TestHttpRemoteTask
         assertThat(testingTaskResource.getDynamicFiltersFetchCounter())
                 .describedAs(testingTaskResource.getDynamicFiltersFetchRequests().toString())
                 .isEqualTo(2L);
-        assertGreaterThanOrEqual(testingTaskResource.getStatusFetchCounter(), 4L);
+        assertThat(testingTaskResource.getStatusFetchCounter()).isGreaterThanOrEqualTo(4L);
 
         httpRemoteTaskFactory.stop();
     }
@@ -310,8 +417,8 @@ public class TestHttpRemoteTask
         SymbolAllocator symbolAllocator = new SymbolAllocator();
         Symbol symbol1 = symbolAllocator.newSymbol("DF_SYMBOL1", BIGINT);
         Symbol symbol2 = symbolAllocator.newSymbol("DF_SYMBOL2", BIGINT);
-        SymbolReference df1 = symbol1.toSymbolReference();
-        SymbolReference df2 = symbol2.toSymbolReference();
+        Reference df1 = symbol1.toSymbolReference();
+        Reference df2 = symbol2.toSymbolReference();
         ColumnHandle handle1 = new TestingColumnHandle("column1");
         ColumnHandle handle2 = new TestingColumnHandle("column2");
         QueryId queryId = new QueryId("test");
@@ -342,7 +449,7 @@ public class TestHttpRemoteTask
         // make sure initial dynamic filter is collected
         CompletableFuture<?> future = dynamicFilter.isBlocked();
         dynamicFilterService.addTaskDynamicFilters(
-                new TaskId(new StageId(queryId.getId(), 1), 1, 0),
+                new TaskId(new StageId(queryId.id(), 1), 1, 0),
                 ImmutableMap.of(filterId1, Domain.singleValue(BIGINT, 1L)));
         future.get();
         assertThat(dynamicFilter.getCurrentPredicate()).isEqualTo(TupleDomain.withColumnDomains(ImmutableMap.of(
@@ -368,7 +475,7 @@ public class TestHttpRemoteTask
 
         future = dynamicFilter.isBlocked();
         dynamicFilterService.addTaskDynamicFilters(
-                new TaskId(new StageId(queryId.getId(), 1), 1, 0),
+                new TaskId(new StageId(queryId.id(), 1), 1, 0),
                 ImmutableMap.of(filterId2, Domain.singleValue(BIGINT, 2L)));
         future.get();
         assertThat(dynamicFilter.getCurrentPredicate()).isEqualTo(TupleDomain.withColumnDomains(ImmutableMap.of(
@@ -425,7 +532,7 @@ public class TestHttpRemoteTask
 
         remoteTask.cancel();
         poll(() -> remoteTask.getTaskStatus().getState().isDone());
-        poll(() -> remoteTask.getTaskInfo().getTaskStatus().getState().isDone());
+        poll(() -> remoteTask.getTaskInfo().taskStatus().getState().isDone());
 
         httpRemoteTaskFactory.stop();
     }
@@ -457,11 +564,11 @@ public class TestHttpRemoteTask
 
         // decrease splitBatchSize
         assertThat(((HttpRemoteTask) remoteTask).adjustSplitBatchSize(ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, splits, true)), 1000000, 500)).isTrue();
-        assertLessThan(((HttpRemoteTask) remoteTask).splitBatchSize.get(), 250);
+        assertThat(((HttpRemoteTask) remoteTask).splitBatchSize.get()).isLessThan(250);
 
         // increase splitBatchSize
         assertThat(((HttpRemoteTask) remoteTask).adjustSplitBatchSize(ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, splits, true)), 1000, 100)).isFalse();
-        assertGreaterThan(((HttpRemoteTask) remoteTask).splitBatchSize.get(), 250);
+        assertThat(((HttpRemoteTask) remoteTask).splitBatchSize.get()).isGreaterThan(250);
     }
 
     private void runTest(FailureScenario failureScenario)
@@ -487,7 +594,7 @@ public class TestHttpRemoteTask
         switch (failureScenario) {
             case TASK_MISMATCH:
             case TASK_MISMATCH_WHEN_VERSION_IS_HIGH:
-                assertThat(remoteTask.getTaskInfo().getTaskStatus().getState().isDone())
+                assertThat(remoteTask.getTaskInfo().taskStatus().getState().isDone())
                         .describedAs(format("TaskInfo is not in a done state: %s", remoteTask.getTaskInfo()))
                         .isTrue();
                 assertThat(actualErrorCode).isEqualTo(REMOTE_TASK_MISMATCH.toErrorCode());
@@ -510,12 +617,12 @@ public class TestHttpRemoteTask
         poll(() -> testingTaskResource.getTaskSplitAssignment(TABLE_SCAN_NODE_ID).getSplits().size() == expectedSplitsCount);
     }
 
-    private RemoteTask createRemoteTask(HttpRemoteTaskFactory httpRemoteTaskFactory, Set<DynamicFilterId> outboundDynamicFilterIds)
+    private HttpRemoteTask createRemoteTask(HttpRemoteTaskFactory httpRemoteTaskFactory, Set<DynamicFilterId> outboundDynamicFilterIds)
     {
         return createRemoteTask(httpRemoteTaskFactory, outboundDynamicFilterIds, TEST_SESSION);
     }
 
-    private RemoteTask createRemoteTask(HttpRemoteTaskFactory httpRemoteTaskFactory, Set<DynamicFilterId> outboundDynamicFilterIds, Session session)
+    private HttpRemoteTask createRemoteTask(HttpRemoteTaskFactory httpRemoteTaskFactory, Set<DynamicFilterId> outboundDynamicFilterIds, Session session)
     {
         return httpRemoteTaskFactory.createRemoteTask(
                 session,
@@ -543,6 +650,11 @@ public class TestHttpRemoteTask
 
     private static HttpRemoteTaskFactory createHttpRemoteTaskFactory(TestingTaskResource testingTaskResource, DynamicFilterService dynamicFilterService)
     {
+        return createHttpRemoteTaskFactory(testingTaskResource, dynamicFilterService, new QueryManagerConfig());
+    }
+
+    private static HttpRemoteTaskFactory createHttpRemoteTaskFactory(TestingTaskResource testingTaskResource, DynamicFilterService dynamicFilterService, QueryManagerConfig config)
+    {
         Bootstrap app = new Bootstrap(
                 new JsonModule(),
                 new HandleJsonModule(),
@@ -565,6 +677,7 @@ public class TestHttpRemoteTask
                         jsonCodecBinder(binder).bindJsonCodec(TaskUpdateRequest.class);
                         jsonCodecBinder(binder).bindJsonCodec(FailTaskRequest.class);
 
+                        binder.bind(BlockEncodingSimdSupport.class).toInstance(new BlockEncodingSimdSupport(true));
                         binder.bind(TypeManager.class).toInstance(TESTING_TYPE_MANAGER);
                         binder.bind(BlockEncodingManager.class).in(SINGLETON);
                         binder.bind(BlockEncodingSerde.class).to(InternalBlockEncodingSerde.class).in(SINGLETON);
@@ -587,7 +700,7 @@ public class TestHttpRemoteTask
                         TestingHttpClient testingHttpClient = new TestingHttpClient(jaxrsTestingHttpProcessor.setTrace(TRACE_HTTP));
                         testingTaskResource.setHttpClient(testingHttpClient);
                         return new HttpRemoteTaskFactory(
-                                new QueryManagerConfig(),
+                                config,
                                 TASK_MANAGER_CONFIG,
                                 testingHttpClient,
                                 new BaseTestSqlTaskManager.MockLocationFactory(),
@@ -664,6 +777,8 @@ public class TestHttpRemoteTask
         private TaskInfo initialTaskInfo;
         private TaskStatus initialTaskStatus;
         private Optional<VersionedDynamicFilterDomains> dynamicFilterDomains = Optional.empty();
+        private Optional<Exception> dynamicFilterFailure = Optional.empty();
+        private OptionalInt dynamicFilterFailureCount = OptionalInt.empty();
         private long version;
         private TaskState taskState;
         private String taskInstanceId = INITIAL_TASK_INSTANCE_ID;
@@ -710,12 +825,12 @@ public class TestHttpRemoteTask
                 TaskUpdateRequest taskUpdateRequest,
                 @Context UriInfo uriInfo)
         {
-            for (SplitAssignment splitAssignment : taskUpdateRequest.getSplitAssignments()) {
+            for (SplitAssignment splitAssignment : taskUpdateRequest.splitAssignments()) {
                 taskSplitAssignmentMap.compute(splitAssignment.getPlanNodeId(), (planNodeId, taskSplitAssignment) -> taskSplitAssignment == null ? splitAssignment : taskSplitAssignment.update(splitAssignment));
             }
-            if (!taskUpdateRequest.getDynamicFilterDomains().isEmpty()) {
+            if (!taskUpdateRequest.dynamicFilterDomains().isEmpty()) {
                 dynamicFiltersSentCounter++;
-                latestDynamicFilterFromCoordinator = taskUpdateRequest.getDynamicFilterDomains();
+                latestDynamicFilterFromCoordinator = taskUpdateRequest.dynamicFilterDomains();
             }
             createOrUpdateCounter++;
             lastActivityNanos.set(System.nanoTime());
@@ -754,6 +869,7 @@ public class TestHttpRemoteTask
                 @PathParam("taskId") TaskId taskId,
                 @HeaderParam(TRINO_CURRENT_VERSION) Long currentDynamicFiltersVersion,
                 @Context UriInfo uriInfo)
+                throws Exception
         {
             dynamicFiltersFetchCounter++;
             // keep incoming dynamicfilters request log for debugging purposes
@@ -764,6 +880,12 @@ public class TestHttpRemoteTask
                     dynamicFilterDomains
                             .map(VersionedDynamicFilterDomains::getVersion)
                             .orElse(-1L)));
+
+            if (dynamicFilterFailureCount.orElse(0) > 0) {
+                dynamicFilterFailureCount = OptionalInt.of(dynamicFilterFailureCount.getAsInt() - 1);
+                throw dynamicFilterFailure.orElseThrow();
+            }
+
             return dynamicFilterDomains.orElse(null);
         }
 
@@ -784,7 +906,7 @@ public class TestHttpRemoteTask
         public void setInitialTaskInfo(TaskInfo initialTaskInfo)
         {
             this.initialTaskInfo = initialTaskInfo;
-            this.initialTaskStatus = initialTaskInfo.getTaskStatus();
+            this.initialTaskStatus = initialTaskInfo.taskStatus();
             this.taskState = initialTaskStatus.getState();
             this.version = initialTaskStatus.getVersion();
             switch (failureScenario) {
@@ -805,6 +927,12 @@ public class TestHttpRemoteTask
         public synchronized void setDynamicFilterDomains(VersionedDynamicFilterDomains dynamicFilterDomains)
         {
             this.dynamicFilterDomains = Optional.of(dynamicFilterDomains);
+        }
+
+        public synchronized void setDynamicFilterFailure(Exception exception, int failureCount)
+        {
+            this.dynamicFilterFailure = Optional.of(exception);
+            this.dynamicFilterFailureCount = OptionalInt.of(failureCount);
         }
 
         public Map<DynamicFilterId, Domain> getLatestDynamicFilterFromCoordinator()
@@ -841,12 +969,12 @@ public class TestHttpRemoteTask
         {
             return new TaskInfo(
                     buildTaskStatus(),
-                    initialTaskInfo.getLastHeartbeat(),
-                    initialTaskInfo.getOutputBuffers(),
-                    initialTaskInfo.getNoMoreSplits(),
-                    initialTaskInfo.getStats(),
-                    initialTaskInfo.getEstimatedMemory(),
-                    initialTaskInfo.isNeedsPlan());
+                    initialTaskInfo.lastHeartbeat(),
+                    initialTaskInfo.outputBuffers(),
+                    initialTaskInfo.noMoreSplits(),
+                    initialTaskInfo.stats(),
+                    initialTaskInfo.estimatedMemory(),
+                    initialTaskInfo.needsPlan());
         }
 
         private TaskStatus buildTaskStatus()
@@ -899,34 +1027,17 @@ public class TestHttpRemoteTask
                     initialTaskStatus.getRunningPartitionedSplitsWeight());
         }
 
-        private static class DynamicFiltersFetchRequest
+        private record DynamicFiltersFetchRequest(
+                String uriInfo,
+                TaskId taskId,
+                Long currentDynamicFiltersVersion,
+                long storedDynamicFiltersVersion)
         {
-            private final String uriInfo;
-            private final TaskId taskId;
-            private final Long currentDynamicFiltersVersion;
-            private final long storedDynamicFiltersVersion;
-
-            private DynamicFiltersFetchRequest(
-                    String uriInfo,
-                    TaskId taskId,
-                    Long currentDynamicFiltersVersion,
-                    long storedDynamicFiltersVersion)
+            private DynamicFiltersFetchRequest
             {
-                this.uriInfo = requireNonNull(uriInfo, "uriInfo is null");
-                this.taskId = requireNonNull(taskId, "taskId is null");
-                this.currentDynamicFiltersVersion = requireNonNull(currentDynamicFiltersVersion, "currentDynamicFiltersVersion is null");
-                this.storedDynamicFiltersVersion = storedDynamicFiltersVersion;
-            }
-
-            @Override
-            public String toString()
-            {
-                return toStringHelper(this)
-                        .add("uriInfo", uriInfo)
-                        .add("taskId", taskId)
-                        .add("currentDynamicFiltersVersion", currentDynamicFiltersVersion)
-                        .add("storedDynamicFiltersVersion", storedDynamicFiltersVersion)
-                        .toString();
+                requireNonNull(uriInfo, "uriInfo is null");
+                requireNonNull(taskId, "taskId is null");
+                requireNonNull(currentDynamicFiltersVersion, "currentDynamicFiltersVersion is null");
             }
         }
     }

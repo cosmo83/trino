@@ -20,11 +20,11 @@ import io.trino.spi.block.BlockBuilderStatus;
 import io.trino.spi.block.Fixed12Block;
 import io.trino.spi.block.Fixed12BlockBuilder;
 import io.trino.spi.block.PageBuilderStatus;
-import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.function.BlockIndex;
 import io.trino.spi.function.BlockPosition;
 import io.trino.spi.function.FlatFixed;
 import io.trino.spi.function.FlatFixedOffset;
+import io.trino.spi.function.FlatVariableOffset;
 import io.trino.spi.function.FlatVariableWidth;
 import io.trino.spi.function.ScalarOperator;
 
@@ -86,7 +86,7 @@ final class LongTimestampType
     }
 
     @Override
-    public BlockBuilder createBlockBuilder(BlockBuilderStatus blockBuilderStatus, int expectedEntries, int expectedBytesPerEntry)
+    public BlockBuilder createBlockBuilder(BlockBuilderStatus blockBuilderStatus, int expectedEntries)
     {
         int maxBlockSizeInBytes;
         if (blockBuilderStatus == null) {
@@ -101,28 +101,9 @@ final class LongTimestampType
     }
 
     @Override
-    public BlockBuilder createBlockBuilder(BlockBuilderStatus blockBuilderStatus, int expectedEntries)
-    {
-        return createBlockBuilder(blockBuilderStatus, expectedEntries, getFixedSize());
-    }
-
-    @Override
     public BlockBuilder createFixedSizeBlockBuilder(int positionCount)
     {
         return new Fixed12BlockBuilder(null, positionCount);
-    }
-
-    @Override
-    public void appendTo(Block block, int position, BlockBuilder blockBuilder)
-    {
-        if (block.isNull(position)) {
-            blockBuilder.appendNull();
-        }
-        else {
-            Fixed12Block valueBlock = (Fixed12Block) block.getUnderlyingValueBlock();
-            int valuePosition = block.getUnderlyingValuePosition(position);
-            ((Fixed12BlockBuilder) blockBuilder).writeFixed12(getEpochMicros(valueBlock, valuePosition), getFraction(valueBlock, valuePosition));
-        }
     }
 
     @Override
@@ -146,7 +127,7 @@ final class LongTimestampType
     }
 
     @Override
-    public Object getObjectValue(ConnectorSession session, Block block, int position)
+    public Object getObjectValue(Block block, int position)
     {
         if (block.isNull(position)) {
             return null;
@@ -183,7 +164,8 @@ final class LongTimestampType
     private static LongTimestamp readFlat(
             @FlatFixed byte[] fixedSizeSlice,
             @FlatFixedOffset int fixedSizeOffset,
-            @FlatVariableWidth byte[] unusedVariableSizeSlice)
+            @FlatVariableWidth byte[] unusedVariableSizeSlice,
+            @FlatVariableOffset int unusedVariableSizeOffset)
     {
         return new LongTimestamp(
                 (long) LONG_HANDLE.get(fixedSizeSlice, fixedSizeOffset),
@@ -195,6 +177,7 @@ final class LongTimestampType
             @FlatFixed byte[] fixedSizeSlice,
             @FlatFixedOffset int fixedSizeOffset,
             @FlatVariableWidth byte[] unusedVariableSizeSlice,
+            @FlatVariableOffset int unusedVariableSizeOffset,
             BlockBuilder blockBuilder)
     {
         write(blockBuilder,
@@ -205,10 +188,10 @@ final class LongTimestampType
     @ScalarOperator(READ_VALUE)
     private static void writeFlat(
             LongTimestamp value,
-            byte[] fixedSizeSlice,
-            int fixedSizeOffset,
-            byte[] unusedVariableSizeSlice,
-            int unusedVariableSizeOffset)
+            @FlatFixed byte[] fixedSizeSlice,
+            @FlatFixedOffset int fixedSizeOffset,
+            @FlatVariableWidth byte[] unusedVariableSizeSlice,
+            @FlatVariableOffset int unusedVariableSizeOffset)
     {
         LONG_HANDLE.set(fixedSizeSlice, fixedSizeOffset, value.getEpochMicros());
         INT_HANDLE.set(fixedSizeSlice, fixedSizeOffset + SIZE_OF_LONG, value.getPicosOfMicro());
@@ -218,10 +201,10 @@ final class LongTimestampType
     private static void writeBlockFlat(
             @BlockPosition Fixed12Block block,
             @BlockIndex int position,
-            byte[] fixedSizeSlice,
-            int fixedSizeOffset,
-            byte[] unusedVariableSizeSlice,
-            int unusedVariableSizeOffset)
+            @FlatFixed byte[] fixedSizeSlice,
+            @FlatFixedOffset int fixedSizeOffset,
+            @FlatVariableWidth byte[] unusedVariableSizeSlice,
+            @FlatVariableOffset int unusedVariableSizeOffset)
     {
         LONG_HANDLE.set(fixedSizeSlice, fixedSizeOffset, getEpochMicros(block, position));
         INT_HANDLE.set(fixedSizeSlice, fixedSizeOffset + SIZE_OF_LONG, getFraction(block, position));
@@ -247,6 +230,22 @@ final class LongTimestampType
                 getFraction(rightBlock, rightPosition));
     }
 
+    @ScalarOperator(EQUAL)
+    private static boolean equalOperator(
+            @FlatFixed byte[] leftFixedSizeSlice,
+            @FlatFixedOffset int leftFixedSizeOffset,
+            @FlatVariableWidth byte[] unusedVariableSizeSlice,
+            @FlatVariableOffset int unusedVariableSizeOffset,
+            @BlockPosition Fixed12Block rightBlock,
+            @BlockIndex int rightPosition)
+    {
+        return equal(
+                (long) LONG_HANDLE.get(leftFixedSizeSlice, leftFixedSizeOffset),
+                (int) INT_HANDLE.get(leftFixedSizeSlice, leftFixedSizeOffset + SIZE_OF_LONG),
+                getEpochMicros(rightBlock, rightPosition),
+                getFraction(rightBlock, rightPosition));
+    }
+
     private static boolean equal(long leftEpochMicros, int leftFraction, long rightEpochMicros, int rightFraction)
     {
         return leftEpochMicros == rightEpochMicros && leftFraction == rightFraction;
@@ -264,6 +263,18 @@ final class LongTimestampType
         return xxHash64(
                 getEpochMicros(block, position),
                 getFraction(block, position));
+    }
+
+    @ScalarOperator(XX_HASH_64)
+    private static long xxHash64Operator(
+            @FlatFixed byte[] leftFixedSizeSlice,
+            @FlatFixedOffset int leftFixedSizeOffset,
+            @FlatVariableWidth byte[] unusedVariableSizeSlice,
+            @FlatVariableOffset int unusedVariableSizeOffset)
+    {
+        return xxHash64(
+                (long) LONG_HANDLE.get(leftFixedSizeSlice, leftFixedSizeOffset),
+                (int) INT_HANDLE.get(leftFixedSizeSlice, leftFixedSizeOffset + SIZE_OF_LONG));
     }
 
     private static long xxHash64(long epochMicros, int fraction)

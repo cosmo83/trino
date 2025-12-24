@@ -36,8 +36,11 @@
 - {func}`array_agg`
 - {func}`array_distinct`
 - {func}`array_except`
+- {func}`array_first`
+- {func}`array_histogram`
 - {func}`array_intersect`
 - {func}`array_join`
+- {func}`array_last`
 - {func}`array_max`
 - {func}`array_min`
 - {func}`array_position`
@@ -102,6 +105,7 @@
 - {func}`corr`
 - {func}`cos`
 - {func}`cosh`
+- {func}`cosine_distance`
 - {func}`cosine_similarity`
 - {func}`count`
 - {func}`count_if`
@@ -339,6 +343,7 @@
 - {func}`radians`
 - {func}`rand`
 - {func}`random`
+- {func}`random_string`, catalog function of the [](/connector/faker)
 - {func}`rank`
 - {func}`reduce`
 - {func}`reduce_agg`
@@ -460,6 +465,7 @@
 - {func}`tanh`
 - {func}`tdigest_agg`
 - {func}`timestamp_objectid`
+- {func}`timezone`
 - {func}`timezone_hour`
 - {func}`timezone_minute`
 - {func}`to_base`

@@ -13,11 +13,14 @@
  */
 package io.trino.cli;
 
+import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.net.HostAndPort;
 import io.airlift.units.Duration;
 import io.trino.cli.ClientOptions.ClientExtraCredential;
 import io.trino.cli.ClientOptions.ClientResourceEstimate;
 import io.trino.cli.ClientOptions.ClientSessionProperty;
+import io.trino.cli.ClientOptions.ExtraHeader;
 import org.jline.utils.AttributedStringBuilder;
 import org.jline.utils.AttributedStyle;
 import picocli.CommandLine;
@@ -27,7 +30,10 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Enumeration;
+import java.util.Map;
 import java.util.Optional;
+import java.util.ResourceBundle;
 import java.util.stream.Stream;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
@@ -35,7 +41,10 @@ import static com.google.common.base.StandardSystemProperty.USER_HOME;
 import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.base.Throwables.getStackTraceAsString;
 import static io.trino.cli.ClientOptions.DEBUG_OPTION_NAME;
+import static io.trino.client.spooling.encoding.QueryDataDecoders.getPreferredEncodings;
+import static io.trino.client.spooling.encoding.QueryDataDecoders.getSupportedEncodings;
 import static java.lang.System.getenv;
+import static java.util.Collections.enumeration;
 import static java.util.regex.Pattern.quote;
 
 public final class Trino
@@ -54,8 +63,10 @@ public final class Trino
                 .registerConverter(ClientResourceEstimate.class, ClientResourceEstimate::new)
                 .registerConverter(ClientSessionProperty.class, ClientSessionProperty::new)
                 .registerConverter(ClientExtraCredential.class, ClientExtraCredential::new)
+                .registerConverter(ExtraHeader.class, ExtraHeader::new)
                 .registerConverter(HostAndPort.class, HostAndPort::fromString)
                 .registerConverter(Duration.class, Duration::valueOf)
+                .setResourceBundle(new TrinoResourceBundle())
                 .setExecutionExceptionHandler((e, cmd, parseResult) -> {
                     System.err.println(formatCliErrorMessage(e, parseResult.hasMatchedOption(DEBUG_OPTION_NAME)));
                     return 1;
@@ -118,6 +129,32 @@ public final class Trino
         {
             String version = getClass().getPackage().getImplementationVersion();
             return new String[] {"Trino CLI " + firstNonNull(version, "(version unknown)")};
+        }
+    }
+
+    public static class TrinoResourceBundle
+            extends ResourceBundle
+    {
+        private final Map<String, String> variables;
+
+        public TrinoResourceBundle()
+        {
+            this.variables = ImmutableMap.<String, String>builder()
+                    .put("ENCODINGS", Joiner.on(", ").join(getSupportedEncodings()))
+                    .put("PREFERRED_ENCODINGS", getPreferredEncodings())
+                    .buildOrThrow();
+        }
+
+        @Override
+        protected Object handleGetObject(String key)
+        {
+            return variables.get(key);
+        }
+
+        @Override
+        public Enumeration<String> getKeys()
+        {
+            return enumeration(variables.keySet());
         }
     }
 }

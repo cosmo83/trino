@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.mysql;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.plugin.jdbc.UnsupportedTypeHandling;
@@ -52,7 +51,6 @@ import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_MAPPI
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_ROUNDING_MODE;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
-import static io.trino.plugin.mysql.MySqlQueryRunner.createMySqlQueryRunner;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.CharType.createCharType;
@@ -95,7 +93,7 @@ public class TestMySqlTypeMapping
     public void setUp()
     {
         checkState(jvmZone.getId().equals("America/Bahia_Banderas"), "This test assumes certain JVM time zone");
-        LocalDate dateOfLocalTimeChangeForwardAtMidnightInJvmZone = LocalDate.of(1970, 1, 1);
+        LocalDate dateOfLocalTimeChangeForwardAtMidnightInJvmZone = LocalDate.of(1932, 4, 1);
         verify(jvmZone.getRules().getValidOffsets(dateOfLocalTimeChangeForwardAtMidnightInJvmZone.atStartOfDay()).isEmpty());
 
         LocalDate dateOfLocalTimeChangeForwardAtMidnightInSomeZone = LocalDate.of(1983, 4, 1);
@@ -109,7 +107,8 @@ public class TestMySqlTypeMapping
             throws Exception
     {
         mySqlServer = closeAfterClass(new TestingMySqlServer());
-        return createMySqlQueryRunner(mySqlServer, ImmutableMap.of(), ImmutableMap.of(), ImmutableList.of());
+        return MySqlQueryRunner.builder(mySqlServer)
+                .build();
     }
 
     @Test
@@ -1110,8 +1109,8 @@ public class TestMySqlTypeMapping
 
             // Verify Trino writes
             assertQueryFails(
-                    "INSERT INTO " + table.getName() + " VALUES (TIMESTAMP '1970-01-01 00:00:00 UTC')", // min - 1
-                    "Failed to insert data: Data truncation: Incorrect datetime value: '1969-12-31 16:00:00' for column 'data' at row 1");
+                    "INSERT INTO " + table.getName() + " VALUES (TIMESTAMP '1932-04-01 00:00:00 UTC')", // min - 1
+                    "Failed to insert data: Data truncation: Incorrect datetime value: '1932-03-31 17:00:00' for column 'data' at row 1");
             assertQueryFails(
                     "INSERT INTO " + table.getName() + " VALUES (TIMESTAMP '2038-01-19 03:14:08 UTC')", // max + 1
                     "Failed to insert data: Data truncation: Incorrect datetime value: '2038-01-18 21:14:08' for column 'data' at row 1");

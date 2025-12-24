@@ -14,6 +14,7 @@
 package io.trino.exchange;
 
 import com.google.inject.Inject;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.log.Logger;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
@@ -28,6 +29,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -50,14 +52,20 @@ public class ExchangeManagerRegistry
     private final Map<String, ExchangeManagerFactory> exchangeManagerFactories = new ConcurrentHashMap<>();
 
     private volatile ExchangeManager exchangeManager;
+    private final SecretsResolver secretsResolver;
+    private final Optional<File> configFile;
 
     @Inject
     public ExchangeManagerRegistry(
             OpenTelemetry openTelemetry,
-            Tracer tracer)
+            Tracer tracer,
+            SecretsResolver secretsResolver,
+            ExchangeManagerConfig config)
     {
         this.openTelemetry = requireNonNull(openTelemetry, "openTelemetry is null");
         this.tracer = requireNonNull(tracer, "tracer is null");
+        this.secretsResolver = requireNonNull(secretsResolver, "secretsResolver is null");
+        this.configFile = config.getExchangeManagerConfigFile();
     }
 
     public void addExchangeManagerFactory(ExchangeManagerFactory factory)
@@ -70,13 +78,14 @@ public class ExchangeManagerRegistry
 
     public void loadExchangeManager()
     {
-        if (!CONFIG_FILE.exists()) {
+        File configFile = this.configFile.orElse(CONFIG_FILE);
+        if (!configFile.exists()) {
             return;
         }
 
-        Map<String, String> properties = loadProperties(CONFIG_FILE);
+        Map<String, String> properties = loadProperties(configFile);
         String name = properties.remove(EXCHANGE_MANAGER_NAME_PROPERTY);
-        checkArgument(!isNullOrEmpty(name), "Exchange manager configuration %s does not contain %s", CONFIG_FILE, EXCHANGE_MANAGER_NAME_PROPERTY);
+        checkArgument(!isNullOrEmpty(name), "Exchange manager configuration %s does not contain %s", configFile, EXCHANGE_MANAGER_NAME_PROPERTY);
 
         loadExchangeManager(name, properties);
     }
@@ -91,8 +100,8 @@ public class ExchangeManagerRegistry
         checkArgument(factory != null, "Exchange manager factory '%s' is not registered. Available factories: %s", name, exchangeManagerFactories.keySet());
 
         ExchangeManager exchangeManager;
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
-            exchangeManager = factory.create(properties, new ExchangeManagerContextInstance(openTelemetry, tracer));
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
+            exchangeManager = factory.create(secretsResolver.getResolvedConfiguration(properties), new ExchangeManagerContextInstance(openTelemetry, tracer));
         }
 
         log.info("-- Loaded exchange manager %s --", name);

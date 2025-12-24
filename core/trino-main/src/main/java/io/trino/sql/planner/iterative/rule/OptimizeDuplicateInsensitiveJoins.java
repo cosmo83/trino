@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import io.trino.Session;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
+import io.trino.sql.planner.DeterminismEvaluator;
 import io.trino.sql.planner.iterative.GroupReference;
 import io.trino.sql.planner.iterative.Lookup;
 import io.trino.sql.planner.iterative.Rule;
@@ -34,7 +35,7 @@ import java.util.Optional;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.SystemSessionProperties.isOptimizeDuplicateInsensitiveJoins;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.DeterminismEvaluator.isDeterministic;
 import static io.trino.sql.planner.plan.Patterns.aggregation;
 import static java.util.Objects.requireNonNull;
@@ -102,8 +103,8 @@ public class OptimizeDuplicateInsensitiveJoins
         @Override
         public Optional<PlanNode> visitProject(ProjectNode node, Void context)
         {
-            boolean isDeterministic = node.getAssignments().getExpressions().stream()
-                    .allMatch(expression -> isDeterministic(expression));
+            boolean isDeterministic = node.getAssignments().expressions().stream()
+                    .allMatch(DeterminismEvaluator::isDeterministic);
             if (!isDeterministic) {
                 // non-deterministic projections could be used in downstream filters which could
                 // filter duplicate rows probabilistically
@@ -134,7 +135,7 @@ public class OptimizeDuplicateInsensitiveJoins
             // LookupJoinOperator will evaluate non-deterministic condition on output rows until one of the
             // rows matches. Therefore it's safe to set maySkipOutputDuplicates for joins with non-deterministic
             // filters.
-            if (!isDeterministic(node.getFilter().orElse(TRUE_LITERAL))) {
+            if (!isDeterministic(node.getFilter().orElse(TRUE))) {
                 if (node.isMaySkipOutputDuplicates()) {
                     // join node is already set to skip duplicates, return empty to prevent rule from looping forever
                     return Optional.empty();

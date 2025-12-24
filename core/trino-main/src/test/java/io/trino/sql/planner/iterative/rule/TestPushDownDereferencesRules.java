@@ -15,7 +15,6 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.slice.Slices;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TableHandle;
 import io.trino.metadata.TestingFunctionResolution;
@@ -26,19 +25,17 @@ import io.trino.spi.function.OperatorType;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.RowType;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Cast;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Constant;
-import io.trino.sql.ir.IsNullPredicate;
-import io.trino.sql.ir.LogicalExpression;
-import io.trino.sql.ir.NotExpression;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.IsNull;
+import io.trino.sql.ir.Logical;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Row;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.assertions.ExpressionMatcher;
-import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.DataOrganizationSpecification;
@@ -49,20 +46,18 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
-import static io.trino.metadata.MetadataManager.createTestMetadataManager;
+import static io.trino.metadata.TestMetadataManager.createTestMetadataManager;
 import static io.trino.spi.connector.SortOrder.ASC_NULLS_FIRST;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
 import static io.trino.spi.type.RowType.rowType;
-import static io.trino.spi.type.VarcharType.createVarcharType;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.ADD;
-import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
-import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
-import static io.trino.sql.ir.ComparisonExpression.Operator.NOT_EQUAL;
-import static io.trino.sql.ir.LogicalExpression.Operator.AND;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
+import static io.trino.sql.ir.Comparison.Operator.NOT_EQUAL;
+import static io.trino.sql.ir.IrExpressions.not;
+import static io.trino.sql.ir.Logical.Operator.AND;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.UnnestMapping.unnestMapping;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.assignUniqueId;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -99,7 +94,7 @@ public class TestPushDownDereferencesRules
 {
     private static final RowType ROW_TYPE = RowType.from(ImmutableList.of(new RowType.Field(Optional.of("x"), BIGINT), new RowType.Field(Optional.of("y"), BIGINT)));
     private static final TestingFunctionResolution FUNCTIONS = new TestingFunctionResolution();
-    private static final ResolvedFunction ADD_INTEGER = FUNCTIONS.resolveOperator(OperatorType.ADD, ImmutableList.of(INTEGER, INTEGER));
+    private static final ResolvedFunction ADD_BIGINT = FUNCTIONS.resolveOperator(OperatorType.ADD, ImmutableList.of(BIGINT, BIGINT));
 
     @Test
     public void testDoesNotFire()
@@ -108,7 +103,7 @@ public class TestPushDownDereferencesRules
         tester().assertThat(new PushDownDereferenceThroughFilter())
                 .on(p ->
                         p.filter(
-                                new ComparisonExpression(GREATER_THAN, new SymbolReference(BIGINT, "x"), new Constant(BIGINT, 5L)),
+                                new Comparison(GREATER_THAN, new Reference(BIGINT, "x"), new Constant(BIGINT, 5L)),
                                 p.values(p.symbol("x"))))
                 .doesNotFire();
 
@@ -117,12 +112,12 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.of(
-                                        p.symbol("expr_1"), new SubscriptExpression(rowType(field("x", BIGINT), field("y", BIGINT)), new Cast(new Row(ImmutableList.of(new SymbolReference(ROW_TYPE, "a"), new SymbolReference(BIGINT, "b"))), rowType(field("f1", rowType(field("x", BIGINT), field("y", BIGINT))), field("f2", BIGINT))), new Constant(INTEGER, 1L)),
-                                        p.symbol("expr_2"), new SubscriptExpression(BIGINT, new SubscriptExpression(rowType(field("x", BIGINT), field("y", BIGINT)), new Cast(new Row(ImmutableList.of(new SymbolReference(ROW_TYPE, "a"), new SymbolReference(BIGINT, "b"))), rowType(field("f1", rowType(field("x", BIGINT), field("y", BIGINT))), field("f2", BIGINT))), new Constant(INTEGER, 1L)), new Constant(INTEGER, 2L))),
+                                        p.symbol("expr_1", rowType(field("x", BIGINT), field("y", BIGINT))), new FieldReference(new Cast(new Row(ImmutableList.of(new Reference(ROW_TYPE, "a"), new Reference(BIGINT, "b"))), rowType(field("f1", rowType(field("x", BIGINT), field("y", BIGINT))), field("f2", BIGINT))), 0),
+                                        p.symbol("expr_2"), new FieldReference(new FieldReference(new Cast(new Row(ImmutableList.of(new Reference(ROW_TYPE, "a"), new Reference(BIGINT, "b"))), rowType(field("f1", rowType(field("x", BIGINT), field("y", BIGINT))), field("f2", BIGINT))), 0), 1)),
                                 p.project(
                                         Assignments.of(
-                                                p.symbol("a", ROW_TYPE), new SymbolReference(ROW_TYPE, "a"),
-                                                p.symbol("b"), new SymbolReference(BIGINT, "b")),
+                                                p.symbol("a", ROW_TYPE), new Reference(ROW_TYPE, "a"),
+                                                p.symbol("b"), new Reference(BIGINT, "b")),
                                         p.values(p.symbol("a", ROW_TYPE), p.symbol("b")))))
                 .doesNotFire();
 
@@ -130,9 +125,11 @@ public class TestPushDownDereferencesRules
         tester().assertThat(new PushDownDereferenceThroughProject())
                 .on(p ->
                         p.project(
-                                Assignments.of(p.symbol("expr", ROW_TYPE), new SymbolReference(BIGINT, "a"), p.symbol("a_x"), new SubscriptExpression(BIGINT, new SymbolReference(BIGINT, "a"), new Constant(INTEGER, 1L))),
+                                Assignments.of(
+                                        p.symbol("expr", ROW_TYPE), new Reference(ROW_TYPE, "a"),
+                                        p.symbol("a_x"), new FieldReference(new Reference(ROW_TYPE, "a"), 0)),
                                 p.project(
-                                        Assignments.of(p.symbol("a", ROW_TYPE), new SymbolReference(ROW_TYPE, "a")),
+                                        Assignments.of(p.symbol("a", ROW_TYPE), new Reference(ROW_TYPE, "a")),
                                         p.values(p.symbol("a", ROW_TYPE)))))
                 .doesNotFire();
     }
@@ -143,20 +140,20 @@ public class TestPushDownDereferencesRules
         tester().assertThat(new PushDownDereferenceThroughProject())
                 .on(p ->
                         p.project(
-                                Assignments.of(p.symbol("x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 1L))),
+                                Assignments.of(p.symbol("x"), new FieldReference(new Reference(ROW_TYPE, "msg"), 0)),
                                 p.project(
                                         Assignments.of(
-                                                p.symbol("y"), new SymbolReference(BIGINT, "y"),
-                                                p.symbol("msg", ROW_TYPE), new SymbolReference(ROW_TYPE, "msg")),
+                                                p.symbol("y"), new Reference(BIGINT, "y"),
+                                                p.symbol("msg", ROW_TYPE), new Reference(ROW_TYPE, "msg")),
                                         p.values(p.symbol("msg", ROW_TYPE), p.symbol("y")))))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("x", expression(new SymbolReference(BIGINT, "msg_x"))),
+                                ImmutableMap.of("x", expression(new Reference(BIGINT, "msg_x"))),
                                 strictProject(
                                         ImmutableMap.of(
-                                                "msg_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 1L))),
-                                                "y", expression(new SymbolReference(BIGINT, "y")),
-                                                "msg", expression(new SymbolReference(BIGINT, "msg"))),
+                                                "msg_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg"), 0)),
+                                                "y", expression(new Reference(BIGINT, "y")),
+                                                "msg", expression(new Reference(BIGINT, "msg"))),
                                         values("msg", "y"))));
     }
 
@@ -167,9 +164,9 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("left_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("right_y"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 2L)))
-                                        .put(p.symbol("z"), new SymbolReference(BIGINT, "z"))
+                                        .put(p.symbol("left_x"), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))
+                                        .put(p.symbol("right_y"), new FieldReference(new Reference(ROW_TYPE, "msg2"), 1))
+                                        .put(p.symbol("z"), new Reference(BIGINT, "z"))
                                         .build(),
                                 p.join(INNER,
                                         p.values(p.symbol("msg1", ROW_TYPE), p.symbol("unreferenced_symbol")),
@@ -177,24 +174,24 @@ public class TestPushDownDereferencesRules
                 .matches(
                         strictProject(
                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                        .put("left_x", expression(new SymbolReference(BIGINT, "x")))
-                                        .put("right_y", expression(new SymbolReference(BIGINT, "y")))
-                                        .put("z", expression(new SymbolReference(BIGINT, "z")))
+                                        .put("left_x", expression(new Reference(BIGINT, "x")))
+                                        .put("right_y", expression(new Reference(BIGINT, "y")))
+                                        .put("z", expression(new Reference(BIGINT, "z")))
                                         .buildOrThrow(),
                                 join(INNER, builder -> builder
                                         .left(
                                                 strictProject(
                                                         ImmutableMap.of(
-                                                                "x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L))),
-                                                                "msg1", expression(new SymbolReference(ROW_TYPE, "msg1")),
-                                                                "unreferenced_symbol", expression(new SymbolReference(BIGINT, "unreferenced_symbol"))),
+                                                                "x", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0)),
+                                                                "msg1", expression(new Reference(ROW_TYPE, "msg1")),
+                                                                "unreferenced_symbol", expression(new Reference(BIGINT, "unreferenced_symbol"))),
                                                         values("msg1", "unreferenced_symbol")))
                                         .right(
                                                 strictProject(
                                                         ImmutableMap.<String, ExpressionMatcher>builder()
-                                                                .put("y", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 2L))))
-                                                                .put("z", expression(new SymbolReference(BIGINT, "z")))
-                                                                .put("msg2", expression(new SymbolReference(ROW_TYPE, "msg2")))
+                                                                .put("y", expression(new FieldReference(new Reference(ROW_TYPE, "msg2"), 1)))
+                                                                .put("z", expression(new Reference(BIGINT, "z")))
+                                                                .put("msg2", expression(new Reference(ROW_TYPE, "msg2")))
                                                                 .buildOrThrow(),
                                                         values("msg2", "z"))))));
 
@@ -203,24 +200,24 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.of(
-                                        p.symbol("expr"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)),
-                                        p.symbol("expr_2"), new SymbolReference(ROW_TYPE, "msg2")),
+                                        p.symbol("expr", ROW_TYPE.getFields().get(0).getType()), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0),
+                                        p.symbol("expr_2", ROW_TYPE), new Reference(ROW_TYPE, "msg2")),
                                 p.join(INNER,
                                         p.values(p.symbol("msg1", ROW_TYPE)),
                                         p.values(p.symbol("msg2", ROW_TYPE)),
-                                        new ComparisonExpression(GREATER_THAN, new ArithmeticBinaryExpression(ADD_INTEGER, ADD, new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 2L))), new Constant(BIGINT, 10L)))))
+                                        new Comparison(GREATER_THAN, new Call(ADD_BIGINT, ImmutableList.of(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0), new FieldReference(new Reference(ROW_TYPE, "msg2"), 1))), new Constant(BIGINT, 10L)))))
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "expr", expression(new SymbolReference(BIGINT, "msg1_x")),
-                                        "expr_2", expression(new SymbolReference(ROW_TYPE, "msg2"))),
+                                        "expr", expression(new Reference(BIGINT, "msg1_x")),
+                                        "expr_2", expression(new Reference(ROW_TYPE, "msg2"))),
                                 join(INNER, builder -> builder
-                                        .filter(new ComparisonExpression(GREATER_THAN, new ArithmeticBinaryExpression(ADD_INTEGER, ADD, new SymbolReference(BIGINT, "msg1_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 2L))), new Constant(BIGINT, 10L)))
+                                        .filter(new Comparison(GREATER_THAN, new Call(ADD_BIGINT, ImmutableList.of(new Reference(BIGINT, "msg1_x"), new FieldReference(new Reference(ROW_TYPE, "msg2"), 1))), new Constant(BIGINT, 10L)))
                                         .left(
                                                 strictProject(
                                                         ImmutableMap.of(
-                                                                "msg1_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L))),
-                                                                "msg1", expression(new SymbolReference(ROW_TYPE, "msg1"))),
+                                                                "msg1_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0)),
+                                                                "msg1", expression(new Reference(ROW_TYPE, "msg1"))),
                                                         values("msg1")))
                                         .right(values("msg2")))));
     }
@@ -232,22 +229,20 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("msg1_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg2_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L)))
+                                        .put(p.symbol("msg1_x"), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))
+                                        .put(p.symbol("msg2_x"), new FieldReference(new Reference(ROW_TYPE, "msg2"), 0))
                                         .build(),
                                 p.semiJoin(
                                         p.symbol("msg2", ROW_TYPE),
                                         p.symbol("filtering_msg", ROW_TYPE),
                                         p.symbol("match"),
-                                        Optional.empty(),
-                                        Optional.empty(),
                                         p.values(p.symbol("msg1", ROW_TYPE), p.symbol("msg2", ROW_TYPE)),
                                         p.values(p.symbol("filtering_msg", ROW_TYPE)))))
                 .matches(
                         strictProject(
                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                        .put("msg1_x", PlanMatchPattern.expression(new SymbolReference(BIGINT, "expr")))
-                                        .put("msg2_x", PlanMatchPattern.expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L))))   // Not pushed down because msg2 is sourceJoinSymbol
+                                        .put("msg1_x", expression(new Reference(BIGINT, "expr")))
+                                        .put("msg2_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg2"), 0)))   // Not pushed down because msg2 is sourceJoinSymbol
                                         .buildOrThrow(),
                                 semiJoin(
                                         "msg2",
@@ -255,9 +250,9 @@ public class TestPushDownDereferencesRules
                                         "match",
                                         strictProject(
                                                 ImmutableMap.of(
-                                                        "expr", PlanMatchPattern.expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L))),
-                                                        "msg1", PlanMatchPattern.expression(new SymbolReference(ROW_TYPE, "msg1")),
-                                                        "msg2", PlanMatchPattern.expression(new SymbolReference(ROW_TYPE, "msg2"))),
+                                                        "expr", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0)),
+                                                        "msg1", expression(new Reference(ROW_TYPE, "msg1")),
+                                                        "msg2", expression(new Reference(ROW_TYPE, "msg2"))),
                                                 values("msg1", "msg2")),
                                         values("filtering_msg"))));
     }
@@ -269,7 +264,7 @@ public class TestPushDownDereferencesRules
         tester().assertThat(new PushDownDereferenceThroughUnnest())
                 .on(p ->
                         p.project(
-                                Assignments.of(p.symbol("x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 1L))),
+                                Assignments.of(p.symbol("x"), new FieldReference(new Reference(ROW_TYPE, "msg"), 0)),
                                 p.unnest(
                                         ImmutableList.of(p.symbol("msg", ROW_TYPE)),
                                         ImmutableList.of(new UnnestNode.Mapping(p.symbol("arr", arrayType), ImmutableList.of(p.symbol("field")))),
@@ -278,25 +273,26 @@ public class TestPushDownDereferencesRules
                                         p.values(p.symbol("msg", ROW_TYPE), p.symbol("arr", arrayType)))))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("x", expression(new SymbolReference(BIGINT, "msg_x"))),
+                                ImmutableMap.of("x", expression(new Reference(BIGINT, "msg_x"))),
                                 unnest(
                                         strictProject(
                                                 ImmutableMap.of(
-                                                        "msg_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 1L))),
-                                                        "msg", expression(new SymbolReference(ROW_TYPE, "msg")),
-                                                        "arr", expression(new SymbolReference(arrayType, "arr"))),
+                                                        "msg_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg"), 0)),
+                                                        "msg", expression(new Reference(ROW_TYPE, "msg")),
+                                                        "arr", expression(new Reference(arrayType, "arr"))),
                                                 values("msg", "arr")))));
 
         // Test with dereferences on unnested column
         RowType rowType = rowType(field("f1", BIGINT), field("f2", BIGINT));
         ArrayType nestedColumnType = new ArrayType(rowType(field("f1", BIGINT), field("f2", rowType)));
+        ResolvedFunction subscript = FUNCTIONS.resolveOperator(OperatorType.SUBSCRIPT, ImmutableList.of(nestedColumnType, BIGINT));
 
         tester().assertThat(new PushDownDereferenceThroughUnnest())
                 .on(p ->
                         p.project(
                                 Assignments.of(
-                                        p.symbol("deref_replicate", BIGINT), new SubscriptExpression(BIGINT, new SymbolReference(rowType, "replicate"), new Constant(INTEGER, 2L)),
-                                        p.symbol("deref_unnest", BIGINT), new SubscriptExpression(BIGINT, new SymbolReference(nestedColumnType, "unnested_row"), new Constant(INTEGER, 2L))),
+                                        p.symbol("deref_replicate", rowType.getFields().get(1).getType()), new FieldReference(new Reference(rowType, "replicate"), 1),
+                                        p.symbol("deref_unnest", nestedColumnType.getElementType()), new Call(subscript, ImmutableList.of(new Reference(nestedColumnType, "unnested_row"), new Constant(BIGINT, 2L)))),
                                 p.unnest(
                                         ImmutableList.of(p.symbol("replicate", rowType)),
                                         ImmutableList.of(
@@ -307,16 +303,16 @@ public class TestPushDownDereferencesRules
                 .matches(
                         strictProject(
                                 ImmutableMap.of(
-                                        "deref_replicate", expression(new SymbolReference(BIGINT, "symbol")),
-                                        "deref_unnest", expression(new SubscriptExpression(rowType, new SymbolReference(nestedColumnType, "unnested_row"), new Constant(INTEGER, 2L)))),    // not pushed down
+                                        "deref_replicate", expression(new Reference(BIGINT, "symbol")),
+                                        "deref_unnest", expression(new Call(subscript, ImmutableList.of(new Reference(nestedColumnType, "unnested_row"), new Constant(BIGINT, 2L))))),    // not pushed down
                                 unnest(
                                         ImmutableList.of("replicate", "symbol"),
                                         ImmutableList.of(unnestMapping("nested", ImmutableList.of("unnested_bigint", "unnested_row"))),
                                         strictProject(
                                                 ImmutableMap.of(
-                                                        "symbol", expression(new SubscriptExpression(BIGINT, new SymbolReference(rowType, "replicate"), new Constant(INTEGER, 2L))),
-                                                        "replicate", expression(new SymbolReference(rowType, "replicate")),
-                                                        "nested", expression(new SymbolReference(nestedColumnType, "nested"))),
+                                                        "symbol", expression(new FieldReference(new Reference(rowType, "replicate"), 1)),
+                                                        "replicate", expression(new Reference(rowType, "replicate")),
+                                                        "nested", expression(new Reference(nestedColumnType, "nested"))),
                                                 values("replicate", "nested")))));
     }
 
@@ -332,10 +328,10 @@ public class TestPushDownDereferencesRules
         tester().assertThat(new ExtractDereferencesFromFilterAboveScan())
                 .on(p ->
                         p.filter(
-                                new LogicalExpression(AND, ImmutableList.of(
-                                        new ComparisonExpression(NOT_EQUAL, new SubscriptExpression(BIGINT, new SubscriptExpression(ROW_TYPE, new SymbolReference(nestedRowType, "a"), new Constant(INTEGER, 1L)), new Constant(INTEGER, 1L)), new Constant(INTEGER, 5L)),
-                                        new ComparisonExpression(EQUAL, new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "b"), new Constant(INTEGER, 2L)), new Constant(INTEGER, 2L)),
-                                        new NotExpression(new IsNullPredicate(new Cast(new SubscriptExpression(ROW_TYPE, new SymbolReference(nestedRowType, "a"), new Constant(INTEGER, 1L)), JSON))))),
+                                new Logical(AND, ImmutableList.of(
+                                        new Comparison(NOT_EQUAL, new FieldReference(new FieldReference(new Reference(nestedRowType, "a"), 0), 0), new Constant(BIGINT, 5L)),
+                                        new Comparison(EQUAL, new FieldReference(new Reference(ROW_TYPE, "b"), 1), new Constant(BIGINT, 2L)),
+                                        not(FUNCTIONS.getMetadata(), new IsNull(new Cast(new FieldReference(new Reference(nestedRowType, "a"), 0), JSON))))),
                                 p.tableScan(
                                         testTable,
                                         ImmutableList.of(p.symbol("a", nestedRowType), p.symbol("b", ROW_TYPE)),
@@ -344,16 +340,16 @@ public class TestPushDownDereferencesRules
                                                 p.symbol("b", ROW_TYPE), new TpchColumnHandle("b", ROW_TYPE)))))
                 .matches(project(
                         filter(
-                                new LogicalExpression(AND, ImmutableList.of(new ComparisonExpression(NOT_EQUAL, new SymbolReference(INTEGER, "expr"), new Constant(INTEGER, 5L)), new ComparisonExpression(EQUAL, new SymbolReference(INTEGER, "expr_0"), new Constant(INTEGER, 2L)), new NotExpression(new IsNullPredicate(new Cast(new SymbolReference(ROW_TYPE, "expr_1"), JSON))))),
+                                new Logical(AND, ImmutableList.of(new Comparison(NOT_EQUAL, new Reference(BIGINT, "expr"), new Constant(BIGINT, 5L)), new Comparison(EQUAL, new Reference(BIGINT, "expr_0"), new Constant(BIGINT, 2L)), not(FUNCTIONS.getMetadata(), new IsNull(new Cast(new Reference(ROW_TYPE, "expr_1"), JSON))))),
                                 strictProject(
                                         ImmutableMap.of(
-                                                "expr", PlanMatchPattern.expression(new SubscriptExpression(BIGINT, new SubscriptExpression(ROW_TYPE, new SymbolReference(nestedRowType, "a"), new Constant(INTEGER, 1L)), new Constant(INTEGER, 1L))),
-                                                "expr_0", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "b"), new Constant(INTEGER, 2L))),
-                                                "expr_1", expression(new SubscriptExpression(ROW_TYPE, new SymbolReference(nestedRowType, "a"), new Constant(INTEGER, 1L))),
-                                                "a", expression(new SymbolReference(nestedRowType, "a")),
-                                                "b", expression(new SymbolReference(ROW_TYPE, "b"))),
+                                                "expr", expression(new FieldReference(new FieldReference(new Reference(nestedRowType, "a"), 0), 0)),
+                                                "expr_0", expression(new FieldReference(new Reference(ROW_TYPE, "b"), 1)),
+                                                "expr_1", expression(new FieldReference(new Reference(nestedRowType, "a"), 0)),
+                                                "a", expression(new Reference(nestedRowType, "a")),
+                                                "b", expression(new Reference(ROW_TYPE, "b"))),
                                         tableScan(
-                                                testTable.getConnectorHandle()::equals,
+                                                testTable.connectorHandle()::equals,
                                                 TupleDomain.all(),
                                                 ImmutableMap.of(
                                                         "a", new TpchColumnHandle("a", nestedRowType)::equals,
@@ -367,23 +363,23 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.of(
-                                        p.symbol("expr", BIGINT), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 1L)),
-                                        p.symbol("expr_2", BIGINT), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L))),
+                                        p.symbol("expr", BIGINT), new FieldReference(new Reference(ROW_TYPE, "msg"), 0),
+                                        p.symbol("expr_2", BIGINT), new FieldReference(new Reference(ROW_TYPE, "msg2"), 0)),
                                 p.filter(
-                                        new LogicalExpression(AND, ImmutableList.of(new ComparisonExpression(NOT_EQUAL, new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 1L)), new Constant(createVarcharType(3), Slices.utf8Slice("foo"))), new NotExpression(new IsNullPredicate(new SymbolReference(ROW_TYPE, "msg2"))))),
+                                        new Logical(AND, ImmutableList.of(new Comparison(NOT_EQUAL, new FieldReference(new Reference(ROW_TYPE, "msg"), 0), new Constant(BIGINT, 3L)), not(FUNCTIONS.getMetadata(), new IsNull(new Reference(ROW_TYPE, "msg2"))))),
                                         p.values(p.symbol("msg", ROW_TYPE), p.symbol("msg2", ROW_TYPE)))))
                 .matches(
                         strictProject(
                                 ImmutableMap.of(
-                                        "expr", expression(new SymbolReference(BIGINT, "msg_x")),
-                                        "expr_2", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L)))), // not pushed down since predicate contains msg2 reference
+                                        "expr", expression(new Reference(BIGINT, "msg_x")),
+                                        "expr_2", expression(new FieldReference(new Reference(ROW_TYPE, "msg2"), 0))), // not pushed down since predicate contains msg2 reference
                                 filter(
-                                        new LogicalExpression(AND, ImmutableList.of(new ComparisonExpression(NOT_EQUAL, new SymbolReference(createVarcharType(3), "msg_x"), new Constant(createVarcharType(3), Slices.utf8Slice("foo"))), new NotExpression(new IsNullPredicate(new SymbolReference(ROW_TYPE, "msg2"))))),
+                                        new Logical(AND, ImmutableList.of(new Comparison(NOT_EQUAL, new Reference(BIGINT, "msg_x"), new Constant(BIGINT, 3L)), not(FUNCTIONS.getMetadata(), new IsNull(new Reference(ROW_TYPE, "msg2"))))),
                                         strictProject(
                                                 ImmutableMap.of(
-                                                        "msg_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 1L))),
-                                                        "msg", expression(new SymbolReference(ROW_TYPE, "msg")),
-                                                        "msg2", expression(new SymbolReference(ROW_TYPE, "msg2"))),
+                                                        "msg_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg"), 0)),
+                                                        "msg", expression(new Reference(ROW_TYPE, "msg")),
+                                                        "msg2", expression(new Reference(ROW_TYPE, "msg2"))),
                                                 values("msg", "msg2")))));
     }
 
@@ -394,9 +390,9 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("msg1_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg2_y"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 2L)))
-                                        .put(p.symbol("z"), new SymbolReference(BIGINT, "z"))
+                                        .put(p.symbol("msg1_x"), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))
+                                        .put(p.symbol("msg2_y"), new FieldReference(new Reference(ROW_TYPE, "msg2"), 1))
+                                        .put(p.symbol("z"), new Reference(BIGINT, "z"))
                                         .build(),
                                 p.limit(10,
                                         ImmutableList.of(p.symbol("msg2", ROW_TYPE)),
@@ -404,19 +400,19 @@ public class TestPushDownDereferencesRules
                 .matches(
                         strictProject(
                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                        .put("msg1_x", expression(new SymbolReference(BIGINT, "x")))
-                                        .put("msg2_y", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 2L))))
-                                        .put("z", expression(new SymbolReference(BIGINT, "z")))
+                                        .put("msg1_x", expression(new Reference(BIGINT, "x")))
+                                        .put("msg2_y", expression(new FieldReference(new Reference(ROW_TYPE, "msg2"), 1)))
+                                        .put("z", expression(new Reference(BIGINT, "z")))
                                         .buildOrThrow(),
                                 limit(
                                         10,
                                         ImmutableList.of(sort("msg2", ASCENDING, FIRST)),
                                         strictProject(
                                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                                        .put("x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L))))
-                                                        .put("z", expression(new SymbolReference(BIGINT, "z")))
-                                                        .put("msg1", expression(new SymbolReference(ROW_TYPE, "msg1")))
-                                                        .put("msg2", expression(new SymbolReference(ROW_TYPE, "msg2")))
+                                                        .put("x", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0)))
+                                                        .put("z", expression(new Reference(BIGINT, "z")))
+                                                        .put("msg1", expression(new Reference(ROW_TYPE, "msg1")))
+                                                        .put("msg2", expression(new Reference(ROW_TYPE, "msg2")))
                                                         .buildOrThrow(),
                                                 values("msg1", "msg2", "z")))));
     }
@@ -427,9 +423,9 @@ public class TestPushDownDereferencesRules
         tester().assertThat(new PushDownDereferencesThroughLimit())
                 .on(p -> p.project(
                         Assignments.builder()
-                                .put(p.symbol("msg1_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))
-                                .put(p.symbol("msg2_y"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 2L)))
-                                .put(p.symbol("z"), new SymbolReference(BIGINT, "z"))
+                                .put(p.symbol("msg1_x"), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))
+                                .put(p.symbol("msg2_y"), new FieldReference(new Reference(ROW_TYPE, "msg2"), 1))
+                                .put(p.symbol("z"), new Reference(BIGINT, "z"))
                                 .build(),
                         p.limit(
                                 10,
@@ -439,9 +435,9 @@ public class TestPushDownDereferencesRules
                 .matches(
                         strictProject(
                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                        .put("msg1_x", expression(new SymbolReference(BIGINT, "x")))
-                                        .put("msg2_y", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 2L))))
-                                        .put("z", expression(new SymbolReference(BIGINT, "z")))
+                                        .put("msg1_x", expression(new Reference(BIGINT, "x")))
+                                        .put("msg2_y", expression(new FieldReference(new Reference(ROW_TYPE, "msg2"), 1)))
+                                        .put("z", expression(new Reference(BIGINT, "z")))
                                         .buildOrThrow(),
                                 limit(
                                         10,
@@ -450,10 +446,10 @@ public class TestPushDownDereferencesRules
                                         ImmutableList.of("msg2"),
                                         strictProject(
                                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                                        .put("x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L))))
-                                                        .put("z", expression(new SymbolReference(BIGINT, "z")))
-                                                        .put("msg1", expression(new SymbolReference(ROW_TYPE, "msg1")))
-                                                        .put("msg2", expression(new SymbolReference(ROW_TYPE, "msg2")))
+                                                        .put("x", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0)))
+                                                        .put("z", expression(new Reference(BIGINT, "z")))
+                                                        .put("msg1", expression(new Reference(ROW_TYPE, "msg1")))
+                                                        .put("msg2", expression(new Reference(ROW_TYPE, "msg2")))
                                                         .buildOrThrow(),
                                                 values("msg1", "msg2", "z")))));
     }
@@ -466,9 +462,9 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("msg_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg_y"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 2L)))
-                                        .put(p.symbol("z"), new SymbolReference(BIGINT, "z"))
+                                        .put(p.symbol("msg_x"), new FieldReference(new Reference(ROW_TYPE, "msg"), 0))
+                                        .put(p.symbol("msg_y"), new FieldReference(new Reference(ROW_TYPE, "msg"), 1))
+                                        .put(p.symbol("z"), new Reference(BIGINT, "z"))
                                         .build(),
                                 p.sort(
                                         ImmutableList.of(p.symbol("z"), p.symbol("msg", ROW_TYPE)),
@@ -479,8 +475,8 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("msg_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("z"), new SymbolReference(BIGINT, "z"))
+                                        .put(p.symbol("msg_x"), new FieldReference(new Reference(ROW_TYPE, "msg"), 0))
+                                        .put(p.symbol("z"), new Reference(BIGINT, "z"))
                                         .build(),
                                 p.sort(
                                         ImmutableList.of(p.symbol("z")),
@@ -488,15 +484,15 @@ public class TestPushDownDereferencesRules
                 .matches(
                         strictProject(
                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                        .put("msg_x", expression(new SymbolReference(BIGINT, "x")))
-                                        .put("z", expression(new SymbolReference(BIGINT, "z")))
+                                        .put("msg_x", expression(new Reference(BIGINT, "x")))
+                                        .put("z", expression(new Reference(BIGINT, "z")))
                                         .buildOrThrow(),
                                 sort(ImmutableList.of(sort("z", ASCENDING, FIRST)),
                                         strictProject(
                                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                                        .put("x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg"), new Constant(INTEGER, 1L))))
-                                                        .put("z", expression(new SymbolReference(BIGINT, "z")))
-                                                        .put("msg", expression(new SymbolReference(ROW_TYPE, "msg")))
+                                                        .put("x", expression(new FieldReference(new Reference(ROW_TYPE, "msg"), 0)))
+                                                        .put("z", expression(new Reference(BIGINT, "z")))
+                                                        .put("msg", expression(new Reference(ROW_TYPE, "msg")))
                                                         .buildOrThrow(),
                                                 values("msg", "z")))));
     }
@@ -508,8 +504,8 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("msg1_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg2_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L)))
+                                        .put(p.symbol("msg1_x"), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))
+                                        .put(p.symbol("msg2_x"), new FieldReference(new Reference(ROW_TYPE, "msg2"), 0))
                                         .build(),
                                 p.rowNumber(
                                         ImmutableList.of(p.symbol("msg1", ROW_TYPE)),
@@ -519,17 +515,17 @@ public class TestPushDownDereferencesRules
                 .matches(
                         strictProject(
                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                        .put("msg1_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L))))
-                                        .put("msg2_x", expression(new SymbolReference(BIGINT, "expr")))
+                                        .put("msg1_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0)))
+                                        .put("msg2_x", expression(new Reference(BIGINT, "expr")))
                                         .buildOrThrow(),
                                 rowNumber(
                                         pattern -> pattern
                                                 .partitionBy(ImmutableList.of("msg1")),
                                         strictProject(
                                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                                        .put("expr", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L))))
-                                                        .put("msg1", expression(new SymbolReference(ROW_TYPE, "msg1")))
-                                                        .put("msg2", expression(new SymbolReference(ROW_TYPE, "msg2")))
+                                                        .put("expr", expression(new FieldReference(new Reference(ROW_TYPE, "msg2"), 0)))
+                                                        .put("msg1", expression(new Reference(ROW_TYPE, "msg1")))
+                                                        .put("msg2", expression(new Reference(ROW_TYPE, "msg2")))
                                                         .buildOrThrow(),
                                                 values("msg1", "msg2")))));
     }
@@ -541,9 +537,9 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("msg1_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg2_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg3_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg3"), new Constant(INTEGER, 1L)))
+                                        .put(p.symbol("msg1_x"), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))
+                                        .put(p.symbol("msg2_x"), new FieldReference(new Reference(ROW_TYPE, "msg2"), 0))
+                                        .put(p.symbol("msg3_x"), new FieldReference(new Reference(ROW_TYPE, "msg3"), 0))
                                         .build(),
                                 p.topNRanking(
                                         new DataOrganizationSpecification(
@@ -554,23 +550,22 @@ public class TestPushDownDereferencesRules
                                         ROW_NUMBER,
                                         5,
                                         p.symbol("ranking"),
-                                        Optional.empty(),
                                         p.values(p.symbol("msg1", ROW_TYPE), p.symbol("msg2", ROW_TYPE), p.symbol("msg3", ROW_TYPE)))))
                 .matches(
                         strictProject(
                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                        .put("msg1_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L))))
-                                        .put("msg2_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L))))
-                                        .put("msg3_x", expression(new SymbolReference(BIGINT, "expr")))
+                                        .put("msg1_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0)))
+                                        .put("msg2_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg2"), 0)))
+                                        .put("msg3_x", expression(new Reference(BIGINT, "expr")))
                                         .buildOrThrow(),
                                 topNRanking(
                                         pattern -> pattern.specification(singletonList("msg1"), singletonList("msg2"), ImmutableMap.of("msg2", ASC_NULLS_FIRST)),
                                         strictProject(
                                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                                        .put("expr", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg3"), new Constant(INTEGER, 1L))))
-                                                        .put("msg1", expression(new SymbolReference(ROW_TYPE, "msg1")))
-                                                        .put("msg2", expression(new SymbolReference(ROW_TYPE, "msg2")))
-                                                        .put("msg3", expression(new SymbolReference(ROW_TYPE, "msg3")))
+                                                        .put("expr", expression(new FieldReference(new Reference(ROW_TYPE, "msg3"), 0)))
+                                                        .put("msg1", expression(new Reference(ROW_TYPE, "msg1")))
+                                                        .put("msg2", expression(new Reference(ROW_TYPE, "msg2")))
+                                                        .put("msg3", expression(new Reference(ROW_TYPE, "msg3")))
                                                         .buildOrThrow(),
                                                 values("msg1", "msg2", "msg3")))));
     }
@@ -582,23 +577,23 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("msg1_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg2_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L)))
+                                        .put(p.symbol("msg1_x"), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))
+                                        .put(p.symbol("msg2_x"), new FieldReference(new Reference(ROW_TYPE, "msg2"), 0))
                                         .build(),
                                 p.topN(5, ImmutableList.of(p.symbol("msg1", ROW_TYPE)),
                                         p.values(p.symbol("msg1", ROW_TYPE), p.symbol("msg2", ROW_TYPE)))))
                 .matches(
                         strictProject(
                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                        .put("msg1_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L))))
-                                        .put("msg2_x", expression(new SymbolReference(BIGINT, "expr")))
+                                        .put("msg1_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0)))
+                                        .put("msg2_x", expression(new Reference(BIGINT, "expr")))
                                         .buildOrThrow(),
                                 topN(5, ImmutableList.of(sort("msg1", ASCENDING, FIRST)),
                                         strictProject(
                                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                                        .put("expr", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L))))
-                                                        .put("msg1", expression(new SymbolReference(ROW_TYPE, "msg1")))
-                                                        .put("msg2", expression(new SymbolReference(ROW_TYPE, "msg2")))
+                                                        .put("expr", expression(new FieldReference(new Reference(ROW_TYPE, "msg2"), 0)))
+                                                        .put("msg1", expression(new Reference(ROW_TYPE, "msg1")))
+                                                        .put("msg2", expression(new Reference(ROW_TYPE, "msg2")))
                                                         .buildOrThrow(),
                                                 values("msg1", "msg2")))));
     }
@@ -610,11 +605,11 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("msg1_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg2_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg3_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg3"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg4_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg4"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg5_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg5"), new Constant(INTEGER, 1L)))
+                                        .put(p.symbol("msg1_x"), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))
+                                        .put(p.symbol("msg2_x"), new FieldReference(new Reference(ROW_TYPE, "msg2"), 0))
+                                        .put(p.symbol("msg3_x"), new FieldReference(new Reference(ROW_TYPE, "msg3"), 0))
+                                        .put(p.symbol("msg4_x"), new FieldReference(new Reference(ROW_TYPE, "msg4"), 0))
+                                        .put(p.symbol("msg5_x"), new FieldReference(new Reference(ROW_TYPE, "msg5"), 0))
                                         .build(),
                                 p.window(
                                         new DataOrganizationSpecification(
@@ -628,6 +623,7 @@ public class TestPushDownDereferencesRules
                                                 new WindowNode.Function(
                                                         createTestMetadataManager().resolveBuiltinFunction("min", fromTypes(ROW_TYPE)),
                                                         ImmutableList.of(p.symbol("msg3", ROW_TYPE).toSymbolReference()),
+                                                        Optional.empty(),
                                                         new WindowNode.Frame(
                                                                 RANGE,
                                                                 UNBOUNDED_PRECEDING,
@@ -636,7 +632,8 @@ public class TestPushDownDereferencesRules
                                                                 CURRENT_ROW,
                                                                 Optional.empty(),
                                                                 Optional.empty()),
-                                                        true)),
+                                                        true,
+                                                        false)),
                                         p.values(
                                                 p.symbol("msg1", ROW_TYPE),
                                                 p.symbol("msg2", ROW_TYPE),
@@ -646,11 +643,11 @@ public class TestPushDownDereferencesRules
                 .matches(
                         strictProject(
                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                        .put("msg1_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))) // not pushed down because used in partitionBy
-                                        .put("msg2_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L)))) // not pushed down because used in orderBy
-                                        .put("msg3_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg3"), new Constant(INTEGER, 1L)))) // not pushed down because the whole column is used in windowNode function
-                                        .put("msg4_x", expression(new SymbolReference(BIGINT, "expr"))) // pushed down because msg4[1] is being used in the function
-                                        .put("msg5_x", expression(new SymbolReference(BIGINT, "expr2"))) // pushed down because not referenced in windowNode
+                                        .put("msg1_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))) // not pushed down because used in partitionBy
+                                        .put("msg2_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg2"), 0))) // not pushed down because used in orderBy
+                                        .put("msg3_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg3"), 0))) // not pushed down because the whole column is used in windowNode function
+                                        .put("msg4_x", expression(new Reference(BIGINT, "expr"))) // pushed down because msg4[1] is being used in the function
+                                        .put("msg5_x", expression(new Reference(BIGINT, "expr2"))) // pushed down because not referenced in windowNode
                                         .buildOrThrow(),
                                 window(
                                         windowMatcherBuilder -> windowMatcherBuilder
@@ -658,13 +655,13 @@ public class TestPushDownDereferencesRules
                                                 .addFunction(windowFunction("min", singletonList("msg3"), DEFAULT_FRAME)),
                                         strictProject(
                                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                                        .put("msg1", expression(new SymbolReference(ROW_TYPE, "msg1")))
-                                                        .put("msg2", expression(new SymbolReference(ROW_TYPE, "msg2")))
-                                                        .put("msg3", expression(new SymbolReference(ROW_TYPE, "msg3")))
-                                                        .put("msg4", expression(new SymbolReference(ROW_TYPE, "msg4")))
-                                                        .put("msg5", expression(new SymbolReference(ROW_TYPE, "msg5")))
-                                                        .put("expr", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg4"), new Constant(INTEGER, 1L))))
-                                                        .put("expr2", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg5"), new Constant(INTEGER, 1L))))
+                                                        .put("msg1", expression(new Reference(ROW_TYPE, "msg1")))
+                                                        .put("msg2", expression(new Reference(ROW_TYPE, "msg2")))
+                                                        .put("msg3", expression(new Reference(ROW_TYPE, "msg3")))
+                                                        .put("msg4", expression(new Reference(ROW_TYPE, "msg4")))
+                                                        .put("msg5", expression(new Reference(ROW_TYPE, "msg5")))
+                                                        .put("expr", expression(new FieldReference(new Reference(ROW_TYPE, "msg4"), 0)))
+                                                        .put("expr2", expression(new FieldReference(new Reference(ROW_TYPE, "msg5"), 0)))
                                                         .buildOrThrow(),
                                                 values("msg1", "msg2", "msg3", "msg4", "msg5")))));
     }
@@ -676,20 +673,20 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("expr"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))
+                                        .put(p.symbol("expr"), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))
                                         .build(),
                                 p.assignUniqueId(
                                         p.symbol("unique"),
                                         p.values(p.symbol("msg1", ROW_TYPE)))))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("expr", expression(new SymbolReference(BIGINT, "msg1_x"))),
+                                ImmutableMap.of("expr", expression(new Reference(BIGINT, "msg1_x"))),
                                 assignUniqueId(
                                         "unique",
                                         strictProject(
                                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                                        .put("msg1", expression(new SymbolReference(ROW_TYPE, "msg1")))
-                                                        .put("msg1_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L))))
+                                                        .put("msg1", expression(new Reference(ROW_TYPE, "msg1")))
+                                                        .put("msg1_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0)))
                                                         .buildOrThrow(),
                                                 values("msg1")))));
     }
@@ -701,8 +698,8 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.builder()
-                                        .put(p.symbol("msg1_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L)))
-                                        .put(p.symbol("msg2_x"), new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L)))
+                                        .put(p.symbol("msg1_x"), new FieldReference(new Reference(ROW_TYPE, "msg1"), 0))
+                                        .put(p.symbol("msg2_x"), new FieldReference(new Reference(ROW_TYPE, "msg2"), 0))
                                         .build(),
                                 p.markDistinct(
                                         p.symbol("is_distinct", BOOLEAN),
@@ -711,16 +708,16 @@ public class TestPushDownDereferencesRules
                 .matches(
                         strictProject(
                                 ImmutableMap.of(
-                                        "msg1_x", expression(new SymbolReference(BIGINT, "expr")), // pushed down
-                                        "msg2_x", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg2"), new Constant(INTEGER, 1L)))),   // not pushed down because used in markDistinct
+                                        "msg1_x", expression(new Reference(BIGINT, "expr")), // pushed down
+                                        "msg2_x", expression(new FieldReference(new Reference(ROW_TYPE, "msg2"), 0))),   // not pushed down because used in markDistinct
                                 markDistinct(
                                         "is_distinct",
                                         singletonList("msg2"),
                                         strictProject(
                                                 ImmutableMap.<String, ExpressionMatcher>builder()
-                                                        .put("msg1", expression(new SymbolReference(ROW_TYPE, "msg1")))
-                                                        .put("msg2", expression(new SymbolReference(ROW_TYPE, "msg2")))
-                                                        .put("expr", expression(new SubscriptExpression(BIGINT, new SymbolReference(ROW_TYPE, "msg1"), new Constant(INTEGER, 1L))))
+                                                        .put("msg1", expression(new Reference(ROW_TYPE, "msg1")))
+                                                        .put("msg2", expression(new Reference(ROW_TYPE, "msg2")))
+                                                        .put("expr", expression(new FieldReference(new Reference(ROW_TYPE, "msg1"), 0)))
                                                         .buildOrThrow(),
                                                 values("msg1", "msg2")))));
     }
@@ -733,23 +730,40 @@ public class TestPushDownDereferencesRules
                 .on(p ->
                         p.project(
                                 Assignments.of(
-                                        p.symbol("expr_1"), new SubscriptExpression(rowType(field("f1", BIGINT), field("f2", BIGINT)), new SymbolReference(complexType, "a"), new Constant(INTEGER, 1L)),
-                                        p.symbol("expr_2"), new ArithmeticBinaryExpression(ADD_INTEGER, ADD, new ArithmeticBinaryExpression(ADD_INTEGER, ADD, new ArithmeticBinaryExpression(ADD_INTEGER, ADD, new SubscriptExpression(BIGINT, new SubscriptExpression(rowType(field("f1", BIGINT), field("f2", BIGINT)), new SymbolReference(complexType, "a"), new Constant(INTEGER, 1L)), new Constant(INTEGER, 1L)), new Constant(INTEGER, 2L)), new SubscriptExpression(BIGINT, new SubscriptExpression(rowType(field("f1", BIGINT), field("f2", BIGINT)), new SymbolReference(complexType, "b"), new Constant(INTEGER, 1L)), new Constant(INTEGER, 1L))), new SubscriptExpression(BIGINT, new SubscriptExpression(rowType(field("f1", BIGINT), field("f2", BIGINT)), new SymbolReference(complexType, "b"), new Constant(INTEGER, 1L)), new Constant(INTEGER, 2L)))),
+                                        p.symbol("expr_1", complexType.getFields().get(0).getType()), new FieldReference(new Reference(complexType, "a"), 0),
+                                        p.symbol("expr_2"), new Call(
+                                                ADD_BIGINT,
+                                                ImmutableList.of(
+                                                        new Call(
+                                                                ADD_BIGINT,
+                                                                ImmutableList.of(
+                                                                        new Call(
+                                                                                ADD_BIGINT,
+                                                                                ImmutableList.of(
+                                                                                        new FieldReference(new FieldReference(new Reference(complexType, "a"), 0), 0),
+                                                                                        new Constant(BIGINT, 2L))),
+                                                                        new FieldReference(
+                                                                                new FieldReference(new Reference(complexType, "b"), 0), 0))),
+                                                        new FieldReference(
+                                                                new FieldReference(
+                                                                        new Reference(complexType, "b"),
+                                                                        0),
+                                                                1)))),
                                 p.project(
                                         Assignments.identity(ImmutableList.of(p.symbol("a", complexType), p.symbol("b", complexType))),
                                         p.values(p.symbol("a", complexType), p.symbol("b", complexType)))))
                 .matches(
                         strictProject(
                                 ImmutableMap.of(
-                                        "expr_1", expression(new SymbolReference(complexType.getFields().get(0).getType(), "a_f1")),
-                                        "expr_2", PlanMatchPattern.expression(new ArithmeticBinaryExpression(ADD_INTEGER, ADD, new ArithmeticBinaryExpression(ADD_INTEGER, ADD, new ArithmeticBinaryExpression(ADD_INTEGER, ADD, new SubscriptExpression(BIGINT, new SymbolReference(complexType.getFields().get(0).getType(), "a_f1"), new Constant(INTEGER, 1L)), new Constant(INTEGER, 2L)), new SymbolReference(BIGINT, "b_f1_f1")), new SymbolReference(BIGINT, "b_f1_f2")))),
+                                        "expr_1", expression(new Reference(complexType.getFields().get(0).getType(), "a_f1")),
+                                        "expr_2", expression(new Call(ADD_BIGINT, ImmutableList.of(new Call(ADD_BIGINT, ImmutableList.of(new Call(ADD_BIGINT, ImmutableList.of(new FieldReference(new Reference(complexType.getFields().get(0).getType(), "a_f1"), 0), new Constant(BIGINT, 2L))), new Reference(BIGINT, "b_f1_f1"))), new Reference(BIGINT, "b_f1_f2"))))),
                                 strictProject(
                                         ImmutableMap.of(
-                                                "a", expression(new SymbolReference(complexType, "a")),
-                                                "b", expression(new SymbolReference(complexType, "b")),
-                                                "a_f1", expression(new SubscriptExpression(rowType(field("f1", BIGINT), field("f2", BIGINT)), new SymbolReference(complexType, "a"), new Constant(INTEGER, 1L))),
-                                                "b_f1_f1", PlanMatchPattern.expression(new SubscriptExpression(BIGINT, new SubscriptExpression(rowType(field("f1", BIGINT), field("f2", BIGINT)), new SymbolReference(complexType, "b"), new Constant(INTEGER, 1L)), new Constant(INTEGER, 1L))),
-                                                "b_f1_f2", PlanMatchPattern.expression(new SubscriptExpression(BIGINT, new SubscriptExpression(rowType(field("f1", BIGINT), field("f2", BIGINT)), new SymbolReference(complexType, "b"), new Constant(INTEGER, 1L)), new Constant(INTEGER, 2L)))),
+                                                "a", expression(new Reference(complexType, "a")),
+                                                "b", expression(new Reference(complexType, "b")),
+                                                "a_f1", expression(new FieldReference(new Reference(complexType, "a"), 0)),
+                                                "b_f1_f1", expression(new FieldReference(new FieldReference(new Reference(complexType, "b"), 0), 0)),
+                                                "b_f1_f2", expression(new FieldReference(new FieldReference(new Reference(complexType, "b"), 0), 1))),
                                         values("a", "b"))));
     }
 }

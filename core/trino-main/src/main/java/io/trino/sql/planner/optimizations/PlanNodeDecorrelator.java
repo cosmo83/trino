@@ -25,9 +25,9 @@ import io.trino.spi.connector.SortOrder;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.ir.Cast;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
@@ -58,7 +58,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.spi.type.BigintType.BIGINT;
-import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
 import static io.trino.sql.ir.IrUtils.and;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.ir.IrUtils.extractConjuncts;
@@ -267,8 +267,7 @@ public class PlanNodeDecorrelator
                     ImmutableList.copyOf(childDecorrelationResult.symbolsToPropagate),
                     false,
                     symbolAllocator.newSymbol("row_number", BIGINT),
-                    Optional.of(toIntExact(node.getCount())),
-                    Optional.empty());
+                    Optional.of(toIntExact(node.getCount())));
 
             return Optional.of(new DecorrelationResult(
                     rowNumberNode,
@@ -337,8 +336,7 @@ public class PlanNodeDecorrelator
                                 ROW_NUMBER,
                                 symbolAllocator.newSymbol("ranking", BIGINT),
                                 toIntExact(node.getCount()),
-                                false,
-                                Optional.empty());
+                                false);
 
                         return Optional.of(new DecorrelationResult(
                                 topNRankingNode,
@@ -356,8 +354,7 @@ public class PlanNodeDecorrelator
                                 ImmutableList.copyOf(childDecorrelationResult.symbolsToPropagate),
                                 false,
                                 symbolAllocator.newSymbol("row_number", BIGINT),
-                                Optional.of(toIntExact(node.getCount())),
-                                Optional.empty());
+                                Optional.of(toIntExact(node.getCount())));
 
                         return Optional.of(new DecorrelationResult(
                                 rowNumberNode,
@@ -374,10 +371,10 @@ public class PlanNodeDecorrelator
             // remove local and remote constant sort symbols from the OrderingScheme
             ImmutableList.Builder<Symbol> nonConstantOrderBy = ImmutableList.builder();
             ImmutableMap.Builder<Symbol, SortOrder> nonConstantOrderings = ImmutableMap.builder();
-            for (Symbol symbol : orderingScheme.getOrderBy()) {
+            for (Symbol symbol : orderingScheme.orderBy()) {
                 if (!constantSymbols.contains(symbol) && !correlation.contains(symbol)) {
                     nonConstantOrderBy.add(symbol);
-                    nonConstantOrderings.put(symbol, orderingScheme.getOrdering(symbol));
+                    nonConstantOrderings.put(symbol, orderingScheme.ordering(symbol));
                 }
             }
             if (nonConstantOrderBy.build().isEmpty()) {
@@ -474,18 +471,18 @@ public class PlanNodeDecorrelator
         {
             ImmutableMultimap.Builder<Symbol, Symbol> mapping = ImmutableMultimap.builder();
             for (Expression conjunct : correlatedConjuncts) {
-                if (!(conjunct instanceof ComparisonExpression comparison)) {
+                if (!(conjunct instanceof Comparison comparison)) {
                     continue;
                 }
 
-                if (!(comparison.getLeft() instanceof SymbolReference
-                        && comparison.getRight() instanceof SymbolReference
-                        && comparison.getOperator() == EQUAL)) {
+                if (!(comparison.left() instanceof Reference
+                        && comparison.right() instanceof Reference
+                        && comparison.operator() == EQUAL)) {
                     continue;
                 }
 
-                Symbol left = Symbol.from(comparison.getLeft());
-                Symbol right = Symbol.from(comparison.getRight());
+                Symbol left = Symbol.from(comparison.left());
+                Symbol right = Symbol.from(comparison.right());
 
                 if (correlation.contains(left) && !correlation.contains(right)) {
                     mapping.put(left, right);
@@ -504,18 +501,18 @@ public class PlanNodeDecorrelator
             ImmutableSet.Builder<Symbol> constants = ImmutableSet.builder();
 
             correlatedConjuncts.stream()
-                    .filter(ComparisonExpression.class::isInstance)
-                    .map(ComparisonExpression.class::cast)
-                    .filter(comparison -> comparison.getOperator() == EQUAL)
+                    .filter(Comparison.class::isInstance)
+                    .map(Comparison.class::cast)
+                    .filter(comparison -> comparison.operator() == EQUAL)
                     .forEach(comparison -> {
-                        Expression left = comparison.getLeft();
-                        Expression right = comparison.getRight();
+                        Expression left = comparison.left();
+                        Expression right = comparison.right();
 
-                        if (!isCorrelated(left) && (left instanceof SymbolReference || isSimpleInjectiveCast(left)) && isConstant(right)) {
+                        if (!isCorrelated(left) && (left instanceof Reference || isSimpleInjectiveCast(left)) && isConstant(right)) {
                             constants.add(getSymbol(left));
                         }
 
-                        if (!isCorrelated(right) && (right instanceof SymbolReference || isSimpleInjectiveCast(right)) && isConstant(left)) {
+                        if (!isCorrelated(right) && (right instanceof Reference || isSimpleInjectiveCast(right)) && isConstant(left)) {
                             constants.add(getSymbol(right));
                         }
                     });
@@ -536,23 +533,23 @@ public class PlanNodeDecorrelator
             if (!(expression instanceof Cast cast)) {
                 return false;
             }
-            if (!(cast.getExpression() instanceof SymbolReference)) {
+            if (!(cast.expression() instanceof Reference)) {
                 return false;
             }
-            Symbol sourceSymbol = Symbol.from(cast.getExpression());
+            Symbol sourceSymbol = Symbol.from(cast.expression());
 
-            Type sourceType = sourceSymbol.getType();
-            Type targetType = ((Cast) expression).getType();
+            Type sourceType = sourceSymbol.type();
+            Type targetType = cast.type();
 
             return typeCoercion.isInjectiveCoercion(sourceType, targetType);
         }
 
         private Symbol getSymbol(Expression expression)
         {
-            if (expression instanceof SymbolReference) {
+            if (expression instanceof Reference) {
                 return Symbol.from(expression);
             }
-            return Symbol.from(((Cast) expression).getExpression());
+            return Symbol.from(((Cast) expression).expression());
         }
 
         private boolean isCorrelated(Expression expression)

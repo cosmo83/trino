@@ -16,7 +16,7 @@ package io.trino.sql.planner.iterative.rule;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.spi.connector.SortOrder;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.TopNRankingSymbolMatcher;
@@ -54,7 +54,6 @@ public class TestPruneTopNRankingColumns
                                     ROW_NUMBER,
                                     5,
                                     ranking,
-                                    Optional.empty(),
                                     p.values(a, b)));
                 })
                 .doesNotFire();
@@ -76,7 +75,6 @@ public class TestPruneTopNRankingColumns
                                     ROW_NUMBER,
                                     5,
                                     ranking,
-                                    Optional.empty(),
                                     p.values(a)));
                 })
                 .doesNotFire();
@@ -88,7 +86,6 @@ public class TestPruneTopNRankingColumns
         tester().assertThat(new PruneTopNRankingColumns())
                 .on(p -> {
                     Symbol a = p.symbol("a");
-                    Symbol hash = p.symbol("hash");
                     Symbol ranking = p.symbol("ranking");
                     return p.project(
                             Assignments.identity(a, ranking),
@@ -99,8 +96,7 @@ public class TestPruneTopNRankingColumns
                                     ROW_NUMBER,
                                     5,
                                     ranking,
-                                    Optional.of(hash),
-                                    p.values(a, hash)));
+                                    p.values(a)));
                 })
                 .doesNotFire();
     }
@@ -122,12 +118,11 @@ public class TestPruneTopNRankingColumns
                                     ROW_NUMBER,
                                     5,
                                     ranking,
-                                    Optional.empty(),
                                     p.values(a, b)));
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a")), "ranking", expression(new SymbolReference(BIGINT, "ranking"))),
+                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a")), "ranking", expression(new Reference(BIGINT, "ranking"))),
                                 topNRanking(
                                         pattern -> pattern
                                                 .specification(
@@ -137,7 +132,7 @@ public class TestPruneTopNRankingColumns
                                                 .rankingType(ROW_NUMBER)
                                                 .maxRankingPerPartition(5),
                                         strictProject(
-                                                ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a"))),
+                                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a"))),
                                                 values("a", "b")))
                                         .withAlias("ranking", new TopNRankingSymbolMatcher())));
     }
@@ -159,7 +154,6 @@ public class TestPruneTopNRankingColumns
                                     ROW_NUMBER,
                                     5,
                                     ranking,
-                                    Optional.empty(),
                                     p.values(a, b)));
                 })
                 .doesNotFire();
@@ -181,7 +175,6 @@ public class TestPruneTopNRankingColumns
                                     ROW_NUMBER,
                                     5,
                                     ranking,
-                                    Optional.empty(),
                                     p.values(a)));
                 })
                 .doesNotFire();

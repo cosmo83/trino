@@ -53,11 +53,12 @@ public class ConfluentAvroReaderSupplier<T>
     private GenericDatumReader<T> lookupReader(int id)
     {
         try {
+            @SuppressWarnings("deprecation")
             Schema sourceSchema = requireNonNull(schemaRegistryClient.getById(id), "Schema is null");
             return new GenericDatumReader<>(sourceSchema, targetSchema);
         }
         catch (IOException | RestClientException e) {
-            throw new TrinoException(GENERIC_INTERNAL_ERROR, format("Looking up schemaId '%s'from confluent schema registry failed", id), e);
+            throw new TrinoException(GENERIC_INTERNAL_ERROR, format("Looking up schemaId '%s' from confluent schema registry failed", id), e);
         }
     }
 

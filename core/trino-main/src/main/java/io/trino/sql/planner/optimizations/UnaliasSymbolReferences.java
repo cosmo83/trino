@@ -22,10 +22,10 @@ import com.google.common.collect.Sets;
 import io.trino.cost.PlanNodeStatsEstimate;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.sql.DynamicFilters;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.FunctionCall;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Row;
-import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.DeterminismEvaluator;
 import io.trino.sql.planner.NodeAndMappings;
 import io.trino.sql.planner.OrderingScheme;
@@ -115,13 +115,13 @@ import static java.util.Objects.requireNonNull;
 
 /**
  * Re-maps symbol references that are just aliases of each other (e.g., due to projections like {@code $0 := $1})
- * <p/>
+ * <p>
  * E.g.,
- * <p/>
+ * <p>
  * {@code Output[$0, $1] -> Project[$0 := $2, $1 := $3 * 100] -> Aggregate[$2, $3 := sum($4)] -> ...}
- * <p/>
+ * <p>
  * gets rewritten as
- * <p/>
+ * <p>
  * {@code Output[$2, $1] -> Project[$2, $1 := $3 * 100] -> Aggregate[$2, $3 := sum($4)] -> ...}
  */
 public class UnaliasSymbolReferences
@@ -237,15 +237,13 @@ public class UnaliasSymbolReferences
 
             Symbol newMarkerSymbol = mapper.map(node.getMarkerSymbol());
             List<Symbol> newDistinctSymbols = mapper.mapAndDistinct(node.getDistinctSymbols());
-            Optional<Symbol> newHashSymbol = node.getHashSymbol().map(mapper::map);
 
             return new PlanAndMappings(
                     new MarkDistinctNode(
                             node.getId(),
                             rewrittenSource.getRoot(),
                             newMarkerSymbol,
-                            newDistinctSymbols,
-                            newHashSymbol),
+                            newDistinctSymbols),
                     mapping);
         }
 
@@ -317,20 +315,20 @@ public class UnaliasSymbolReferences
 
                 SymbolMapper inputMapper = symbolMapper(new HashMap<>(newSource.getMappings()));
                 TableArgumentProperties properties = node.getTableArgumentProperties().get(i);
-                Optional<DataOrganizationSpecification> newSpecification = properties.getSpecification().map(inputMapper::mapAndDistinct);
+                Optional<DataOrganizationSpecification> newSpecification = properties.specification().map(inputMapper::mapAndDistinct);
                 PassThroughSpecification newPassThroughSpecification = new PassThroughSpecification(
-                        properties.getPassThroughSpecification().declaredAsPassThrough(),
-                        properties.getPassThroughSpecification().columns().stream()
+                        properties.passThroughSpecification().declaredAsPassThrough(),
+                        properties.passThroughSpecification().columns().stream()
                                 .map(column -> new PassThroughColumn(
                                         inputMapper.map(column.symbol()),
                                         column.isPartitioningColumn()))
                                 .collect(toImmutableList()));
                 newTableArgumentProperties.add(new TableArgumentProperties(
-                        properties.getArgumentName(),
-                        properties.isRowSemantics(),
-                        properties.isPruneWhenEmpty(),
+                        properties.argumentName(),
+                        properties.rowSemantics(),
+                        properties.pruneWhenEmpty(),
                         newPassThroughSpecification,
-                        inputMapper.map(properties.getRequiredColumns()),
+                        inputMapper.map(properties.requiredColumns()),
                         newSpecification));
             }
 
@@ -367,7 +365,6 @@ public class UnaliasSymbolReferences
                                 Optional.empty(),
                                 ImmutableSet.of(),
                                 0,
-                                node.getHashSymbol().map(mapper::map),
                                 node.getHandle()),
                         mapping);
             }
@@ -611,7 +608,7 @@ public class UnaliasSymbolReferences
             for (int i = 0; i < node.getOutputSymbols().size(); i++) {
                 ImmutableList.Builder<Expression> expressionsBuilder = ImmutableList.builder();
                 for (Expression row : node.getRows().get()) {
-                    expressionsBuilder.add(mapper.map(((Row) row).getItems().get(i)));
+                    expressionsBuilder.add(mapper.map(((Row) row).items().get(i)));
                 }
                 rewrittenAssignmentsBuilder.add(new SimpleEntry<>(mapper.map(node.getOutputSymbols().get(i)), expressionsBuilder.build()));
             }
@@ -690,12 +687,11 @@ public class UnaliasSymbolReferences
         {
             Map<Symbol, Symbol> mapping = new HashMap<>(context.getCorrelationMapping());
             SymbolMapper mapper = symbolMapper(mapping);
-            Symbol newOutput = mapper.map(node.getOutput());
 
             return new PlanAndMappings(
                     new SimpleTableExecuteNode(
                             node.getId(),
-                            newOutput,
+                            mapper.map(node.getOutputSymbols()),
                             node.getExecuteHandle()),
                     mapping);
         }
@@ -850,7 +846,7 @@ public class UnaliasSymbolReferences
             // Those symbols are supposed to represent constant semantics throughout the plan.
 
             Assignments assignments = node.getAssignments();
-            Set<Symbol> newlyAssignedSymbols = assignments.filter(output -> !assignments.isIdentity(output)).getSymbols();
+            Set<Symbol> newlyAssignedSymbols = assignments.filter(output -> !assignments.isIdentity(output)).outputs();
             Set<Symbol> symbolsInSourceMapping = ImmutableSet.<Symbol>builder()
                     .addAll(rewrittenSource.getMappings().keySet())
                     .addAll(rewrittenSource.getMappings().values())
@@ -908,7 +904,7 @@ public class UnaliasSymbolReferences
                 // If the assignment potentially introduces a reused (ambiguous) symbol, do not map output to input
                 // to avoid mixing semantics. Input symbols represent semantics as in the source plan,
                 // while output symbols represent newly established semantics.
-                if (expression instanceof SymbolReference && !ambiguousSymbolsPresent) {
+                if (expression instanceof Reference && !ambiguousSymbolsPresent) {
                     Symbol value = Symbol.from(expression);
                     if (!assignment.getKey().equals(value)) {
                         newMapping.put(assignment.getKey(), value);
@@ -1088,8 +1084,6 @@ public class UnaliasSymbolReferences
             List<JoinNode.EquiJoinClause> newCriteria = builder.build();
 
             Optional<Expression> newFilter = node.getFilter().map(mapper::map);
-            Optional<Symbol> newLeftHashSymbol = node.getLeftHashSymbol().map(mapper::map);
-            Optional<Symbol> newRightHashSymbol = node.getRightHashSymbol().map(mapper::map);
 
             // rewrite dynamic filters
             Map<Symbol, DynamicFilterId> canonicalDynamicFilters = new HashMap<>();
@@ -1140,8 +1134,6 @@ public class UnaliasSymbolReferences
                             newRightOutputSymbols,
                             node.isMaySkipOutputDuplicates(),
                             newFilter,
-                            newLeftHashSymbol,
-                            newRightHashSymbol,
                             node.getDistributionType(),
                             node.isSpillable(),
                             newDynamicFilters,
@@ -1165,8 +1157,6 @@ public class UnaliasSymbolReferences
             Symbol newSourceJoinSymbol = mapper.map(node.getSourceJoinSymbol());
             Symbol newFilteringSourceJoinSymbol = mapper.map(node.getFilteringSourceJoinSymbol());
             Symbol newSemiJoinOutput = mapper.map(node.getSemiJoinOutput());
-            Optional<Symbol> newSourceHashSymbol = node.getSourceHashSymbol().map(mapper::map);
-            Optional<Symbol> newFilteringSourceHashSymbol = node.getFilteringSourceHashSymbol().map(mapper::map);
 
             return new PlanAndMappings(
                     new SemiJoinNode(
@@ -1176,8 +1166,6 @@ public class UnaliasSymbolReferences
                             newSourceJoinSymbol,
                             newFilteringSourceJoinSymbol,
                             newSemiJoinOutput,
-                            newSourceHashSymbol,
-                            newFilteringSourceHashSymbol,
                             node.getDistributionType(),
                             node.getDynamicFilterId()),
                     outputMapping);
@@ -1226,11 +1214,8 @@ public class UnaliasSymbolReferences
             }
             List<IndexJoinNode.EquiJoinClause> newEquiCriteria = builder.build();
 
-            Optional<Symbol> newProbeHashSymbol = node.getProbeHashSymbol().map(mapper::map);
-            Optional<Symbol> newIndexHashSymbol = node.getIndexHashSymbol().map(mapper::map);
-
             return new PlanAndMappings(
-                    new IndexJoinNode(node.getId(), node.getType(), rewrittenProbe.getRoot(), rewrittenIndex.getRoot(), newEquiCriteria, newProbeHashSymbol, newIndexHashSymbol),
+                    new IndexJoinNode(node.getId(), node.getType(), rewrittenProbe.getRoot(), rewrittenIndex.getRoot(), newEquiCriteria),
                     outputMapping);
         }
 
@@ -1445,7 +1430,7 @@ public class UnaliasSymbolReferences
                 Expression newConjunct = conjunct;
                 if (mappedId != null) {
                     // DF was remapped
-                    newConjunct = replaceDynamicFilterId((FunctionCall) conjunct, mappedId);
+                    newConjunct = replaceDynamicFilterId((Call) conjunct, mappedId);
                     updated = true;
                 }
                 newConjuncts.add(newConjunct);

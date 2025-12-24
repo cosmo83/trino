@@ -13,8 +13,8 @@
  */
 package io.trino.plugin.deltalake.statistics;
 
-import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
+import io.trino.filesystem.Location;
 import io.trino.plugin.deltalake.DeltaLakeColumnHandle;
 import io.trino.plugin.deltalake.DeltaLakeColumnMetadata;
 import io.trino.plugin.deltalake.DeltaLakeTableHandle;
@@ -25,6 +25,7 @@ import io.trino.plugin.deltalake.transactionlog.TableSnapshot;
 import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
 import io.trino.plugin.deltalake.transactionlog.statistics.DeltaLakeFileStatistics;
 import io.trino.spi.connector.ConnectorSession;
+import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.statistics.ColumnStatistics;
 import io.trino.spi.statistics.DoubleRange;
@@ -48,7 +49,14 @@ import static io.trino.plugin.deltalake.DeltaLakeColumnType.PARTITION_KEY;
 import static io.trino.plugin.deltalake.DeltaLakeColumnType.REGULAR;
 import static io.trino.plugin.deltalake.DeltaLakeMetadata.createStatisticsPredicate;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.isExtendedStatisticsEnabled;
-import static io.trino.plugin.deltalake.DeltaLakeSplitManager.partitionMatchesPredicate;
+import static io.trino.plugin.deltalake.DeltaLakeSplitManager.buildSplitPath;
+import static io.trino.plugin.deltalake.util.DeltaLakeDomains.fileModifiedTimeMatchesPredicate;
+import static io.trino.plugin.deltalake.util.DeltaLakeDomains.fileSizeMatchesPredicate;
+import static io.trino.plugin.deltalake.util.DeltaLakeDomains.getFileModifiedTimeDomain;
+import static io.trino.plugin.deltalake.util.DeltaLakeDomains.getFileSizeDomain;
+import static io.trino.plugin.deltalake.util.DeltaLakeDomains.getPathDomain;
+import static io.trino.plugin.deltalake.util.DeltaLakeDomains.partitionMatchesPredicate;
+import static io.trino.plugin.deltalake.util.DeltaLakeDomains.pathMatchesPredicate;
 import static io.trino.spi.statistics.StatsUtil.toStatsRepresentation;
 import static java.lang.Double.NEGATIVE_INFINITY;
 import static java.lang.Double.NaN;
@@ -82,12 +90,12 @@ public class FileBasedTableStatisticsProvider
         List<DeltaLakeColumnMetadata> columnMetadata = DeltaLakeSchemaSupport.extractSchema(metadata, tableHandle.getProtocolEntry(), typeManager);
         List<DeltaLakeColumnHandle> columns = columnMetadata.stream()
                 .map(columnMeta -> new DeltaLakeColumnHandle(
-                        columnMeta.getName(),
-                        columnMeta.getType(),
-                        columnMeta.getFieldId(),
-                        columnMeta.getPhysicalName(),
-                        columnMeta.getPhysicalColumnType(),
-                        metadata.getOriginalPartitionColumns().contains(columnMeta.getName()) ? PARTITION_KEY : REGULAR,
+                        columnMeta.name(),
+                        columnMeta.type(),
+                        columnMeta.fieldId(),
+                        columnMeta.physicalName(),
+                        columnMeta.physicalColumnType(),
+                        metadata.getOriginalPartitionColumns().contains(columnMeta.name()) ? PARTITION_KEY : REGULAR,
                         Optional.empty()))
                 .collect(toImmutableList());
 
@@ -97,7 +105,7 @@ public class FileBasedTableStatisticsProvider
         Map<DeltaLakeColumnHandle, Double> maxValues = new HashMap<>();
         Map<DeltaLakeColumnHandle, Set<String>> partitioningColumnsDistinctValues = new HashMap<>();
         columns.stream()
-                .filter(column -> column.getColumnType() == PARTITION_KEY)
+                .filter(column -> column.columnType() == PARTITION_KEY)
                 .forEach(column -> partitioningColumnsDistinctValues.put(column, new HashSet<>()));
 
         if (tableHandle.getEnforcedPartitionConstraint().isNone() || tableHandle.getNonPartitionConstraint().isNone()) {
@@ -107,19 +115,16 @@ public class FileBasedTableStatisticsProvider
         Set<String> predicatedColumnNames = tableHandle.getNonPartitionConstraint().getDomains().orElseThrow().keySet().stream()
                 // TODO Statistics for column inside complex type is not collected (https://github.com/trinodb/trino/issues/17164)
                 .filter(DeltaLakeColumnHandle::isBaseColumn)
-                .map(DeltaLakeColumnHandle::getBaseColumnName)
+                .map(DeltaLakeColumnHandle::baseColumnName)
                 .collect(toImmutableSet());
         List<DeltaLakeColumnMetadata> predicatedColumns = columnMetadata.stream()
-                .filter(column -> predicatedColumnNames.contains(column.getName()))
+                .filter(column -> predicatedColumnNames.contains(column.name()))
                 .collect(toImmutableList());
 
-        try (Stream<AddFileEntry> addEntries = transactionLogAccess.getActiveFiles(
-                session,
-                tableSnapshot,
-                tableHandle.getMetadataEntry(),
-                tableHandle.getProtocolEntry(),
-                tableHandle.getEnforcedPartitionConstraint(),
-                tableHandle.getProjectedColumns().orElse(ImmutableSet.of()))) {
+        Domain pathDomain = getPathDomain(tableHandle.getNonPartitionConstraint());
+        Domain fileModifiedDomain = getFileModifiedTimeDomain(tableHandle.getNonPartitionConstraint());
+        Domain fileSizeDomain = getFileSizeDomain(tableHandle.getNonPartitionConstraint());
+        try (Stream<AddFileEntry> addEntries = transactionLogAccess.getActiveFiles(session, tableHandle, tableSnapshot)) {
             Iterator<AddFileEntry> addEntryIterator = addEntries.iterator();
             while (addEntryIterator.hasNext()) {
                 AddFileEntry addEntry = addEntryIterator.next();
@@ -130,6 +135,19 @@ public class FileBasedTableStatisticsProvider
                 }
                 DeltaLakeFileStatistics stats = fileStatistics.get();
                 if (!partitionMatchesPredicate(addEntry.getCanonicalPartitionValues(), tableHandle.getEnforcedPartitionConstraint().getDomains().orElseThrow())) {
+                    continue;
+                }
+
+                String splitPath = buildSplitPath(Location.of(tableHandle.getLocation()), addEntry).toString();
+                if (!pathMatchesPredicate(pathDomain, splitPath)) {
+                    continue;
+                }
+
+                if (!fileModifiedTimeMatchesPredicate(fileModifiedDomain, addEntry.getModificationTime())) {
+                    continue;
+                }
+
+                if (!fileSizeMatchesPredicate(fileSizeDomain, addEntry.getSize())) {
                     continue;
                 }
 
@@ -147,8 +165,8 @@ public class FileBasedTableStatisticsProvider
                 }
                 numRecords += stats.getNumRecords().get();
                 for (DeltaLakeColumnHandle column : columns) {
-                    if (column.getColumnType() == PARTITION_KEY) {
-                        Optional<String> partitionValue = addEntry.getCanonicalPartitionValues().get(column.getBasePhysicalColumnName());
+                    if (column.columnType() == PARTITION_KEY) {
+                        Optional<String> partitionValue = addEntry.getCanonicalPartitionValues().get(column.basePhysicalColumnName());
                         if (partitionValue.isEmpty()) {
                             nullCounts.merge(column, (double) stats.getNumRecords().get(), Double::sum);
                         }
@@ -160,7 +178,7 @@ public class FileBasedTableStatisticsProvider
                         }
                     }
                     else {
-                        Optional<Long> maybeNullCount = column.isBaseColumn() ? stats.getNullCount(column.getBasePhysicalColumnName()) : Optional.empty();
+                        Optional<Long> maybeNullCount = column.isBaseColumn() ? stats.getNullCount(column.basePhysicalColumnName()) : Optional.empty();
                         if (maybeNullCount.isPresent()) {
                             nullCounts.put(column, nullCounts.get(column) + maybeNullCount.get());
                         }
@@ -172,13 +190,13 @@ public class FileBasedTableStatisticsProvider
 
                     // Math.min returns NaN if any operand is NaN
                     stats.getMinColumnValue(column)
-                            .map(parsedValue -> toStatsRepresentation(column.getBaseType(), parsedValue))
+                            .map(parsedValue -> toStatsRepresentation(column.baseType(), parsedValue))
                             .filter(OptionalDouble::isPresent)
                             .map(OptionalDouble::getAsDouble)
                             .ifPresent(parsedValueAsDouble -> minValues.merge(column, parsedValueAsDouble, Math::min));
 
                     stats.getMaxColumnValue(column)
-                            .map(parsedValue -> toStatsRepresentation(column.getBaseType(), parsedValue))
+                            .map(parsedValue -> toStatsRepresentation(column.baseType(), parsedValue))
                             .filter(OptionalDouble::isPresent)
                             .map(OptionalDouble::getAsDouble)
                             .ifPresent(parsedValueAsDouble -> maxValues.merge(column, parsedValueAsDouble, Math::max));
@@ -194,7 +212,7 @@ public class FileBasedTableStatisticsProvider
 
         Optional<ExtendedStatistics> statistics = Optional.empty();
         if (isExtendedStatisticsEnabled(session)) {
-            statistics = statisticsAccess.readExtendedStatistics(session, tableHandle.getSchemaTableName(), tableHandle.getLocation());
+            statistics = statisticsAccess.readExtendedStatistics(session, tableHandle.getSchemaTableName(), tableHandle.getLocation(), tableHandle.toCredentialsHandle());
         }
 
         for (DeltaLakeColumnHandle column : columns) {
@@ -216,12 +234,12 @@ public class FileBasedTableStatisticsProvider
             }
 
             // extend statistics with NDV
-            if (column.getColumnType() == PARTITION_KEY) {
+            if (column.columnType() == PARTITION_KEY) {
                 columnStatsBuilder.setDistinctValuesCount(Estimate.of(partitioningColumnsDistinctValues.get(column).size()));
             }
             if (statistics.isPresent()) {
-                DeltaLakeColumnStatistics deltaLakeColumnStatistics = statistics.get().getColumnStatistics().get(column.getBasePhysicalColumnName());
-                if (deltaLakeColumnStatistics != null && column.getColumnType() != PARTITION_KEY) {
+                DeltaLakeColumnStatistics deltaLakeColumnStatistics = statistics.get().getColumnStatistics().get(column.basePhysicalColumnName());
+                if (deltaLakeColumnStatistics != null && column.columnType() != PARTITION_KEY) {
                     deltaLakeColumnStatistics.getTotalSizeInBytes().ifPresent(size -> columnStatsBuilder.setDataSize(Estimate.of(size)));
                     columnStatsBuilder.setDistinctValuesCount(Estimate.of(deltaLakeColumnStatistics.getNdvSummary().cardinality()));
                 }

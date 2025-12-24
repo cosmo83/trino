@@ -39,7 +39,7 @@ import static java.util.Objects.requireNonNull;
  * - the memory pool is exhausted
  */
 @ThreadSafe
-class OutputBufferMemoryManager
+final class OutputBufferMemoryManager
 {
     private static final ListenableFuture<Void> NOT_BLOCKED = immediateVoidFuture();
 
@@ -49,11 +49,11 @@ class OutputBufferMemoryManager
 
     @GuardedBy("this")
     private boolean closed;
+    // guarded by "this" for updates
     @Nullable
-    @GuardedBy("this")
-    private SettableFuture<Void> bufferBlockedFuture;
-    @GuardedBy("this")
-    private ListenableFuture<Void> blockedOnMemory = NOT_BLOCKED;
+    private volatile SettableFuture<Void> bufferBlockedFuture;
+    // guarded by "this" for updates
+    private volatile ListenableFuture<Void> blockedOnMemory = NOT_BLOCKED;
 
     private final Ticker ticker = Ticker.systemTicker();
 
@@ -65,7 +65,7 @@ class OutputBufferMemoryManager
     @GuardedBy("this")
     private final TDigest bufferUtilization = new TDigest();
     @GuardedBy("this")
-    private long lastBufferUtilizationRecordTime = -1;
+    private long lastBufferUtilizationRecordTime;
     @GuardedBy("this")
     private double lastBufferUtilization;
 
@@ -76,6 +76,7 @@ class OutputBufferMemoryManager
         this.maxBufferedBytes = maxBufferedBytes;
         this.memoryContextSupplier = Suppliers.memoize(memoryContextSupplier::get);
         this.notificationExecutor = requireNonNull(notificationExecutor, "notificationExecutor is null");
+        this.lastBufferUtilizationRecordTime = ticker.read();
         this.lastBufferUtilization = 0;
     }
 
@@ -90,7 +91,7 @@ class OutputBufferMemoryManager
 
         ListenableFuture<Void> waitForMemory = null;
         SettableFuture<Void> notifyUnblocked = null;
-        long currentBufferedBytes;
+        final long currentBufferedBytes;
         synchronized (this) {
             // If closed is true, that means the task is completed. In that state,
             // the output buffers already ignore the newly added pages, and therefore
@@ -99,9 +100,9 @@ class OutputBufferMemoryManager
                 return;
             }
 
-            currentBufferedBytes = bufferedBytes.updateAndGet(bytes -> {
-                long result = bytes + bytesAdded;
-                checkArgument(result >= 0, "bufferedBytes (%s) plus delta (%s) would be negative", bytes, bytesAdded);
+            currentBufferedBytes = bufferedBytes.accumulateAndGet(bytesAdded, (bufferedBytes, delta) -> {
+                long result = bufferedBytes + delta;
+                checkArgument(result >= 0, "bufferedBytes (%s) plus delta (%s) would be negative", bufferedBytes, delta);
                 return result;
             });
             ListenableFuture<Void> blockedOnMemory = memoryContext.setBytes(currentBufferedBytes);
@@ -121,9 +122,12 @@ class OutputBufferMemoryManager
                     this.bufferBlockedFuture = null;
                 }
             }
-            recordBufferUtilization();
+            recordBufferUtilization(currentBufferedBytes);
         }
-        peakMemoryUsage.accumulateAndGet(currentBufferedBytes, Math::max);
+        // Reduce contention by reading first and only updating if the new value might become the maximum (uncommon)
+        if (currentBufferedBytes > peakMemoryUsage.get()) {
+            peakMemoryUsage.accumulateAndGet(currentBufferedBytes, Math::max);
+        }
         // Notify listeners outside of the critical section
         notifyListener(notifyUnblocked);
         if (waitForMemory != null) {
@@ -131,27 +135,30 @@ class OutputBufferMemoryManager
         }
     }
 
-    private synchronized void recordBufferUtilization()
+    private synchronized void recordBufferUtilization(long currentBufferedBytes)
     {
         long recordTime = ticker.read();
-        if (lastBufferUtilizationRecordTime != -1) {
-            bufferUtilization.add(lastBufferUtilization, (double) recordTime - this.lastBufferUtilizationRecordTime);
-        }
-        double utilization = getUtilization();
-        // skip recording of buffer utilization until data is put into buffer
-        if (lastBufferUtilizationRecordTime != -1 || utilization != 0.0) {
-            lastBufferUtilizationRecordTime = recordTime;
-            lastBufferUtilization = utilization;
-        }
+        bufferUtilization.add(lastBufferUtilization, (double) recordTime - this.lastBufferUtilizationRecordTime);
+        lastBufferUtilizationRecordTime = recordTime;
+        lastBufferUtilization = getUtilization(currentBufferedBytes);
     }
 
-    public synchronized ListenableFuture<Void> getBufferBlockedFuture()
+    public ListenableFuture<Void> getBufferBlockedFuture()
     {
+        ListenableFuture<Void> bufferBlockedFuture = this.bufferBlockedFuture;
         if (bufferBlockedFuture == null) {
             if (blockedOnMemory.isDone() && !isBufferFull()) {
                 return NOT_BLOCKED;
             }
-            bufferBlockedFuture = SettableFuture.create();
+            synchronized (this) {
+                if (this.bufferBlockedFuture == null) {
+                    if (blockedOnMemory.isDone() && !isBufferFull()) {
+                        return NOT_BLOCKED;
+                    }
+                    this.bufferBlockedFuture = SettableFuture.create();
+                }
+                return this.bufferBlockedFuture;
+            }
         }
         return bufferBlockedFuture;
     }
@@ -178,13 +185,18 @@ class OutputBufferMemoryManager
 
     public double getUtilization()
     {
-        return bufferedBytes.get() / (double) maxBufferedBytes;
+        return getUtilization(bufferedBytes.get());
+    }
+
+    private double getUtilization(long currentBufferedBytes)
+    {
+        return currentBufferedBytes / (double) maxBufferedBytes;
     }
 
     public synchronized TDigest getUtilizationHistogram()
     {
         // always get most up to date histogram
-        recordBufferUtilization();
+        recordBufferUtilization(bufferedBytes.get());
         return TDigest.copyOf(bufferUtilization);
     }
 
@@ -247,7 +259,7 @@ class OutputBufferMemoryManager
         try {
             return memoryContextSupplier.get();
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
             // This is possible with races, e.g., a task is created and then immediately aborted,
             // so that the task context hasn't been created yet (as a result there's no memory context available).
             return null;

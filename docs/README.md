@@ -32,7 +32,7 @@ new documentation:
 - [Present tense](https://developers.google.com/style/tense)
 
 The Google guidelines include more material than listed here, and are used as a
-guide that enable easy decision making about proposed doc changes. Changes to
+guide that enable easy decision-making about proposed doc changes. Changes to
 existing documentation to follow these guidelines are underway.
 
 As a specific style note, because different readers may perceive the phrases "a
@@ -191,7 +191,7 @@ With this setup you can validate an individual file from the root by specifying
 the path:
 
 ```
-vale src/main/sphinx/overview/sep-ui.rst
+vale src/main/sphinx/overview/use-cases.md
 ```
 
 You can also use directory paths and all files within.

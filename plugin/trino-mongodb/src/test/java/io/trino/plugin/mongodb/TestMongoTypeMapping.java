@@ -14,7 +14,6 @@
 package io.trino.plugin.mongodb;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.mongodb.client.MongoClients;
 import io.trino.Session;
 import io.trino.spi.type.ArrayType;
@@ -32,7 +31,6 @@ import org.junit.jupiter.api.Test;
 
 import java.time.ZoneId;
 
-import static io.trino.plugin.mongodb.MongoQueryRunner.createMongoQueryRunner;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.CharType.createCharType;
@@ -62,7 +60,8 @@ public class TestMongoTypeMapping
             throws Exception
     {
         server = closeAfterClass(new MongoServer());
-        return createMongoQueryRunner(server, ImmutableMap.of(), ImmutableList.of());
+        return MongoQueryRunner.builder(server)
+                .build();
     }
 
     @Test
@@ -399,7 +398,7 @@ public class TestMongoTypeMapping
     public void testArrayNulls()
     {
         // Verify only SELECT instead of using SqlDataTypeTest because array comparison not supported for arrays with null elements
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_array_nulls", "(c1 ARRAY(boolean), c2 ARRAY(varchar), c3 ARRAY(varchar))", ImmutableList.of("(NULL, ARRAY[NULL], ARRAY['foo', NULL, 'bar', NULL])"))) {
+        try (TestTable table = newTrinoTable("test_array_nulls", "(c1 ARRAY(boolean), c2 ARRAY(varchar), c3 ARRAY(varchar))", ImmutableList.of("(NULL, ARRAY[NULL], ARRAY['foo', NULL, 'bar', NULL])"))) {
             assertThat(query("SELECT c1 FROM " + table.getName())).matches("VALUES CAST(NULL AS ARRAY(boolean))");
             assertThat(query("SELECT c2 FROM " + table.getName())).matches("VALUES CAST(ARRAY[NULL] AS ARRAY(varchar))");
             assertThat(query("SELECT c3 FROM " + table.getName())).matches("VALUES CAST(ARRAY['foo', NULL, 'bar', NULL] AS ARRAY(varchar))");

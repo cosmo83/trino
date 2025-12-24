@@ -15,7 +15,6 @@ package io.trino.spi.predicate;
 
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
-import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
 
 import java.util.Collection;
@@ -26,9 +25,10 @@ import java.util.Optional;
         use = JsonTypeInfo.Id.NAME,
         property = "@type")
 @JsonSubTypes({
+        @JsonSubTypes.Type(value = AllOrNoneValueSet.class, name = "allOrNone"),
         @JsonSubTypes.Type(value = EquatableValueSet.class, name = "equatable"),
         @JsonSubTypes.Type(value = SortedRangeSet.class, name = "sortable"),
-        @JsonSubTypes.Type(value = AllOrNoneValueSet.class, name = "allOrNone")})
+})
 public interface ValueSet
 {
     static ValueSet none(Type type)
@@ -157,9 +157,7 @@ public interface ValueSet
     @Override
     String toString();
 
-    String toString(ConnectorSession session);
-
-    String toString(ConnectorSession session, int limit);
+    String toString(int limit);
 
     long getRetainedSizeInBytes();
 

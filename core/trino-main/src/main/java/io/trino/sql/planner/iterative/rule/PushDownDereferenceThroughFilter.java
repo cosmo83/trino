@@ -19,8 +19,8 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.FilterNode;
@@ -75,12 +75,12 @@ public class PushDownDereferenceThroughFilter
 
         // Pushdown superset of dereference expressions from projections and filtering predicate
         List<Expression> expressions = ImmutableList.<Expression>builder()
-                .addAll(node.getAssignments().getExpressions())
+                .addAll(node.getAssignments().expressions())
                 .add(filterNode.getPredicate())
                 .build();
 
         // Extract dereferences from project node assignments for pushdown
-        Set<SubscriptExpression> dereferences = extractRowSubscripts(expressions, false);
+        Set<FieldReference> dereferences = extractRowSubscripts(expressions, false);
 
         if (dereferences.isEmpty()) {
             return Result.empty();
@@ -90,7 +90,7 @@ public class PushDownDereferenceThroughFilter
         Assignments dereferenceAssignments = Assignments.of(dereferences, context.getSymbolAllocator());
 
         // Rewrite project node assignments using new symbols for dereference expressions
-        Map<Expression, SymbolReference> mappings = HashBiMap.create(dereferenceAssignments.getMap())
+        Map<Expression, Reference> mappings = HashBiMap.create(dereferenceAssignments.assignments())
                 .inverse()
                 .entrySet().stream()
                 .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));

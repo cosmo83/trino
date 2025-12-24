@@ -18,7 +18,6 @@ import io.airlift.slice.Slices;
 import jakarta.annotation.Nullable;
 
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.function.ObjLongConsumer;
 
 import static io.airlift.slice.SizeOf.instanceSize;
@@ -27,6 +26,7 @@ import static io.trino.spi.block.BlockUtil.checkArrayRange;
 import static io.trino.spi.block.BlockUtil.checkReadablePosition;
 import static io.trino.spi.block.BlockUtil.checkValidRegion;
 import static io.trino.spi.block.BlockUtil.compactArray;
+import static io.trino.spi.block.BlockUtil.compactIsNull;
 import static io.trino.spi.block.BlockUtil.copyIsNullAndAppendNull;
 import static io.trino.spi.block.BlockUtil.ensureCapacity;
 
@@ -73,6 +73,22 @@ public final class ByteArrayBlock
         retainedSizeInBytes = (INSTANCE_SIZE + sizeOf(valueIsNull) + sizeOf(values));
     }
 
+    /**
+     * Gets the raw byte array that keeps the actual data values.
+     */
+    public byte[] getRawValues()
+    {
+        return values;
+    }
+
+    /**
+     * Gets the offset into raw byte array where the data values start.
+     */
+    public int getRawValuesOffset()
+    {
+        return arrayOffset;
+    }
+
     @Override
     public long getSizeInBytes()
     {
@@ -80,21 +96,9 @@ public final class ByteArrayBlock
     }
 
     @Override
-    public OptionalInt fixedSizeInBytesPerPosition()
-    {
-        return OptionalInt.of(SIZE_IN_BYTES_PER_POSITION);
-    }
-
-    @Override
     public long getRegionSizeInBytes(int position, int length)
     {
         return SIZE_IN_BYTES_PER_POSITION * (long) length;
-    }
-
-    @Override
-    public long getPositionsSizeInBytes(boolean[] positions, int selectedPositionsCount)
-    {
-        return (long) SIZE_IN_BYTES_PER_POSITION * selectedPositionsCount;
     }
 
     @Override
@@ -138,10 +142,27 @@ public final class ByteArrayBlock
     }
 
     @Override
+    public boolean hasNull()
+    {
+        if (valueIsNull == null) {
+            return false;
+        }
+        for (int i = 0; i < positionCount; i++) {
+            if (valueIsNull[i + arrayOffset]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
     public boolean isNull(int position)
     {
+        if (!mayHaveNull()) {
+            return false;
+        }
         checkReadablePosition(this, position);
-        return valueIsNull != null && valueIsNull[position + arrayOffset];
+        return valueIsNull[position + arrayOffset];
     }
 
     @Override
@@ -160,6 +181,7 @@ public final class ByteArrayBlock
     {
         checkArrayRange(positions, offset, length);
 
+        boolean hasNull = false;
         boolean[] newValueIsNull = null;
         if (valueIsNull != null) {
             newValueIsNull = new boolean[length];
@@ -169,11 +191,13 @@ public final class ByteArrayBlock
             int position = positions[offset + i];
             checkReadablePosition(this, position);
             if (valueIsNull != null) {
-                newValueIsNull[i] = valueIsNull[position + arrayOffset];
+                boolean isNull = valueIsNull[position + arrayOffset];
+                newValueIsNull[i] = isNull;
+                hasNull |= isNull;
             }
             newValues[i] = values[position + arrayOffset];
         }
-        return new ByteArrayBlock(0, length, newValueIsNull, newValues);
+        return new ByteArrayBlock(0, length, hasNull ? newValueIsNull : null, newValues);
     }
 
     @Override
@@ -190,19 +214,13 @@ public final class ByteArrayBlock
         checkValidRegion(getPositionCount(), positionOffset, length);
 
         positionOffset += arrayOffset;
-        boolean[] newValueIsNull = valueIsNull == null ? null : compactArray(valueIsNull, positionOffset, length);
+        boolean[] newValueIsNull = compactIsNull(valueIsNull, positionOffset, length);
         byte[] newValues = compactArray(values, positionOffset, length);
 
         if (newValueIsNull == valueIsNull && newValues == values) {
             return this;
         }
         return new ByteArrayBlock(0, length, newValueIsNull, newValues);
-    }
-
-    @Override
-    public String getEncodingName()
-    {
-        return ByteArrayBlockEncoding.NAME;
     }
 
     @Override
@@ -226,23 +244,19 @@ public final class ByteArrayBlock
         return "ByteArrayBlock{positionCount=" + getPositionCount() + '}';
     }
 
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
+    }
+
     Slice getValuesSlice()
     {
         return Slices.wrappedBuffer(values, arrayOffset, positionCount);
     }
 
-    int getRawValuesOffset()
-    {
-        return arrayOffset;
-    }
-
     boolean[] getRawValueIsNull()
     {
         return valueIsNull;
-    }
-
-    byte[] getRawValues()
-    {
-        return values;
     }
 }

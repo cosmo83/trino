@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
 import io.trino.operator.DriverContext;
+import io.trino.operator.NullSafeHashCompiler;
 import io.trino.operator.OperatorContext;
 import io.trino.operator.PagesIndex;
 import io.trino.operator.TaskContext;
@@ -34,7 +35,6 @@ import org.junit.jupiter.api.parallel.Execution;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
-import java.util.OptionalInt;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -94,27 +94,28 @@ public class TestHashBuilderOperator
                 .addOperatorContext(0, new PlanNodeId("0"), HashBuilderOperator.class.getName());
         OperatorContext anotherOperatorContext = driverContext
                 .addOperatorContext(1, new PlanNodeId("1"), "another operator");
-        ImmutableList<Type> types = ImmutableList.of(BIGINT, BIGINT);
+        List<Type> types = ImmutableList.of(BIGINT, BIGINT);
         PartitionedLookupSourceFactory lookupSourceFactory = new PartitionedLookupSourceFactory(
                 types,
                 ImmutableList.of(BIGINT),
                 ImmutableList.of(BIGINT),
                 1,
                 false,
-                new TypeOperators());
+                new NullSafeHashCompiler(new TypeOperators()));
         try (HashBuilderOperator operator = new HashBuilderOperator(
                 operatorContext,
                 lookupSourceFactory,
                 0,
                 ImmutableList.of(0),
                 ImmutableList.of(1),
-                OptionalInt.empty(),
                 Optional.empty(),
                 Optional.empty(),
                 ImmutableList.of(),
                 10_000,
                 new PagesIndex.TestingFactory(false),
-                defaultHashArraySizeSupplier())) {
+                defaultHashArraySizeSupplier(),
+                // sync memory usage to delegate memory pool more frequently
+                4096)) {
             assertThat(operator.getState()).isEqualTo(CONSUMING_INPUT);
 
             ListenableFuture<Void> whenBuildFinishes = lookupSourceFactory.whenBuildFinishes();
@@ -134,6 +135,13 @@ public class TestHashBuilderOperator
             operator.finish();
 
             // not enough memory to create lookup source
+            assertThat(operator.getState()).isEqualTo(CONSUMING_INPUT);
+            assertThat(operator.isFinished()).isFalse();
+            assertThat(whenBuildFinishes).isNotDone();
+            assertThat(operatorContext.isWaitingForMemory()).isNotDone();
+
+            // still not enough memory to create lookup source
+            operator.finish();
             assertThat(operator.getState()).isEqualTo(CONSUMING_INPUT);
             assertThat(operator.isFinished()).isFalse();
             assertThat(whenBuildFinishes).isNotDone();

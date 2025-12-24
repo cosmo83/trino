@@ -15,7 +15,6 @@ package io.trino.sql.planner.iterative.rule;
 
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
-import io.trino.metadata.Metadata;
 import io.trino.spi.function.BoundSignature;
 import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.sql.planner.iterative.Rule;
@@ -35,14 +34,14 @@ public class ReplaceWindowWithRowNumber
 
     private final Pattern<WindowNode> pattern;
 
-    public ReplaceWindowWithRowNumber(Metadata metadata)
+    public ReplaceWindowWithRowNumber()
     {
         this.pattern = window()
                 .matching(window -> {
                     if (window.getWindowFunctions().size() != 1) {
                         return false;
                     }
-                    BoundSignature signature = getOnlyElement(window.getWindowFunctions().values()).getResolvedFunction().getSignature();
+                    BoundSignature signature = getOnlyElement(window.getWindowFunctions().values()).getResolvedFunction().signature();
                     return signature.getArgumentTypes().isEmpty() && signature.getName().equals(ROW_NUMBER_NAME);
                 })
                 .matching(window -> window.getOrderingScheme().isEmpty());
@@ -63,7 +62,6 @@ public class ReplaceWindowWithRowNumber
                 node.getPartitionBy(),
                 false,
                 getOnlyElement(node.getWindowFunctions().keySet()),
-                Optional.empty(),
                 Optional.empty()));
     }
 }

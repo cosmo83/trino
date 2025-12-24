@@ -15,6 +15,8 @@ package io.trino.sql.planner.sanity;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.FormatMethod;
+import com.google.errorprone.annotations.FormatString;
 import io.trino.Session;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.sql.PlannerContext;
@@ -190,9 +192,9 @@ public final class ValidateDependenciesChecker
             if (node.getOrderingScheme().isPresent()) {
                 checkDependencies(
                         inputs,
-                        node.getOrderingScheme().get().getOrderBy(),
+                        node.getOrderingScheme().get().orderBy(),
                         "Invalid node. Order by symbols (%s) not in source plan output (%s)",
-                        node.getOrderingScheme().get().getOrderBy(), node.getSource().getOutputSymbols());
+                        node.getOrderingScheme().get().orderBy(), node.getSource().getOutputSymbols());
             }
 
             node.getCommonBaseFrame()
@@ -235,37 +237,37 @@ public final class ValidateDependenciesChecker
 
                 checkDependencies(
                         inputs,
-                        argumentProperties.getRequiredColumns(),
+                        argumentProperties.requiredColumns(),
                         "Invalid node. Required input symbols from source %s (%s) not in source plan output (%s)",
-                        argumentProperties.getArgumentName(),
-                        argumentProperties.getRequiredColumns(),
+                        argumentProperties.argumentName(),
+                        argumentProperties.requiredColumns(),
                         source.getOutputSymbols());
-                argumentProperties.getSpecification().ifPresent(specification -> {
+                argumentProperties.specification().ifPresent(specification -> {
                     checkDependencies(
                             inputs,
-                            specification.getPartitionBy(),
+                            specification.partitionBy(),
                             "Invalid node. Partition by symbols for source %s (%s) not in source plan output (%s)",
-                            argumentProperties.getArgumentName(),
-                            specification.getPartitionBy(),
+                            argumentProperties.argumentName(),
+                            specification.partitionBy(),
                             source.getOutputSymbols());
-                    specification.getOrderingScheme().ifPresent(orderingScheme -> {
+                    specification.orderingScheme().ifPresent(orderingScheme -> {
                         checkDependencies(
                                 inputs,
-                                orderingScheme.getOrderBy(),
+                                orderingScheme.orderBy(),
                                 "Invalid node. Order by symbols for source %s (%s) not in source plan output (%s)",
-                                argumentProperties.getArgumentName(),
-                                orderingScheme.getOrderBy(),
+                                argumentProperties.argumentName(),
+                                orderingScheme.orderBy(),
                                 source.getOutputSymbols());
                     });
                 });
-                Set<Symbol> passThroughSymbols = argumentProperties.getPassThroughSpecification().columns().stream()
+                Set<Symbol> passThroughSymbols = argumentProperties.passThroughSpecification().columns().stream()
                         .map(PassThroughColumn::symbol)
                         .collect(toImmutableSet());
                 checkDependencies(
                         inputs,
                         passThroughSymbols,
                         "Invalid node. Pass-through symbols for source %s (%s) not in source plan output (%s)",
-                        argumentProperties.getArgumentName(),
+                        argumentProperties.argumentName(),
                         passThroughSymbols,
                         source.getOutputSymbols());
             }
@@ -325,16 +327,16 @@ public final class ValidateDependenciesChecker
             node.getSpecification().ifPresent(specification -> {
                 checkDependencies(
                         inputs,
-                        specification.getPartitionBy(),
+                        specification.partitionBy(),
                         "Invalid node. Partition by symbols (%s) not in source plan output (%s)",
-                        specification.getPartitionBy(),
+                        specification.partitionBy(),
                         source.getOutputSymbols());
-                specification.getOrderingScheme().ifPresent(orderingScheme -> {
+                specification.orderingScheme().ifPresent(orderingScheme -> {
                     checkDependencies(
                             inputs,
-                            orderingScheme.getOrderBy(),
+                            orderingScheme.orderBy(),
                             "Invalid node. Order by symbols (%s) not in source plan output (%s)",
-                            orderingScheme.getOrderBy(),
+                            orderingScheme.orderBy(),
                             source.getOutputSymbols());
                 });
             });
@@ -354,9 +356,9 @@ public final class ValidateDependenciesChecker
             if (node.getOrderingScheme().isPresent()) {
                 checkDependencies(
                         inputs,
-                        node.getOrderingScheme().get().getOrderBy(),
+                        node.getOrderingScheme().get().orderBy(),
                         "Invalid node. Order by symbols (%s) not in source plan output (%s)",
-                        node.getOrderingScheme().get().getOrderBy(), node.getSource().getOutputSymbols());
+                        node.getOrderingScheme().get().orderBy(), node.getSource().getOutputSymbols());
             }
 
             ImmutableList.Builder<Symbol> bounds = ImmutableList.builder();
@@ -399,9 +401,9 @@ public final class ValidateDependenciesChecker
             checkDependencies(inputs, node.getPartitionBy(), "Invalid node. Partition by symbols (%s) not in source plan output (%s)", node.getPartitionBy(), node.getSource().getOutputSymbols());
             checkDependencies(
                     inputs,
-                    node.getOrderingScheme().getOrderBy(),
+                    node.getOrderingScheme().orderBy(),
                     "Invalid node. Order by symbols (%s) not in source plan output (%s)",
-                    node.getOrderingScheme().getOrderBy(), node.getSource().getOutputSymbols());
+                    node.getOrderingScheme().orderBy(), node.getSource().getOutputSymbols());
 
             return null;
         }
@@ -448,7 +450,7 @@ public final class ValidateDependenciesChecker
             source.accept(this, boundSymbols); // visit child
 
             Set<Symbol> inputs = createInputs(source, boundSymbols);
-            for (Expression expression : node.getAssignments().getExpressions()) {
+            for (Expression expression : node.getAssignments().expressions()) {
                 Set<Symbol> dependencies = extractUnique(expression);
                 checkDependencies(inputs, dependencies, "Invalid node. Expression dependencies (%s) not in source plan output (%s)", dependencies, inputs);
             }
@@ -466,9 +468,9 @@ public final class ValidateDependenciesChecker
             checkDependencies(inputs, node.getOutputSymbols(), "Invalid node. Output symbols (%s) not in source plan output (%s)", node.getOutputSymbols(), node.getSource().getOutputSymbols());
             checkDependencies(
                     inputs,
-                    node.getOrderingScheme().getOrderBy(),
+                    node.getOrderingScheme().orderBy(),
                     "Invalid node. Order by dependencies (%s) not in source plan output (%s)",
-                    node.getOrderingScheme().getOrderBy(),
+                    node.getOrderingScheme().orderBy(),
                     node.getSource().getOutputSymbols());
 
             return null;
@@ -484,9 +486,9 @@ public final class ValidateDependenciesChecker
             checkDependencies(inputs, node.getOutputSymbols(), "Invalid node. Output symbols (%s) not in source plan output (%s)", node.getOutputSymbols(), node.getSource().getOutputSymbols());
             checkDependencies(
                     inputs,
-                    node.getOrderingScheme().getOrderBy(),
+                    node.getOrderingScheme().orderBy(),
                     "Invalid node. Order by dependencies (%s) not in source plan output (%s)",
-                    node.getOrderingScheme().getOrderBy(), node.getSource().getOutputSymbols());
+                    node.getOrderingScheme().orderBy(), node.getSource().getOutputSymbols());
 
             return null;
         }
@@ -520,9 +522,9 @@ public final class ValidateDependenciesChecker
             if (node.getTiesResolvingScheme().isPresent()) {
                 checkDependencies(
                         createInputs(source, boundSymbols),
-                        node.getTiesResolvingScheme().get().getOrderBy(),
+                        node.getTiesResolvingScheme().get().orderBy(),
                         "Invalid node. Ties resolving dependencies (%s) not in source plan output (%s)",
-                        node.getTiesResolvingScheme().get().getOrderBy(), node.getSource().getOutputSymbols());
+                        node.getTiesResolvingScheme().get().orderBy(), node.getSource().getOutputSymbols());
             }
 
             checkDependencies(
@@ -885,7 +887,7 @@ public final class ValidateDependenciesChecker
 
             checkDependencies(node.getInput().getOutputSymbols(), node.getCorrelation(), "APPLY input must provide all the necessary correlation symbols for subquery");
 
-            ImmutableSet<Symbol> inputs = ImmutableSet.<Symbol>builder()
+            Set<Symbol> inputs = ImmutableSet.<Symbol>builder()
                     .addAll(createInputs(node.getSubquery(), boundSymbols))
                     .addAll(createInputs(node.getInput(), boundSymbols))
                     .build();
@@ -931,7 +933,7 @@ public final class ValidateDependenciesChecker
             return null;
         }
 
-        private static ImmutableSet<Symbol> createInputs(PlanNode source, Set<Symbol> boundSymbols)
+        private static Set<Symbol> createInputs(PlanNode source, Set<Symbol> boundSymbols)
         {
             return ImmutableSet.<Symbol>builder()
                     .addAll(source.getOutputSymbols())
@@ -940,7 +942,8 @@ public final class ValidateDependenciesChecker
         }
     }
 
-    private static void checkDependencies(Collection<Symbol> inputs, Collection<Symbol> required, String message, Object... parameters)
+    @FormatMethod
+    private static void checkDependencies(Collection<Symbol> inputs, Collection<Symbol> required, @FormatString String message, Object... parameters)
     {
         checkArgument(ImmutableSet.copyOf(inputs).containsAll(required), message, parameters);
     }

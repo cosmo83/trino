@@ -18,7 +18,7 @@ import com.google.inject.Inject;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
-import io.trino.plugin.hive.HiveCompressionCodec;
+import io.trino.plugin.hive.HiveCompressionOption;
 import io.trino.plugin.hive.HiveTimestampPrecision;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.plugin.hive.parquet.ParquetWriterConfig;
@@ -51,7 +51,6 @@ public final class DeltaLakeSessionProperties
         implements SessionPropertiesProvider
 {
     public static final String MAX_SPLIT_SIZE = "max_split_size";
-    public static final String MAX_INITIAL_SPLIT_SIZE = "max_initial_split_size";
     public static final String VACUUM_MIN_RETENTION = "vacuum_min_retention";
     private static final String HIVE_CATALOG_NAME = "hive_catalog_name";
     private static final String PARQUET_MAX_READ_BLOCK_SIZE = "parquet_max_read_block_size";
@@ -59,6 +58,7 @@ public final class DeltaLakeSessionProperties
     private static final String PARQUET_SMALL_FILE_THRESHOLD = "parquet_small_file_threshold";
     private static final String PARQUET_USE_COLUMN_INDEX = "parquet_use_column_index";
     private static final String PARQUET_IGNORE_STATISTICS = "parquet_ignore_statistics";
+    private static final String PARQUET_VECTORIZED_DECODING_ENABLED = "parquet_vectorized_decoding_enabled";
     private static final String PARQUET_WRITER_BLOCK_SIZE = "parquet_writer_block_size";
     private static final String PARQUET_WRITER_PAGE_SIZE = "parquet_writer_page_size";
     private static final String PARQUET_WRITER_PAGE_VALUE_COUNT = "parquet_writer_page_value_count";
@@ -74,7 +74,7 @@ public final class DeltaLakeSessionProperties
     public static final String EXTENDED_STATISTICS_COLLECT_ON_WRITE = "extended_statistics_collect_on_write";
     private static final String PROJECTION_PUSHDOWN_ENABLED = "projection_pushdown_enabled";
     private static final String QUERY_PARTITION_FILTER_REQUIRED = "query_partition_filter_required";
-    private static final String CHECKPOINT_FILTERING_ENABLED = "checkpoint_filtering_enabled";
+    private static final String STORE_TABLE_METADATA = "store_table_metadata";
 
     private final List<PropertyMetadata<?>> sessionProperties;
 
@@ -89,11 +89,6 @@ public final class DeltaLakeSessionProperties
                         MAX_SPLIT_SIZE,
                         "Max split size",
                         deltaLakeConfig.getMaxSplitSize(),
-                        true),
-                dataSizeProperty(
-                        MAX_INITIAL_SPLIT_SIZE,
-                        "Max initial split size",
-                        deltaLakeConfig.getMaxInitialSplitSize(),
                         true),
                 durationProperty(
                         VACUUM_MIN_RETENTION,
@@ -139,6 +134,11 @@ public final class DeltaLakeSessionProperties
                         PARQUET_IGNORE_STATISTICS,
                         "Ignore statistics from Parquet to allow querying files with corrupted or incorrect statistics",
                         parquetReaderConfig.isIgnoreStatistics(),
+                        false),
+                booleanProperty(
+                        PARQUET_VECTORIZED_DECODING_ENABLED,
+                        "Enable using Java Vector API for faster decoding of parquet files",
+                        parquetReaderConfig.isVectorizedDecodingEnabled(),
                         false),
                 dataSizeProperty(
                         PARQUET_WRITER_BLOCK_SIZE,
@@ -207,10 +207,10 @@ public final class DeltaLakeSessionProperties
                 enumProperty(
                         COMPRESSION_CODEC,
                         "Compression codec to use when writing new data files",
-                        HiveCompressionCodec.class,
+                        HiveCompressionOption.class,
                         deltaLakeConfig.getCompressionCodec(),
                         value -> {
-                            if (value == HiveCompressionCodec.LZ4) {
+                            if (value == HiveCompressionOption.LZ4) {
                                 // TODO (https://github.com/trinodb/trino/issues/9142) Support LZ4 compression with native Parquet writer
                                 throw new TrinoException(INVALID_SESSION_PROPERTY, "Unsupported codec: LZ4");
                             }
@@ -227,10 +227,10 @@ public final class DeltaLakeSessionProperties
                         deltaLakeConfig.isQueryPartitionFilterRequired(),
                         false),
                 booleanProperty(
-                        CHECKPOINT_FILTERING_ENABLED,
-                        "Use filter in checkpoint reader",
-                        deltaLakeConfig.isCheckpointFilteringEnabled(),
-                        false));
+                        STORE_TABLE_METADATA,
+                        "Store table metadata in metastore",
+                        deltaLakeConfig.isStoreTableMetadataEnabled(),
+                        true));
     }
 
     @Override
@@ -242,11 +242,6 @@ public final class DeltaLakeSessionProperties
     public static DataSize getMaxSplitSize(ConnectorSession session)
     {
         return session.getProperty(MAX_SPLIT_SIZE, DataSize.class);
-    }
-
-    public static DataSize getMaxInitialSplitSize(ConnectorSession session)
-    {
-        return session.getProperty(MAX_INITIAL_SPLIT_SIZE, DataSize.class);
     }
 
     public static Duration getVacuumMinRetention(ConnectorSession session)
@@ -282,6 +277,11 @@ public final class DeltaLakeSessionProperties
     public static boolean isParquetIgnoreStatistics(ConnectorSession session)
     {
         return session.getProperty(PARQUET_IGNORE_STATISTICS, Boolean.class);
+    }
+
+    public static boolean isParquetVectorizedDecodingEnabled(ConnectorSession session)
+    {
+        return session.getProperty(PARQUET_VECTORIZED_DECODING_ENABLED, Boolean.class);
     }
 
     public static DataSize getParquetWriterBlockSize(ConnectorSession session)
@@ -329,9 +329,9 @@ public final class DeltaLakeSessionProperties
         return session.getProperty(EXTENDED_STATISTICS_COLLECT_ON_WRITE, Boolean.class);
     }
 
-    public static HiveCompressionCodec getCompressionCodec(ConnectorSession session)
+    public static HiveCompressionOption getCompressionCodec(ConnectorSession session)
     {
-        return session.getProperty(COMPRESSION_CODEC, HiveCompressionCodec.class);
+        return session.getProperty(COMPRESSION_CODEC, HiveCompressionOption.class);
     }
 
     public static boolean isProjectionPushdownEnabled(ConnectorSession session)
@@ -344,8 +344,8 @@ public final class DeltaLakeSessionProperties
         return session.getProperty(QUERY_PARTITION_FILTER_REQUIRED, Boolean.class);
     }
 
-    public static boolean isCheckpointFilteringEnabled(ConnectorSession session)
+    public static boolean isStoreTableMetadataInMetastoreEnabled(ConnectorSession session)
     {
-        return session.getProperty(CHECKPOINT_FILTERING_ENABLED, Boolean.class);
+        return session.getProperty(STORE_TABLE_METADATA, Boolean.class);
     }
 }

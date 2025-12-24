@@ -26,8 +26,9 @@ import io.trino.sql.PlannerContext;
 import io.trino.sql.analyzer.TypeSignatureProvider;
 import io.trino.sql.gen.ExpressionCompiler;
 import io.trino.sql.gen.PageFunctionCompiler;
+import io.trino.sql.gen.columnar.ColumnarFilterCompiler;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.FunctionCall;
 import io.trino.sql.planner.TestingPlannerContext;
 import io.trino.testing.QueryRunner;
 import io.trino.transaction.TransactionManager;
@@ -105,7 +106,7 @@ public class TestingFunctionResolution
 
     public ExpressionCompiler getExpressionCompiler()
     {
-        return new ExpressionCompiler(plannerContext.getFunctionManager(), getPageFunctionCompiler());
+        return new ExpressionCompiler(getPageFunctionCompiler(), getColumnarFilterCompiler());
     }
 
     public PageFunctionCompiler getPageFunctionCompiler()
@@ -121,6 +122,16 @@ public class TestingFunctionResolution
     public Collection<FunctionMetadata> listGlobalFunctions()
     {
         return inTransaction(metadata::listGlobalFunctions);
+    }
+
+    public ColumnarFilterCompiler getColumnarFilterCompiler()
+    {
+        return getColumnarFilterCompiler(0);
+    }
+
+    public ColumnarFilterCompiler getColumnarFilterCompiler(int expressionCacheSize)
+    {
+        return new ColumnarFilterCompiler(plannerContext.getFunctionManager(), expressionCacheSize);
     }
 
     public ResolvedFunction resolveOperator(OperatorType operatorType, List<? extends Type> argumentTypes)
@@ -159,8 +170,8 @@ public class TestingFunctionResolution
         return inTransaction(session -> {
             ResolvedFunction resolvedFunction = metadata.resolveBuiltinFunction(name, parameterTypes);
             return new TestingAggregationFunction(
-                    resolvedFunction.getSignature(),
-                    resolvedFunction.getFunctionNullability(),
+                    resolvedFunction.signature(),
+                    resolvedFunction.functionNullability(),
                     plannerContext.getFunctionManager().getAggregationImplementation(resolvedFunction));
         });
     }
@@ -213,9 +224,9 @@ public class TestingFunctionResolution
             return this;
         }
 
-        public FunctionCall build()
+        public Call build()
         {
-            return new FunctionCall(
+            return new Call(
                     resolveFunction(name, TypeSignatureProvider.fromTypeSignatures(argumentTypes)),
                     argumentValues);
         }

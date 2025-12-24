@@ -139,7 +139,7 @@ public final class GatherAndMergeWindows
                 // The only kind of use of the output of the target that we can safely ignore is a simple identity propagation.
                 // The target node, when hoisted above the projections, will provide the symbols directly.
                 Map<Symbol, Expression> assignmentsWithoutTargetOutputIdentities = Maps.filterKeys(
-                        project.getAssignments().getMap(),
+                        project.getAssignments().assignments(),
                         output -> !(project.getAssignments().isIdentity(output) && targetOutputs.contains(output)));
 
                 if (targetInputs.stream().anyMatch(assignmentsWithoutTargetOutputIdentities::containsKey)) {
@@ -152,7 +152,7 @@ public final class GatherAndMergeWindows
                         .putIdentities(targetInputs)
                         .build();
 
-                if (!newTargetChildOutputs.containsAll(SymbolsExtractor.extractUnique(newAssignments.getExpressions()))) {
+                if (!newTargetChildOutputs.containsAll(SymbolsExtractor.extractUnique(newAssignments.expressions()))) {
                     // Projection uses an output of the target -- can't move the target above this projection.
                     return Optional.empty();
                 }
@@ -162,7 +162,7 @@ public final class GatherAndMergeWindows
 
             WindowNode newTarget = (WindowNode) target.replaceChildren(ImmutableList.of(newTargetChild));
             Set<Symbol> newTargetOutputs = ImmutableSet.copyOf(newTarget.getOutputSymbols());
-            if (!newTargetOutputs.containsAll(projects.get(projects.size() - 1).getOutputSymbols())) {
+            if (!newTargetOutputs.containsAll(projects.getLast().getOutputSymbols())) {
                 // The new target node is hiding some of the projections, which makes this rewrite incorrect.
                 return Optional.empty();
             }
@@ -194,7 +194,6 @@ public final class GatherAndMergeWindows
                     child.getSource(),
                     parent.getSpecification(),
                     functionsBuilder.buildOrThrow(),
-                    parent.getHashSymbol(),
                     parent.getPrePartitionedInputs(),
                     parent.getPreSortedOrderPrefix());
 
@@ -249,7 +248,7 @@ public final class GatherAndMergeWindows
                 Symbol symbol1 = iterator1.next();
                 Symbol symbol2 = iterator2.next();
 
-                int partitionByComparison = symbol1.compareTo(symbol2);
+                int partitionByComparison = symbol1.name().compareTo(symbol2.name());
                 if (partitionByComparison != 0) {
                     return partitionByComparison;
                 }
@@ -278,18 +277,18 @@ public final class GatherAndMergeWindows
 
             OrderingScheme o1OrderingScheme = o1.getOrderingScheme().get();
             OrderingScheme o2OrderingScheme = o2.getOrderingScheme().get();
-            Iterator<Symbol> iterator1 = o1OrderingScheme.getOrderBy().iterator();
-            Iterator<Symbol> iterator2 = o2OrderingScheme.getOrderBy().iterator();
+            Iterator<Symbol> iterator1 = o1OrderingScheme.orderBy().iterator();
+            Iterator<Symbol> iterator2 = o2OrderingScheme.orderBy().iterator();
 
             while (iterator1.hasNext() && iterator2.hasNext()) {
                 Symbol symbol1 = iterator1.next();
                 Symbol symbol2 = iterator2.next();
 
-                int orderByComparison = symbol1.compareTo(symbol2);
+                int orderByComparison = symbol1.name().compareTo(symbol2.name());
                 if (orderByComparison != 0) {
                     return orderByComparison;
                 }
-                int sortOrderComparison = o1OrderingScheme.getOrdering(symbol1).compareTo(o2OrderingScheme.getOrdering(symbol2));
+                int sortOrderComparison = o1OrderingScheme.ordering(symbol1).compareTo(o2OrderingScheme.ordering(symbol2));
                 if (sortOrderComparison != 0) {
                     return sortOrderComparison;
                 }

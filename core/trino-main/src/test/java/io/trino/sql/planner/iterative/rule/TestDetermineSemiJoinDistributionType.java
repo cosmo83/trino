@@ -39,7 +39,7 @@ import static io.trino.SystemSessionProperties.JOIN_MAX_BROADCAST_TABLE_SIZE;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.semiJoin;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
@@ -84,8 +84,6 @@ public class TestDetermineSemiJoinDistributionType
                                 p.symbol("A1"),
                                 p.symbol("B1"),
                                 p.symbol("output"),
-                                Optional.empty(),
-                                Optional.empty(),
                                 Optional.of(REPLICATED)))
                 .doesNotFire();
     }
@@ -115,8 +113,6 @@ public class TestDetermineSemiJoinDistributionType
                             a1,
                             b1,
                             p.symbol("output"),
-                            Optional.empty(),
-                            Optional.empty(),
                             Optional.empty());
                 })
                 .matches(semiJoin(
@@ -151,8 +147,6 @@ public class TestDetermineSemiJoinDistributionType
                                 p.symbol("A1"),
                                 p.symbol("B1"),
                                 p.symbol("output"),
-                                Optional.empty(),
-                                Optional.empty(),
                                 Optional.empty()))
                 .matches(semiJoin(
                         "A1",
@@ -185,8 +179,6 @@ public class TestDetermineSemiJoinDistributionType
                                 p.symbol("A1"),
                                 p.symbol("B1"),
                                 p.symbol("output"),
-                                Optional.empty(),
-                                Optional.empty(),
                                 Optional.empty()))
                 .matches(semiJoin(
                         "A1",
@@ -219,8 +211,6 @@ public class TestDetermineSemiJoinDistributionType
                                 p.symbol("A1"),
                                 p.symbol("B1"),
                                 p.symbol("output"),
-                                Optional.empty(),
-                                Optional.empty(),
                                 Optional.empty()))
                 .matches(semiJoin(
                         "A1",
@@ -240,11 +230,11 @@ public class TestDetermineSemiJoinDistributionType
 
         PlanNodeStatsEstimate probeSideStatsEstimate = PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(aRows)
-                .addSymbolStatistics(ImmutableMap.of(new Symbol(UNKNOWN, "A1"), new SymbolStatsEstimate(0, 100, 0, 640000, 10)))
+                .addSymbolStatistics(ImmutableMap.of(new Symbol(symbolType, "A1"), new SymbolStatsEstimate(0, 100, 0, 640000, 10)))
                 .build();
         PlanNodeStatsEstimate buildSideStatsEstimate = PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(bRows)
-                .addSymbolStatistics(ImmutableMap.of(new Symbol(UNKNOWN, "B1"), new SymbolStatsEstimate(0, 100, 0, 640000, 10)))
+                .addSymbolStatistics(ImmutableMap.of(new Symbol(symbolType, "B1"), new SymbolStatsEstimate(0, 100, 0, 640000, 10)))
                 .build();
 
         // B table is small enough to be replicated according to JOIN_MAX_BROADCAST_TABLE_SIZE limit
@@ -262,8 +252,6 @@ public class TestDetermineSemiJoinDistributionType
                             a1,
                             b1,
                             p.symbol("output"),
-                            Optional.empty(),
-                            Optional.empty(),
                             Optional.empty());
                 })
                 .matches(semiJoin(
@@ -276,11 +264,11 @@ public class TestDetermineSemiJoinDistributionType
 
         probeSideStatsEstimate = PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(aRows)
-                .addSymbolStatistics(ImmutableMap.of(new Symbol(UNKNOWN, "A1"), new SymbolStatsEstimate(0, 100, 0, 640000d * 10000, 10)))
+                .addSymbolStatistics(ImmutableMap.of(new Symbol(symbolType, "A1"), new SymbolStatsEstimate(0, 100, 0, 640000d * 10000, 10)))
                 .build();
         buildSideStatsEstimate = PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(bRows)
-                .addSymbolStatistics(ImmutableMap.of(new Symbol(UNKNOWN, "B1"), new SymbolStatsEstimate(0, 100, 0, 640000d * 10000, 10)))
+                .addSymbolStatistics(ImmutableMap.of(new Symbol(symbolType, "B1"), new SymbolStatsEstimate(0, 100, 0, 640000d * 10000, 10)))
                 .build();
 
         // B table exceeds JOIN_MAX_BROADCAST_TABLE_SIZE limit therefore it is partitioned
@@ -297,9 +285,7 @@ public class TestDetermineSemiJoinDistributionType
                             p.values(new PlanNodeId("valuesB"), bRows, b1),
                             a1,
                             b1,
-                            p.symbol("output"),
-                            Optional.empty(),
-                            Optional.empty(),
+                            p.symbol("output", BIGINT),
                             Optional.empty());
                 })
                 .matches(semiJoin(
@@ -346,13 +332,11 @@ public class TestDetermineSemiJoinDistributionType
                             p.values(new PlanNodeId("valuesA"), aRows, a1),
                             p.filter(
                                     new PlanNodeId("filterB"),
-                                    TRUE_LITERAL,
+                                    TRUE,
                                     p.values(new PlanNodeId("valuesB"), bRows, b1)),
                             a1,
                             b1,
                             p.symbol("output"),
-                            Optional.empty(),
-                            Optional.empty(),
                             Optional.empty());
                 })
                 .matches(semiJoin(
@@ -361,7 +345,7 @@ public class TestDetermineSemiJoinDistributionType
                         "output",
                         Optional.of(REPLICATED),
                         values(ImmutableMap.of("A1", 0)),
-                        filter(TRUE_LITERAL, values(ImmutableMap.of("B1", 0)))));
+                        filter(TRUE, values(ImmutableMap.of("B1", 0)))));
     }
 
     private RuleBuilder assertDetermineSemiJoinDistributionType()

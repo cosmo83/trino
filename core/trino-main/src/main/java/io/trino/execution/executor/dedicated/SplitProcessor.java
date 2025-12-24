@@ -59,10 +59,10 @@ class SplitProcessor
     {
         Span splitSpan = tracer.spanBuilder("split")
                 .setParent(Context.current().with(split.getPipelineSpan()))
-                .setAttribute(TrinoAttributes.QUERY_ID, taskId.getQueryId().toString())
-                .setAttribute(TrinoAttributes.STAGE_ID, taskId.getStageId().toString())
+                .setAttribute(TrinoAttributes.QUERY_ID, taskId.queryId().toString())
+                .setAttribute(TrinoAttributes.STAGE_ID, taskId.stageId().toString())
                 .setAttribute(TrinoAttributes.TASK_ID, taskId.toString())
-                .setAttribute(TrinoAttributes.PIPELINE_ID, taskId.getStageId() + "-" + split.getPipelineId())
+                .setAttribute(TrinoAttributes.PIPELINE_ID, taskId.stageId() + "-" + split.getPipelineId())
                 .setAttribute(TrinoAttributes.SPLIT_ID, taskId + "-" + splitId)
                 .startSpan();
 
@@ -71,37 +71,39 @@ class SplitProcessor
         CpuTimer timer = new CpuTimer(Ticker.systemTicker(), false);
         long previousCpuNanos = 0;
         long previousScheduledNanos = 0;
-        try (SetThreadName ignored = new SetThreadName("SplitRunner-%s-%s", taskId, splitId)) {
+        try (SetThreadName _ = new SetThreadName("SplitRunner-" + taskId + "-" + splitId)) {
             while (!split.isFinished()) {
-                ListenableFuture<Void> blocked = split.processFor(SPLIT_RUN_QUANTA);
-                CpuTimer.CpuDuration elapsed = timer.elapsedTime();
+                try (var ignored2 = processSpan.makeCurrent()) {
+                    ListenableFuture<Void> blocked = split.processFor(SPLIT_RUN_QUANTA);
+                    CpuTimer.CpuDuration elapsed = timer.elapsedTime();
 
-                long scheduledNanos = elapsed.getWall().roundTo(NANOSECONDS);
-                processSpan.setAttribute(TrinoAttributes.SPLIT_SCHEDULED_TIME_NANOS, scheduledNanos - previousScheduledNanos);
-                previousScheduledNanos = scheduledNanos;
+                    long scheduledNanos = elapsed.wall().roundTo(NANOSECONDS);
+                    processSpan.setAttribute(TrinoAttributes.SPLIT_SCHEDULED_TIME_NANOS, scheduledNanos - previousScheduledNanos);
+                    previousScheduledNanos = scheduledNanos;
 
-                long cpuNanos = elapsed.getCpu().roundTo(NANOSECONDS);
-                processSpan.setAttribute(TrinoAttributes.SPLIT_CPU_TIME_NANOS, cpuNanos - previousCpuNanos);
-                previousCpuNanos = cpuNanos;
+                    long cpuNanos = elapsed.cpu().roundTo(NANOSECONDS);
+                    processSpan.setAttribute(TrinoAttributes.SPLIT_CPU_TIME_NANOS, cpuNanos - previousCpuNanos);
+                    previousCpuNanos = cpuNanos;
 
-                if (!split.isFinished()) {
-                    if (blocked.isDone()) {
-                        processSpan.addEvent("yield");
-                        processSpan.end();
-                        if (!context.maybeYield()) {
-                            processSpan = null;
-                            return;
+                    if (!split.isFinished()) {
+                        if (blocked.isDone()) {
+                            processSpan.addEvent("yield");
+                            processSpan.end();
+                            if (!context.maybeYield()) {
+                                processSpan = null;
+                                return;
+                            }
                         }
-                    }
-                    else {
-                        processSpan.addEvent("blocked");
-                        processSpan.end();
-                        if (!context.block(blocked)) {
-                            processSpan = null;
-                            return;
+                        else {
+                            processSpan.addEvent("blocked");
+                            processSpan.end();
+                            if (!context.block(blocked)) {
+                                processSpan = null;
+                                return;
+                            }
                         }
+                        processSpan = newSpan(splitSpan, processSpan);
                     }
-                    processSpan = newSpan(splitSpan, processSpan);
                 }
             }
         }
@@ -113,7 +115,7 @@ class SplitProcessor
                 processSpan.end();
             }
 
-            splitSpan.setAttribute(TrinoAttributes.SPLIT_CPU_TIME_NANOS, timer.elapsedTime().getCpu().roundTo(NANOSECONDS));
+            splitSpan.setAttribute(TrinoAttributes.SPLIT_CPU_TIME_NANOS, timer.elapsedTime().cpu().roundTo(NANOSECONDS));
             splitSpan.setAttribute(TrinoAttributes.SPLIT_SCHEDULED_TIME_NANOS, context.getScheduledNanos());
             splitSpan.setAttribute(TrinoAttributes.SPLIT_BLOCK_TIME_NANOS, context.getBlockedNanos());
             splitSpan.setAttribute(TrinoAttributes.SPLIT_WAIT_TIME_NANOS, context.getWaitNanos());

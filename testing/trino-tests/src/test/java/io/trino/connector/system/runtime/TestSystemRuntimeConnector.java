@@ -78,6 +78,7 @@ public class TestSystemRuntimeConnector
         QueryRunner queryRunner = DistributedQueryRunner
                 .builder(defaultSession)
                 .enableBackupCoordinator()
+                .setWorkerCount(1)
                 .build();
         queryRunner.installPlugin(new Plugin()
         {
@@ -111,6 +112,13 @@ public class TestSystemRuntimeConnector
                         "('testversion', true, 'active')," +
                         "('testversion', true, 'active')," + // backup coordinator
                         "('testversion', false, 'active')");
+    }
+
+    @Test
+    void testOptimizerRuleStats()
+    {
+        assertThat(query("SELECT rule_name, invocations, matches, failures FROM system.runtime.optimizer_rule_stats"))
+                .result().hasTypes(ImmutableList.of(VARCHAR, BIGINT, BIGINT, BIGINT));
     }
 
     @Test
@@ -275,7 +283,7 @@ public class TestSystemRuntimeConnector
                 .collect(toOptional());
         assertThat(metadataFuture.isDone()).isFalse();
         assertThat(queryFuture.isDone()).isFalse();
-        assertThat(queryId.isPresent()).isTrue();
+        assertThat(queryId).isPresent();
 
         getQueryRunner().execute(format("CALL system.runtime.kill_query('%s', 'because')", queryId.get()));
         // Cancellation should happen within kill_query, but it still needs to be propagated to the thread performing analysis.
@@ -289,6 +297,13 @@ public class TestSystemRuntimeConnector
     {
         getQueryRunner().execute("SELECT 1");
         getQueryRunner().execute("SELECT * FROM system.runtime.tasks");
+    }
+
+    @Test
+    public void testNonExistentTable()
+    {
+        assertThat(query("SELECT * FROM system.runtime.non_existent_table"))
+                .failure().hasMessageContaining("Table 'system.runtime.non_existent_table' does not exist");
     }
 
     private static void run(int repetitions, double successRate, Runnable test)

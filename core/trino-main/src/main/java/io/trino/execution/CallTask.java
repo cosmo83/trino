@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.inject.Inject;
 import io.trino.Session;
+import io.trino.connector.CatalogHandle;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.ProcedureRegistry;
 import io.trino.metadata.QualifiedObjectName;
@@ -24,7 +25,6 @@ import io.trino.security.AccessControl;
 import io.trino.security.InjectedConnectorAccessControl;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.eventlistener.RoutineInfo;
@@ -103,7 +103,7 @@ public class CallTask
 
         Session session = stateMachine.getSession();
         QualifiedObjectName procedureName = createQualifiedObjectName(session, call, call.getName());
-        CatalogHandle catalogHandle = getRequiredCatalogHandle(plannerContext.getMetadata(), stateMachine.getSession(), call, procedureName.getCatalogName());
+        CatalogHandle catalogHandle = getRequiredCatalogHandle(plannerContext.getMetadata(), stateMachine.getSession(), call, procedureName.catalogName());
         Procedure procedure = procedureRegistry.resolve(catalogHandle, procedureName.asSchemaTableName());
 
         // map declared argument names to positions
@@ -166,7 +166,7 @@ public class CallTask
             Type type = argument.getType();
             Object value = evaluateConstant(expression, type, plannerContext, session, accessControl);
 
-            values[index] = toTypeObjectValue(session, type, value);
+            values[index] = toTypeObjectValue(type, value);
         }
 
         // fill values with optional arguments defaults
@@ -175,7 +175,7 @@ public class CallTask
 
             if (!names.containsKey(argument.getName())) {
                 verify(argument.isOptional());
-                values[i] = toTypeObjectValue(session, argument.getType(), argument.getDefaultValue());
+                values[i] = toTypeObjectValue(argument.getType(), argument.getDefaultValue());
             }
         }
 
@@ -196,7 +196,7 @@ public class CallTask
                 arguments.add(session.toConnectorSession(catalogHandle));
             }
             else if (ConnectorAccessControl.class.equals(type)) {
-                arguments.add(new InjectedConnectorAccessControl(accessControl, session.toSecurityContext(), procedureName.getCatalogName()));
+                arguments.add(new InjectedConnectorAccessControl(accessControl, session.toSecurityContext(), procedureName.catalogName()));
             }
             else {
                 arguments.add(valuesIterator.next());
@@ -204,7 +204,7 @@ public class CallTask
         }
 
         accessControl.checkCanExecuteProcedure(session.toSecurityContext(), procedureName);
-        stateMachine.setRoutines(ImmutableList.of(new RoutineInfo(procedureName.getObjectName(), session.getUser())));
+        stateMachine.setRoutines(ImmutableList.of(new RoutineInfo(procedureName.objectName(), session.getUser())));
 
         try {
             procedure.getMethodHandle().invokeWithArguments(arguments);
@@ -220,9 +220,9 @@ public class CallTask
         return immediateVoidFuture();
     }
 
-    private static Object toTypeObjectValue(Session session, Type type, Object value)
+    private static Object toTypeObjectValue(Type type, Object value)
     {
         Block block = writeNativeValue(type, value);
-        return type.getObjectValue(session.toConnectorSession(), block, 0);
+        return type.getObjectValue(block, 0);
     }
 }

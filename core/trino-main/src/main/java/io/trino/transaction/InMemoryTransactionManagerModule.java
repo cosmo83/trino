@@ -14,6 +14,7 @@
 package io.trino.transaction;
 
 import com.google.inject.Binder;
+import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Singleton;
@@ -23,9 +24,9 @@ import io.trino.spi.VersionEmbedder;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 
+import static io.airlift.bootstrap.ClosingBinder.closingBinder;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.configuration.ConfigBinder.configBinder;
-import static io.trino.plugin.base.ClosingBinder.closingBinder;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 
@@ -36,9 +37,8 @@ public class InMemoryTransactionManagerModule
     public void configure(Binder binder)
     {
         configBinder(binder).bindConfig(TransactionManagerConfig.class);
-        closingBinder(binder)
-                .registerExecutor(ExecutorService.class, ForTransactionManager.class)
-                .registerExecutor(ScheduledExecutorService.class, ForTransactionManager.class);
+        closingBinder(binder).registerExecutor(Key.get(ExecutorService.class, ForTransactionManager.class));
+        closingBinder(binder).registerExecutor(Key.get(ScheduledExecutorService.class, ForTransactionManager.class));
     }
 
     @Provides

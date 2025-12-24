@@ -273,13 +273,13 @@ public class JsonValueFunction
 
         Object item = getOnlyElement(pathResult);
         TypedValue typedValue;
-        if (item instanceof JsonNode) {
+        if (item instanceof JsonNode jsonNode) {
             if (item.equals(NullNode.instance)) {
                 return null;
             }
             Optional<TypedValue> itemValue;
             try {
-                itemValue = getTypedValue((JsonNode) item);
+                itemValue = getTypedValue(jsonNode);
             }
             catch (JsonLiteralConversionException e) {
                 return handleSpecialCase(errorBehavior, errorDefault, () -> new JsonValueResultException("JSON path found an item that cannot be converted to an SQL value", e));
@@ -318,14 +318,10 @@ public class JsonValueFunction
 
     private static Object handleSpecialCase(long behavior, Object defaultValue, Supplier<TrinoException> error)
     {
-        switch (EmptyOrErrorBehavior.values()[(int) behavior]) {
-            case NULL:
-                return null;
-            case ERROR:
-                throw error.get();
-            case DEFAULT:
-                return defaultValue;
-        }
-        throw new IllegalStateException("unexpected behavior");
+        return switch (EmptyOrErrorBehavior.values()[(int) behavior]) {
+            case NULL -> null;
+            case ERROR -> throw error.get();
+            case DEFAULT -> defaultValue;
+        };
     }
 }

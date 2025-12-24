@@ -26,6 +26,7 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.RecordCursor;
 import io.trino.spi.connector.RecordSet;
+import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.MapType;
 import io.trino.spi.type.Type;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -122,7 +123,7 @@ public class KafkaRecordSet
             topicPartition = new TopicPartition(split.getTopicName(), split.getPartitionId());
             kafkaConsumer = consumerFactory.create(connectorSession);
             kafkaConsumer.assign(ImmutableList.of(topicPartition));
-            kafkaConsumer.seek(topicPartition, split.getMessagesRange().getBegin());
+            kafkaConsumer.seek(topicPartition, split.getMessagesRange().begin());
         }
 
         @Override
@@ -150,7 +151,7 @@ public class KafkaRecordSet
             if (records.hasNext()) {
                 return nextRow(records.next());
             }
-            if (kafkaConsumer.position(topicPartition) >= split.getMessagesRange().getEnd()) {
+            if (kafkaConsumer.position(topicPartition) >= split.getMessagesRange().end()) {
                 return false;
             }
             records = kafkaConsumer.poll(Duration.ofMillis(CONSUMER_POLL_TIMEOUT)).iterator();
@@ -161,7 +162,7 @@ public class KafkaRecordSet
         {
             requireNonNull(message, "message is null");
 
-            if (message.offset() >= split.getMessagesRange().getEnd()) {
+            if (message.offset() >= split.getMessagesRange().end()) {
                 return false;
             }
 
@@ -265,9 +266,9 @@ public class KafkaRecordSet
 
     public static FieldValueProvider headerMapValueProvider(MapType varcharMapType, Headers headers)
     {
-        Type keyType = varcharMapType.getTypeParameters().get(0);
-        Type valueArrayType = varcharMapType.getTypeParameters().get(1);
-        Type valueType = valueArrayType.getTypeParameters().get(0);
+        Type keyType = varcharMapType.getKeyType();
+        ArrayType valueArrayType = (ArrayType) varcharMapType.getValueType();
+        Type valueType = valueArrayType.getElementType();
 
         // Group by keys and collect values as array.
         Multimap<String, byte[]> headerMap = ArrayListMultimap.create();

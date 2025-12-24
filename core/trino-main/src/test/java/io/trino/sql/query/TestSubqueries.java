@@ -20,10 +20,10 @@ import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TestingFunctionResolution;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.spi.function.OperatorType;
-import io.trino.sql.ir.ArithmeticBinaryExpression;
+import io.trino.sql.ir.Call;
 import io.trino.sql.ir.Cast;
 import io.trino.sql.ir.Constant;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.plan.JoinNode;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.StandaloneQueryRunner;
@@ -35,16 +35,13 @@ import org.junit.jupiter.api.parallel.Execution;
 import java.util.List;
 import java.util.Optional;
 
-import static io.trino.plugin.tpch.TpchConnectorFactory.TPCH_SPLITS_PER_NODE;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.spi.type.DecimalType.createDecimalType;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RowType.field;
 import static io.trino.spi.type.RowType.rowType;
 import static io.trino.spi.type.VarcharType.createVarcharType;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.MULTIPLY;
-import static io.trino.sql.ir.ArithmeticBinaryExpression.Operator.SUBTRACT;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregation;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregationFunction;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.any;
@@ -88,7 +85,7 @@ public class TestSubqueries
 
         QueryRunner runner = new StandaloneQueryRunner(session);
         runner.installPlugin(new TpchPlugin());
-        runner.createCatalog(TEST_CATALOG_NAME, "tpch", ImmutableMap.of(TPCH_SPLITS_PER_NODE, "1"));
+        runner.createCatalog(TEST_CATALOG_NAME, "tpch", ImmutableMap.of("tpch.splits-per-node", "1"));
 
         assertions = new QueryAssertions(runner);
     }
@@ -107,13 +104,13 @@ public class TestSubqueries
                 "VALUES true",
                 anyTree(
                         aggregation(
-                                ImmutableMap.of("COUNT", aggregationFunction("count", ImmutableList.of())),
+                                ImmutableMap.of("AGGRBOOL", aggregationFunction("bool_or", ImmutableList.of("SUBQUERY"))),
                                 aggregation -> aggregation.isStreamable() && aggregation.getStep() == SINGLE,
                                 node(JoinNode.class,
                                         anyTree(
                                                 values("y")),
                                         project(
-                                                ImmutableMap.of("NON_NULL", expression(TRUE_LITERAL)),
+                                                ImmutableMap.of("SUBQUERY", expression(TRUE)),
                                                 values("x"))))));
 
         assertions.assertQueryAndPlan(
@@ -121,13 +118,13 @@ public class TestSubqueries
                 "VALUES false",
                 anyTree(
                         aggregation(
-                                ImmutableMap.of("COUNT", aggregationFunction("count", ImmutableList.of())),
+                                ImmutableMap.of("AGGRBOOL", aggregationFunction("bool_or", ImmutableList.of("SUBQUERY"))),
                                 aggregation -> aggregation.isStreamable() && aggregation.getStep() == SINGLE,
                                 node(JoinNode.class,
                                         anyTree(
                                                 values("y")),
                                         project(
-                                                ImmutableMap.of("NON_NULL", expression(TRUE_LITERAL)),
+                                                ImmutableMap.of("SUBQUERY", expression(TRUE)),
                                                 values("x"))))));
     }
 
@@ -223,13 +220,13 @@ public class TestSubqueries
                                 .equiCriteria("cast_b", "cast_a")
                                 .left(
                                         project(
-                                                ImmutableMap.of("cast_b", expression(new Cast(new SymbolReference(INTEGER, "b"), createDecimalType(11, 1)))),
+                                                ImmutableMap.of("cast_b", expression(new Cast(new Reference(INTEGER, "b"), createDecimalType(11, 1)))),
                                                 any(
                                                         values("b"))))
                                 .right(
                                         anyTree(
                                                 project(
-                                                        ImmutableMap.of("cast_a", expression(new Cast(new SymbolReference(INTEGER, "a"), createDecimalType(11, 1)))),
+                                                        ImmutableMap.of("cast_a", expression(new Cast(new Reference(INTEGER, "a"), createDecimalType(11, 1)))),
                                                         any(
                                                                 rowNumber(
                                                                         rowBuilder -> rowBuilder
@@ -247,7 +244,7 @@ public class TestSubqueries
                                 .equiCriteria("expr", "a")
                                 .left(
                                         project(
-                                                ImmutableMap.of("expr", expression(new ArithmeticBinaryExpression(SUBTRACT_INTEGER, SUBTRACT, new ArithmeticBinaryExpression(MULTIPLY_INTEGER, MULTIPLY, new SymbolReference(INTEGER, "b"), new SymbolReference(INTEGER, "c")), new Constant(INTEGER, 1L)))),
+                                                ImmutableMap.of("expr", expression(new Call(SUBTRACT_INTEGER, ImmutableList.of(new Call(MULTIPLY_INTEGER, ImmutableList.of(new Reference(INTEGER, "b"), new Reference(INTEGER, "c"))), new Constant(INTEGER, 1L))))),
                                                 any(
                                                         values("b", "c"))))
                                 .right(
@@ -320,8 +317,7 @@ public class TestSubqueries
                                         aggregation(ImmutableMap.of(), FINAL,
                                                 anyTree(
                                                         aggregation(ImmutableMap.of(), PARTIAL,
-                                                                anyTree(
-                                                                        values("a")))))))));
+                                                                values("a"))))))));
 
         assertThat(assertions.query(
                 "SELECT (SELECT count(*) FROM (VALUES 1, 1, 3) t(a) WHERE t.a=t2.b LIMIT 1) FROM (VALUES 1) t2(b)"))
@@ -338,8 +334,7 @@ public class TestSubqueries
                                         aggregation(ImmutableMap.of(), FINAL,
                                                 anyTree(
                                                         aggregation(ImmutableMap.of(), PARTIAL,
-                                                                anyTree(
-                                                                        values("u_x", "u_cid")))))))));
+                                                                values("u_cid"))))))));
 
         assertThat(assertions.query(
                 "SELECT (SELECT t.a FROM (VALUES 1, 2, 3) t(a) WHERE t.a = t2.b ORDER BY a FETCH FIRST ROW WITH TIES) FROM (VALUES 1) t2(b)"))
@@ -490,8 +485,7 @@ public class TestSubqueries
                                         aggregation(ImmutableMap.of(), FINAL,
                                                 anyTree(
                                                         aggregation(ImmutableMap.of(), PARTIAL,
-                                                                anyTree(
-                                                                        values("a")))))))));
+                                                                values("a"))))))));
 
         assertions.assertQueryAndPlan(
                 "SELECT EXISTS(SELECT 1 FROM (VALUES (1, 2), (1, 2), (null, null), (3, 3)) t(a, b) WHERE t.a=t2.b GROUP BY t.a, t.b) FROM (VALUES 1, 2) t2(b)",
@@ -508,22 +502,21 @@ public class TestSubqueries
                                                                         aggregation(ImmutableMap.of(), FINAL,
                                                                                 anyTree(
                                                                                         aggregation(ImmutableMap.of(), PARTIAL,
-                                                                                                anyTree(
-                                                                                                        values("t_a", "t_b")))))))))))));
+                                                                                                values("t_a", "t_b"))))))))))));
 
         assertions.assertQueryAndPlan(
                 "SELECT EXISTS(SELECT 1 FROM (VALUES (1, 2), (1, 2), (null, null), (3, 3)) t(a, b) WHERE t.a<t2.b GROUP BY t.a, t.b) FROM (VALUES 1, 2) t2(b)",
                 "VALUES false, true",
                 anyTree(
                         aggregation(
-                                ImmutableMap.of("COUNT", aggregationFunction("count", ImmutableList.of())),
+                                ImmutableMap.of("AGGRBOOL", aggregationFunction("bool_or", ImmutableList.of("SUBQUERYTRUE"))),
                                 aggregation -> aggregation.isStreamable() && aggregation.getStep() == SINGLE,
                                 node(JoinNode.class,
                                         anyTree(
                                                 values("t2_b")),
                                         anyTree(
                                                 project(
-                                                        ImmutableMap.of("NON_NULL", expression(TRUE_LITERAL)),
+                                                        ImmutableMap.of("SUBQUERYTRUE", expression(TRUE)),
                                                         anyTree(
                                                                 aggregation(
                                                                         ImmutableMap.of(),
@@ -541,14 +534,14 @@ public class TestSubqueries
                 "VALUES false, true",
                 anyTree(
                         aggregation(
-                                ImmutableMap.of("COUNT", aggregationFunction("count", ImmutableList.of())),
+                                ImmutableMap.of("AGGRBOOL", aggregationFunction("bool_or", ImmutableList.of("SUBQUERY"))),
                                 aggregation -> aggregation.isStreamable() && aggregation.getStep() == SINGLE,
                                 node(JoinNode.class,
                                         anyTree(
                                                 values("t2_b")),
                                         anyTree(
                                                 project(
-                                                        ImmutableMap.of("NON_NULL", expression(TRUE_LITERAL)),
+                                                        ImmutableMap.of("SUBQUERY", expression(TRUE)),
                                                         aggregation(
                                                                 ImmutableMap.of(),
                                                                 FINAL,
@@ -570,8 +563,7 @@ public class TestSubqueries
                                                                         aggregation(ImmutableMap.of(), FINAL,
                                                                                 anyTree(
                                                                                         aggregation(ImmutableMap.of(), PARTIAL,
-                                                                                                anyTree(
-                                                                                                        values("t_a", "t_b")))))))))))));
+                                                                                                values("t_a", "t_b"))))))))))));
 
         assertions.assertQueryAndPlan(
                 "SELECT EXISTS(SELECT * FROM (VALUES 1, 1, 2, 3) t(a) WHERE t.a=t2.b GROUP BY t.a HAVING count(*) > 1) FROM (VALUES 1, 2) t2(b)",
@@ -584,8 +576,7 @@ public class TestSubqueries
                                         aggregation(ImmutableMap.of(), FINAL,
                                                 anyTree(
                                                         aggregation(ImmutableMap.of(), PARTIAL,
-                                                                anyTree(
-                                                                        values("a")))))))));
+                                                                values("a"))))))));
 
         assertThat(assertions.query(
                 "SELECT EXISTS(SELECT * FROM (SELECT t.a FROM (VALUES (1, 1), (1, 1), (1, 2), (1, 2), (3, 3)) t(a, b) WHERE t.b=t2.b GROUP BY t.a HAVING count(*) > 1) t WHERE t.a=t2.b)" +
@@ -603,8 +594,7 @@ public class TestSubqueries
                                         aggregation(ImmutableMap.of(), FINAL,
                                                 anyTree(
                                                         aggregation(ImmutableMap.of(), PARTIAL,
-                                                                anyTree(
-                                                                        values("a")))))))));
+                                                                values("a"))))))));
     }
 
     @Test

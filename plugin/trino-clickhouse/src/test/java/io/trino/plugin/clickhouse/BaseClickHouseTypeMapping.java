@@ -40,7 +40,10 @@ import java.util.function.Function;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static io.trino.plugin.clickhouse.ClickHouseQueryRunner.TPCH_SCHEMA;
+import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
+import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DecimalType.createDecimalType;
 import static io.trino.spi.type.DoubleType.DOUBLE;
@@ -56,37 +59,40 @@ import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static io.trino.type.IpAddressType.IPADDRESS;
 import static java.lang.String.format;
-import static java.time.ZoneOffset.UTC;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
 @TestInstance(PER_CLASS)
 public abstract class BaseClickHouseTypeMapping
         extends AbstractTestQueryFramework
 {
-    private final ZoneId jvmZone = ZoneId.systemDefault();
-
+    private static final ZoneId UTC = ZoneId.of("UTC");
+    private static final ZoneId JVM_ZONE = ZoneId.systemDefault();
     // no DST in 1970, but has DST in later years (e.g. 2018)
-    private final ZoneId vilnius = ZoneId.of("Europe/Vilnius");
+    private static final ZoneId VILNIUS = ZoneId.of("Europe/Vilnius");
+    // minutes offset change since 1932-04-01, no DST
+    private static final ZoneId KATHMANDU = ZoneId.of("Asia/Kathmandu");
+    private static final Function<ZoneId, String> DATETIME_TYPE_FACTORY = "DateTime('%s')"::formatted;
 
-    // minutes offset change since 1970-01-01, no DST
-    private final ZoneId kathmandu = ZoneId.of("Asia/Kathmandu");
+    // https://clickhouse.com/docs/sql-reference/data-types/datetime
+    private static final String MIN_SUPPORTED_DATETIME_VALUE = "1970-01-01 00:00:00";
+    private static final String MAX_SUPPORTED_DATETIME_VALUE = "2106-02-07 06:28:15";
 
     protected TestingClickHouseServer clickhouseServer;
 
     @BeforeAll
     public void setUp()
     {
-        checkState(jvmZone.getId().equals("America/Bahia_Banderas"), "This test assumes certain JVM time zone");
-        LocalDate dateOfLocalTimeChangeForwardAtMidnightInJvmZone = LocalDate.of(1970, 1, 1);
-        checkIsGap(jvmZone, dateOfLocalTimeChangeForwardAtMidnightInJvmZone.atStartOfDay());
+        checkState(JVM_ZONE.getId().equals("America/Bahia_Banderas"), "This test assumes certain JVM time zone");
+        LocalDate dateOfLocalTimeChangeForwardAtMidnightInJvmZone = LocalDate.of(1932, 4, 1);
+        checkIsGap(JVM_ZONE, dateOfLocalTimeChangeForwardAtMidnightInJvmZone.atStartOfDay());
 
         LocalDate dateOfLocalTimeChangeForwardAtMidnightInSomeZone = LocalDate.of(1983, 4, 1);
-        checkIsGap(vilnius, dateOfLocalTimeChangeForwardAtMidnightInSomeZone.atStartOfDay());
+        checkIsGap(VILNIUS, dateOfLocalTimeChangeForwardAtMidnightInSomeZone.atStartOfDay());
         LocalDate dateOfLocalTimeChangeBackwardAtMidnightInSomeZone = LocalDate.of(1983, 10, 1);
-        checkIsDoubled(vilnius, dateOfLocalTimeChangeBackwardAtMidnightInSomeZone.atStartOfDay().minusMinutes(1));
+        checkIsDoubled(VILNIUS, dateOfLocalTimeChangeBackwardAtMidnightInSomeZone.atStartOfDay().minusMinutes(1));
 
         LocalDate timeGapInKathmandu = LocalDate.of(1986, 1, 1);
-        checkIsGap(kathmandu, timeGapInKathmandu.atStartOfDay());
+        checkIsGap(KATHMANDU, timeGapInKathmandu.atStartOfDay());
     }
 
     private static void checkIsGap(ZoneId zone, LocalDateTime dateTime)
@@ -102,6 +108,28 @@ public abstract class BaseClickHouseTypeMapping
     private static void checkIsDoubled(ZoneId zone, LocalDateTime dateTime)
     {
         verify(zone.getRules().getValidOffsets(dateTime).size() == 2, "Expected %s to be doubled in %s", dateTime, zone);
+    }
+
+    @Test
+    public void testTrinoBoolean()
+    {
+        SqlDataTypeTest.create()
+                .addRoundTrip("boolean", "true", BOOLEAN, "true")
+                .addRoundTrip("boolean", "false", BOOLEAN, "false")
+                .addRoundTrip("boolean", "NULL", BOOLEAN, "CAST(NULL AS BOOLEAN)")
+                .execute(getQueryRunner(), trinoCreateAsSelect("test_boolean"))
+                .execute(getQueryRunner(), trinoCreateAndInsert("test_boolean"));
+    }
+
+    @Test
+    public void testBool()
+    {
+        SqlDataTypeTest.create()
+                .addRoundTrip("bool", "true", BOOLEAN, "true")
+                .addRoundTrip("bool", "false", BOOLEAN, "false")
+                .addRoundTrip("Nullable(bool)", "NULL", BOOLEAN, "CAST(NULL AS BOOLEAN)")
+                .execute(getQueryRunner(), clickhouseCreateAndInsert("tpch.test_boolean"))
+                .execute(getQueryRunner(), clickhouseCreateAndTrinoInsert("tpch.test_boolean"));
     }
 
     @Test
@@ -390,15 +418,23 @@ public abstract class BaseClickHouseTypeMapping
         SqlDataTypeTest.create()
                 .addRoundTrip("double", "3.1415926835", DOUBLE, "DOUBLE '3.1415926835'")
                 .addRoundTrip("double", "1.79769E308", DOUBLE, "DOUBLE '1.79769E308'")
-                .addRoundTrip("double", "2.225E-307", DOUBLE, "DOUBLE '2.225E-307'")
+
+                // https://github.com/ClickHouse/ClickHouse/issues/60146
+                // .addRoundTrip("double", "2.225E-307", DOUBLE, "DOUBLE '2.225E-307'")
 
                 .execute(getQueryRunner(), clickhouseCreateAndInsert("tpch.test_double"))
 
+                .addRoundTrip("double", "nan()", DOUBLE, "CAST(nan() AS DOUBLE)")
+                .addRoundTrip("double", "-infinity()", DOUBLE, "CAST(-infinity() AS DOUBLE)")
+                .addRoundTrip("double", "+infinity()", DOUBLE, "CAST(+infinity() AS DOUBLE)")
                 .addRoundTrip("double", "NULL", DOUBLE, "CAST(NULL AS DOUBLE)")
 
                 .execute(getQueryRunner(), trinoCreateAsSelect("trino_test_double"));
 
         SqlDataTypeTest.create()
+                .addRoundTrip("double", "nan", DOUBLE, "CAST(nan() AS DOUBLE)")
+                .addRoundTrip("double", "-inf", DOUBLE, "CAST(-infinity() AS DOUBLE)")
+                .addRoundTrip("double", "+inf", DOUBLE, "CAST(+infinity() AS DOUBLE)")
                 .addRoundTrip("Nullable(double)", "NULL", DOUBLE, "CAST(NULL AS DOUBLE)")
                 .execute(getQueryRunner(), clickhouseCreateAndInsert("tpch.trino_test_nullable_double"));
     }
@@ -440,8 +476,8 @@ public abstract class BaseClickHouseTypeMapping
     @Test
     public void testClickHouseChar()
     {
-        // ClickHouse char is FixedString, which is arbitrary bytes
-        SqlDataTypeTest.create()
+        // ClickHouse char is String, which is arbitrary bytes
+        textAsBinaryRoundTripTest("char(255)")
                 // plain
                 .addRoundTrip("char(10)", "'text_a'", VARBINARY, "to_utf8('text_a')")
                 .addRoundTrip("char(255)", "'text_b'", VARBINARY, "to_utf8('text_b')")
@@ -453,6 +489,18 @@ public abstract class BaseClickHouseTypeMapping
                 .addRoundTrip("Nullable(char(10))", "NULL", VARBINARY, "CAST(NULL AS varbinary)")
                 .addRoundTrip("Nullable(char(10))", "'text_a'", VARBINARY, "to_utf8('text_a')")
                 .addRoundTrip("Nullable(char(1))", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("Nullable(char(255))", "''", VARBINARY, "X''")
+                // low-cardinality
+                .addRoundTrip("LowCardinality(char(10))", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("LowCardinality(char(255))", "'text_b'", VARBINARY, "to_utf8('text_b')")
+                .addRoundTrip("LowCardinality(char(5))", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("LowCardinality(char(32))", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("LowCardinality(char(1))", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("LowCardinality(char(77))", "'Ну, погоди!'", VARBINARY, "to_utf8('Ну, погоди!')")
+                // low-cardinality nullable
+                .addRoundTrip("LowCardinality(Nullable(char(10)))", "NULL", VARBINARY, "CAST(NULL AS varbinary)")
+                .addRoundTrip("LowCardinality(Nullable(char(10)))", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("LowCardinality(Nullable(char(1)))", "'😂'", VARBINARY, "to_utf8('😂')")
                 .execute(getQueryRunner(), clickhouseCreateAndInsert("tpch.test_char"));
 
         // Set map_string_as_varchar session property as true
@@ -468,6 +516,17 @@ public abstract class BaseClickHouseTypeMapping
                 .addRoundTrip("Nullable(char(10))", "NULL", VARCHAR, "CAST(NULL AS varchar)")
                 .addRoundTrip("Nullable(char(10))", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
                 .addRoundTrip("Nullable(char(1))", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                // low-cardinality
+                .addRoundTrip("LowCardinality(char(10))", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("LowCardinality(char(255))", "'text_b'", VARCHAR, "CAST('text_b' AS varchar)")
+                .addRoundTrip("LowCardinality(char(5))", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("LowCardinality(char(32))", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("LowCardinality(char(1))", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                .addRoundTrip("LowCardinality(char(77))", "'Ну, погоди!'", VARCHAR, "CAST('Ну, погоди!' AS varchar)")
+                // low-cardinality nullable
+                .addRoundTrip("LowCardinality(Nullable(char(10)))", "NULL", VARCHAR, "CAST(NULL AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(char(10)))", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(char(1)))", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
                 .execute(getQueryRunner(), mapStringAsVarcharSession(), clickhouseCreateAndInsert("tpch.test_char"));
     }
 
@@ -478,10 +537,22 @@ public abstract class BaseClickHouseTypeMapping
                 // plain
                 .addRoundTrip("FixedString(10)", "'c12345678b'", VARBINARY, "to_utf8('c12345678b')")
                 .addRoundTrip("FixedString(10)", "'c123'", VARBINARY, "to_utf8('c123\0\0\0\0\0\0')")
+                .addRoundTrip("FixedString(10)", "'\\x68\\x65\\x6C\\x6C\\x6F'", VARBINARY, "to_utf8('hello\0\0\0\0\0')")
+                .addRoundTrip("FixedString(10)", "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARBINARY, "X'00000000000000000000'")
                 // nullable
                 .addRoundTrip("Nullable(FixedString(10))", "NULL", VARBINARY, "CAST(NULL AS varbinary)")
                 .addRoundTrip("Nullable(FixedString(10))", "'c12345678b'", VARBINARY, "to_utf8('c12345678b')")
                 .addRoundTrip("Nullable(FixedString(10))", "'c123'", VARBINARY, "to_utf8('c123\0\0\0\0\0\0')")
+                .addRoundTrip("Nullable(FixedString(10))", "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARBINARY, "X'00000000000000000000'")
+                // low-cardinality
+                .addRoundTrip("LowCardinality(FixedString(10))", "'c12345678b'", VARBINARY, "to_utf8('c12345678b')")
+                .addRoundTrip("LowCardinality(FixedString(10))", "'c123'", VARBINARY, "to_utf8('c123\0\0\0\0\0\0')")
+                .addRoundTrip("LowCardinality(FixedString(10))", "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARBINARY, "X'00000000000000000000'")
+                // low-cardinality nullable
+                .addRoundTrip("LowCardinality(Nullable(FixedString(10)))", "NULL", VARBINARY, "CAST(NULL AS varbinary)")
+                .addRoundTrip("LowCardinality(Nullable(FixedString(10)))", "'c12345678b'", VARBINARY, "to_utf8('c12345678b')")
+                .addRoundTrip("LowCardinality(Nullable(FixedString(10)))", "'c123'", VARBINARY, "to_utf8('c123\0\0\0\0\0\0')")
+                .addRoundTrip("LowCardinality(Nullable(FixedString(10)))", "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARBINARY, "X'00000000000000000000'")
                 .execute(getQueryRunner(), clickhouseCreateAndInsert("tpch.test_fixed_string"));
 
         // Set map_string_as_varchar session property as true
@@ -489,10 +560,25 @@ public abstract class BaseClickHouseTypeMapping
                 // plain
                 .addRoundTrip("FixedString(10)", "'c12345678b'", VARCHAR, "CAST('c12345678b' AS varchar)")
                 .addRoundTrip("FixedString(10)", "'c123'", VARCHAR, "CAST('c123\0\0\0\0\0\0' AS varchar)")
+                .addRoundTrip("FixedString(10)", "'\\x68\\x65\\x6C\\x6C\\x6F'", VARCHAR, "CAST('hello\0\0\0\0\0' as varchar)")
+                .addRoundTrip("FixedString(10)", "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARCHAR, "CAST('\0\0\0\0\0\0\0\0\0\0' as varchar)")
                 // nullable
                 .addRoundTrip("Nullable(FixedString(10))", "NULL", VARCHAR, "CAST(NULL AS varchar)")
                 .addRoundTrip("Nullable(FixedString(10))", "'c12345678b'", VARCHAR, "CAST('c12345678b' AS varchar)")
                 .addRoundTrip("Nullable(FixedString(10))", "'c123'", VARCHAR, "CAST('c123\0\0\0\0\0\0' AS varchar)")
+                .addRoundTrip("Nullable(FixedString(10))", "'\\x68\\x65\\x6C\\x6C\\x6F'", VARCHAR, "CAST('hello\0\0\0\0\0' as varchar)")
+                .addRoundTrip("Nullable(FixedString(10))", "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARCHAR, "CAST('\0\0\0\0\0\0\0\0\0\0' as varchar)")
+                // low-cardinality
+                .addRoundTrip("LowCardinality(FixedString(10))", "'c12345678b'", VARCHAR, "CAST('c12345678b' AS varchar)")
+                .addRoundTrip("LowCardinality(FixedString(10))", "'c123'", VARCHAR, "CAST('c123\0\0\0\0\0\0' AS varchar)")
+                .addRoundTrip("LowCardinality(FixedString(10))", "'\\x68\\x65\\x6C\\x6C\\x6F'", VARCHAR, "CAST('hello\0\0\0\0\0' as varchar)")
+                .addRoundTrip("LowCardinality(FixedString(10))", "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARCHAR, "CAST('\0\0\0\0\0\0\0\0\0\0' as varchar)")
+                // low-cardinality nullable
+                .addRoundTrip("LowCardinality(Nullable(FixedString(10)))", "NULL", VARCHAR, "CAST(NULL AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(FixedString(10)))", "'c12345678b'", VARCHAR, "CAST('c12345678b' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(FixedString(10)))", "'c123'", VARCHAR, "CAST('c123\0\0\0\0\0\0' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(FixedString(10)))", "'\\x68\\x65\\x6C\\x6C\\x6F'", VARCHAR, "CAST('hello\0\0\0\0\0' as varchar)")
+                .addRoundTrip("LowCardinality(Nullable(FixedString(10)))", "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARCHAR, "CAST('\0\0\0\0\0\0\0\0\0\0' as varchar)")
                 .execute(getQueryRunner(), mapStringAsVarcharSession(), clickhouseCreateAndInsert("tpch.test_fixed_string"));
     }
 
@@ -526,24 +612,114 @@ public abstract class BaseClickHouseTypeMapping
     @Test
     public void testClickHouseVarchar()
     {
-        // TODO add more test cases
         // ClickHouse varchar is String, which is arbitrary bytes
-        SqlDataTypeTest.create()
+        textAsBinaryRoundTripTest("varchar(255)")
                 // plain
                 .addRoundTrip("varchar(30)", "'Piękna łąka w 東京都'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip("varchar(10)", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("varchar(255)", "'text_b'", VARBINARY, "to_utf8('text_b')")
+                .addRoundTrip("varchar(5)", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("varchar(32)", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("varchar(1)", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("varchar(77)", "'Ну, погоди!'", VARBINARY, "to_utf8('Ну, погоди!')")
                 // nullable
                 .addRoundTrip("Nullable(varchar(30))", "NULL", VARBINARY, "CAST(NULL AS varbinary)")
                 .addRoundTrip("Nullable(varchar(30))", "'Piękna łąka w 東京都'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip("Nullable(varchar(10))", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("Nullable(varchar(255))", "'text_b'", VARBINARY, "to_utf8('text_b')")
+                .addRoundTrip("Nullable(varchar(5))", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("Nullable(varchar(32))", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("Nullable(varchar(1))", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("Nullable(varchar(77))", "'Ну, погоди!'", VARBINARY, "to_utf8('Ну, погоди!')")
+                // low-cardinality
+                .addRoundTrip("LowCardinality(varchar(30))", "'Piękna łąka w 東京都'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip("LowCardinality(varchar(10))", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("LowCardinality(varchar(255))", "'text_b'", VARBINARY, "to_utf8('text_b')")
+                .addRoundTrip("LowCardinality(varchar(5))", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("LowCardinality(varchar(32))", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("LowCardinality(varchar(1))", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("LowCardinality(varchar(77))", "'Ну, погоди!'", VARBINARY, "to_utf8('Ну, погоди!')")
+                // low-cardinality nullable
+                .addRoundTrip("LowCardinality(Nullable(varchar(30)))", "NULL", VARBINARY, "CAST(NULL AS varbinary)")
+                .addRoundTrip("LowCardinality(Nullable(varchar(30)))", "'Piękna łąka w 東京都'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip("LowCardinality(Nullable(varchar(10)))", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("LowCardinality(Nullable(varchar(255)))", "'text_b'", VARBINARY, "to_utf8('text_b')")
+                .addRoundTrip("LowCardinality(Nullable(varchar(5)))", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("LowCardinality(Nullable(varchar(32)))", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("LowCardinality(Nullable(varchar(1)))", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("LowCardinality(Nullable(varchar(77)))", "'Ну, погоди!'", VARBINARY, "to_utf8('Ну, погоди!')")
                 .execute(getQueryRunner(), clickhouseCreateAndInsert("tpch.test_varchar"));
 
         // Set map_string_as_varchar session property as true
         SqlDataTypeTest.create()
                 // plain
                 .addRoundTrip("varchar(30)", "'Piękna łąka w 東京都'", VARCHAR, "CAST('Piękna łąka w 東京都' AS varchar)")
+                .addRoundTrip("varchar(10)", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("varchar(255)", "'text_b'", VARCHAR, "CAST('text_b' AS varchar)")
+                .addRoundTrip("varchar(5)", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("varchar(32)", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("varchar(1)", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                .addRoundTrip("varchar(77)", "'Ну, погоди!'", VARCHAR, "CAST('Ну, погоди!' AS varchar)")
                 // nullable
                 .addRoundTrip("Nullable(varchar(30))", "NULL", VARCHAR, "CAST(NULL AS varchar)")
                 .addRoundTrip("Nullable(varchar(30))", "'Piękna łąka w 東京都'", VARCHAR, "CAST('Piękna łąka w 東京都' AS varchar)")
+                .addRoundTrip("Nullable(varchar(10))", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("Nullable(varchar(255))", "'text_b'", VARCHAR, "CAST('text_b' AS varchar)")
+                .addRoundTrip("Nullable(varchar(5))", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("Nullable(varchar(32))", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("Nullable(varchar(1))", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                .addRoundTrip("Nullable(varchar(77))", "'Ну, погоди!'", VARCHAR, "CAST('Ну, погоди!' AS varchar)")
+                // low-cardinality
+                .addRoundTrip("LowCardinality(varchar(30))", "'Piękna łąka w 東京都'", VARCHAR, "CAST('Piękna łąka w 東京都' AS varchar)")
+                .addRoundTrip("LowCardinality(varchar(10))", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("LowCardinality(varchar(255))", "'text_b'", VARCHAR, "CAST('text_b' AS varchar)")
+                .addRoundTrip("LowCardinality(varchar(5))", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("LowCardinality(varchar(32))", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("LowCardinality(varchar(1))", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                .addRoundTrip("LowCardinality(varchar(77))", "'Ну, погоди!'", VARCHAR, "CAST('Ну, погоди!' AS varchar)")
+                // low-cardinality nullable
+                .addRoundTrip("LowCardinality(Nullable(varchar(30)))", "NULL", VARCHAR, "CAST(NULL AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(varchar(30)))", "'Piękna łąka w 東京都'", VARCHAR, "CAST('Piękna łąka w 東京都' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(varchar(10)))", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(varchar(255)))", "'text_b'", VARCHAR, "CAST('text_b' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(varchar(5)))", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(varchar(32)))", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(varchar(1)))", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(varchar(77)))", "'Ну, погоди!'", VARCHAR, "CAST('Ну, погоди!' AS varchar)")
                 .execute(getQueryRunner(), mapStringAsVarcharSession(), clickhouseCreateAndInsert("tpch.test_varchar"));
+    }
+
+    private static SqlDataTypeTest textAsBinaryRoundTripTest(String inputType)
+    {
+        String nullInputType = format("Nullable(%s)", inputType);
+        String lowCardInputType = format("LowCardinality(%s)", inputType);
+        String nullLowCardInputType = format("LowCardinality(Nullable(%s))", inputType);
+
+        return SqlDataTypeTest.create()
+                .addRoundTrip(inputType, "''", VARBINARY, "X''")
+                .addRoundTrip(inputType, "'\\x68\\x65\\x6C\\x6C\\x6F'", VARBINARY, "to_utf8('hello')")
+                .addRoundTrip(inputType, "'\\x50\\x69\\xC4\\x99\\x6B\\x6E\\x61\\x20\\xC5\\x82\\xC4\\x85\\x6B\\x61\\x20\\x77\\x20\\xE6\\x9D\\xB1\\xE4\\xBA\\xAC\\xE9\\x83\\xBD'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip(inputType, "'\\x42\\x61\\x67\\x20\\x66\\x75\\x6C\\x6C\\x20\\x6F\\x66\\x20\\xF0\\x9F\\x92\\xB0'", VARBINARY, "to_utf8('Bag full of 💰')")
+                .addRoundTrip(inputType, "'\\x00\\x01\\x02\\x03\\x04\\x05\\x06\\x07\\x08\\x0D\\xF9\\x36\\x7A\\xA7\\x00\\x00\\x00'", VARBINARY, "X'0001020304050607080DF9367AA7000000'") // non-text
+                .addRoundTrip(inputType, "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARBINARY, "X'000000000000'")
+                .addRoundTrip(nullInputType, "''", VARBINARY, "X''")
+                .addRoundTrip(nullInputType, "'\\x68\\x65\\x6C\\x6C\\x6F'", VARBINARY, "to_utf8('hello')")
+                .addRoundTrip(nullInputType, "'\\x50\\x69\\xC4\\x99\\x6B\\x6E\\x61\\x20\\xC5\\x82\\xC4\\x85\\x6B\\x61\\x20\\x77\\x20\\xE6\\x9D\\xB1\\xE4\\xBA\\xAC\\xE9\\x83\\xBD'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip(nullInputType, "'\\x42\\x61\\x67\\x20\\x66\\x75\\x6C\\x6C\\x20\\x6F\\x66\\x20\\xF0\\x9F\\x92\\xB0'", VARBINARY, "to_utf8('Bag full of 💰')")
+                .addRoundTrip(nullInputType, "'\\x00\\x01\\x02\\x03\\x04\\x05\\x06\\x07\\x08\\x0D\\xF9\\x36\\x7A\\xA7\\x00\\x00\\x00'", VARBINARY, "X'0001020304050607080DF9367AA7000000'") // non-text
+                .addRoundTrip(nullInputType, "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARBINARY, "X'000000000000'")
+                .addRoundTrip(lowCardInputType, "''", VARBINARY, "X''")
+                .addRoundTrip(lowCardInputType, "'\\x68\\x65\\x6C\\x6C\\x6F'", VARBINARY, "to_utf8('hello')")
+                .addRoundTrip(lowCardInputType, "'\\x50\\x69\\xC4\\x99\\x6B\\x6E\\x61\\x20\\xC5\\x82\\xC4\\x85\\x6B\\x61\\x20\\x77\\x20\\xE6\\x9D\\xB1\\xE4\\xBA\\xAC\\xE9\\x83\\xBD'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip(lowCardInputType, "'\\x42\\x61\\x67\\x20\\x66\\x75\\x6C\\x6C\\x20\\x6F\\x66\\x20\\xF0\\x9F\\x92\\xB0'", VARBINARY, "to_utf8('Bag full of 💰')")
+                .addRoundTrip(lowCardInputType, "'\\x00\\x01\\x02\\x03\\x04\\x05\\x06\\x07\\x08\\x0D\\xF9\\x36\\x7A\\xA7\\x00\\x00\\x00'", VARBINARY, "X'0001020304050607080DF9367AA7000000'") // non-text
+                .addRoundTrip(lowCardInputType, "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARBINARY, "X'000000000000'")
+                .addRoundTrip(nullLowCardInputType, "''", VARBINARY, "X''")
+                .addRoundTrip(nullLowCardInputType, "'\\x68\\x65\\x6C\\x6C\\x6F'", VARBINARY, "to_utf8('hello')")
+                .addRoundTrip(nullLowCardInputType, "'\\x50\\x69\\xC4\\x99\\x6B\\x6E\\x61\\x20\\xC5\\x82\\xC4\\x85\\x6B\\x61\\x20\\x77\\x20\\xE6\\x9D\\xB1\\xE4\\xBA\\xAC\\xE9\\x83\\xBD'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip(nullLowCardInputType, "'\\x42\\x61\\x67\\x20\\x66\\x75\\x6C\\x6C\\x20\\x6F\\x66\\x20\\xF0\\x9F\\x92\\xB0'", VARBINARY, "to_utf8('Bag full of 💰')")
+                .addRoundTrip(nullLowCardInputType, "'\\x00\\x01\\x02\\x03\\x04\\x05\\x06\\x07\\x08\\x0D\\xF9\\x36\\x7A\\xA7\\x00\\x00\\x00'", VARBINARY, "X'0001020304050607080DF9367AA7000000'") // non-text
+                .addRoundTrip(nullLowCardInputType, "'\\x00\\x00\\x00\\x00\\x00\\x00'", VARBINARY, "X'000000000000'");
     }
 
     @Test
@@ -553,18 +729,76 @@ public abstract class BaseClickHouseTypeMapping
         SqlDataTypeTest.create()
                 // plain
                 .addRoundTrip("String", "'Piękna łąka w 東京都'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip("String", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("String", "'text_b'", VARBINARY, "to_utf8('text_b')")
+                .addRoundTrip("String", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("String", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("String", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("String", "'Ну, погоди!'", VARBINARY, "to_utf8('Ну, погоди!')")
                 // nullable
                 .addRoundTrip("Nullable(String)", "NULL", VARBINARY, "CAST(NULL AS varbinary)")
                 .addRoundTrip("Nullable(String)", "'Piękna łąka w 東京都'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip("Nullable(String)", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("Nullable(String)", "'text_b'", VARBINARY, "to_utf8('text_b')")
+                .addRoundTrip("Nullable(String)", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("Nullable(String)", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("Nullable(String)", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("Nullable(String)", "'Ну, погоди!'", VARBINARY, "to_utf8('Ну, погоди!')")
+                // low-cardinality
+                .addRoundTrip("LowCardinality(String)", "'Piękna łąka w 東京都'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip("LowCardinality(String)", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("LowCardinality(String)", "'text_b'", VARBINARY, "to_utf8('text_b')")
+                .addRoundTrip("LowCardinality(String)", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("LowCardinality(String)", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("LowCardinality(String)", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("LowCardinality(String)", "'Ну, погоди!'", VARBINARY, "to_utf8('Ну, погоди!')")
+                // low-cardinality nullable
+                .addRoundTrip("LowCardinality(Nullable(String))", "NULL", VARBINARY, "CAST(NULL AS varbinary)")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'Piękna łąka w 東京都'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'text_b'", VARBINARY, "to_utf8('text_b')")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'Ну, погоди!'", VARBINARY, "to_utf8('Ну, погоди!')")
                 .execute(getQueryRunner(), clickhouseCreateAndInsert("tpch.test_varchar"));
 
         // Set map_string_as_varchar session property as true
         SqlDataTypeTest.create()
                 // plain
                 .addRoundTrip("String", "'Piękna łąka w 東京都'", VARCHAR, "CAST('Piękna łąka w 東京都' AS varchar)")
+                .addRoundTrip("String", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("String", "'text_b'", VARCHAR, "CAST('text_b' AS varchar)")
+                .addRoundTrip("String", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("String", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("String", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                .addRoundTrip("String", "'Ну, погоди!'", VARCHAR, "CAST('Ну, погоди!' AS varchar)")
                 // nullable
                 .addRoundTrip("Nullable(String)", "NULL", VARCHAR, "CAST(NULL AS varchar)")
                 .addRoundTrip("Nullable(String)", "'Piękna łąka w 東京都'", VARCHAR, "CAST('Piękna łąka w 東京都' AS varchar)")
+                .addRoundTrip("Nullable(String)", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("Nullable(String)", "'text_b'", VARCHAR, "CAST('text_b' AS varchar)")
+                .addRoundTrip("Nullable(String)", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("Nullable(String)", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("Nullable(String)", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                .addRoundTrip("Nullable(String)", "'Ну, погоди!'", VARCHAR, "CAST('Ну, погоди!' AS varchar)")
+                // low-cardinality
+                .addRoundTrip("LowCardinality(String)", "'Piękna łąka w 東京都'", VARCHAR, "CAST('Piękna łąka w 東京都' AS varchar)")
+                .addRoundTrip("LowCardinality(String)", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("LowCardinality(String)", "'text_b'", VARCHAR, "CAST('text_b' AS varchar)")
+                .addRoundTrip("LowCardinality(String)", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("LowCardinality(String)", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("LowCardinality(String)", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                .addRoundTrip("LowCardinality(String)", "'Ну, погоди!'", VARCHAR, "CAST('Ну, погоди!' AS varchar)")
+                // low-cardinality nullable
+                .addRoundTrip("LowCardinality(Nullable(String))", "NULL", VARCHAR, "CAST(NULL AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'Piękna łąka w 東京都'", VARCHAR, "CAST('Piękna łąka w 東京都' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'text_b'", VARCHAR, "CAST('text_b' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                .addRoundTrip("LowCardinality(Nullable(String))", "'Ну, погоди!'", VARCHAR, "CAST('Ну, погоди!' AS varchar)")
                 .execute(getQueryRunner(), mapStringAsVarcharSession(), clickhouseCreateAndInsert("tpch.test_varchar"));
     }
 
@@ -574,6 +808,12 @@ public abstract class BaseClickHouseTypeMapping
         SqlDataTypeTest.create()
                 .addRoundTrip("varchar(30)", "NULL", VARBINARY, "CAST(NULL AS varbinary)")
                 .addRoundTrip("varchar(30)", "'Piękna łąka w 東京都'", VARBINARY, "to_utf8('Piękna łąka w 東京都')")
+                .addRoundTrip("varchar(10)", "'text_a'", VARBINARY, "to_utf8('text_a')")
+                .addRoundTrip("varchar(255)", "'text_b'", VARBINARY, "to_utf8('text_b')")
+                .addRoundTrip("varchar(5)", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("varchar(32)", "'攻殻機動隊'", VARBINARY, "to_utf8('攻殻機動隊')")
+                .addRoundTrip("varchar(1)", "'😂'", VARBINARY, "to_utf8('😂')")
+                .addRoundTrip("varchar(77)", "'Ну, погоди!'", VARBINARY, "to_utf8('Ну, погоди!')")
                 .execute(getQueryRunner(), trinoCreateAsSelect("test_varchar"))
                 .execute(getQueryRunner(), trinoCreateAsSelect(mapStringAsVarcharSession(), "test_varchar"));
 
@@ -581,6 +821,12 @@ public abstract class BaseClickHouseTypeMapping
         SqlDataTypeTest.create()
                 .addRoundTrip("varchar(30)", "NULL", VARCHAR, "CAST(NULL AS varchar)")
                 .addRoundTrip("varchar(30)", "'Piękna łąka w 東京都'", VARCHAR, "CAST('Piękna łąka w 東京都' AS varchar)")
+                .addRoundTrip("varchar(10)", "'text_a'", VARCHAR, "CAST('text_a' AS varchar)")
+                .addRoundTrip("varchar(255)", "'text_b'", VARCHAR, "CAST('text_b' AS varchar)")
+                .addRoundTrip("varchar(5)", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("varchar(32)", "'攻殻機動隊'", VARCHAR, "CAST('攻殻機動隊' AS varchar)")
+                .addRoundTrip("varchar(1)", "'😂'", VARCHAR, "CAST('😂' AS varchar)")
+                .addRoundTrip("varchar(77)", "'Ну, погоди!'", VARCHAR, "CAST('Ну, погоди!' AS varchar)")
                 .execute(getQueryRunner(), mapStringAsVarcharSession(), trinoCreateAsSelect("test_varchar"))
                 .execute(getQueryRunner(), mapStringAsVarcharSession(), trinoCreateAsSelect(mapStringAsVarcharSession(), "test_varchar"));
     }
@@ -669,7 +915,7 @@ public abstract class BaseClickHouseTypeMapping
         String minSupportedDate = "1970-01-01";
         String maxSupportedDate = "2149-06-06";
 
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_unsupported_date", "(dt date)")) {
+        try (TestTable table = newTrinoTable("test_unsupported_date", "(dt date)")) {
             assertQueryFails(
                     format("INSERT INTO %s VALUES (DATE '%s')", table.getName(), unsupportedDate),
                     format("Date must be between %s and %s in ClickHouse: %s", minSupportedDate, maxSupportedDate, unsupportedDate));
@@ -725,8 +971,8 @@ public abstract class BaseClickHouseTypeMapping
     @Test
     public void testClickHouseDateTimeMinMaxValues()
     {
-        testClickHouseDateTimeMinMaxValues("1970-01-01 00:00:00"); // min value in ClickHouse
-        testClickHouseDateTimeMinMaxValues("2106-02-07 06:28:15"); // max value in ClickHouse
+        testClickHouseDateTimeMinMaxValues(MIN_SUPPORTED_DATETIME_VALUE); // min value in ClickHouse
+        testClickHouseDateTimeMinMaxValues(MAX_SUPPORTED_DATETIME_VALUE); // max value in ClickHouse
     }
 
     private void testClickHouseDateTimeMinMaxValues(String timestamp)
@@ -755,24 +1001,42 @@ public abstract class BaseClickHouseTypeMapping
     @Test
     public void testUnsupportedTimestamp()
     {
-        testUnsupportedTimestamp("1969-12-31 23:59:59"); // min - 1 second
-        testUnsupportedTimestamp("2106-02-07 06:28:16"); // max + 1 second
+        testUnsupportedTimestamp("1969-12-31 23:59:59"); // MIN_SUPPORTED_DATETIME_VALUE - 1 second
+        testUnsupportedTimestamp("2106-02-07 06:28:16"); // MAX_SUPPORTED_DATETIME_VALUE + 1 second
     }
 
     public void testUnsupportedTimestamp(String unsupportedTimestamp)
     {
-        String minSupportedTimestamp = "1970-01-01 00:00:00";
-        String maxSupportedTimestamp = "2106-02-07 06:28:15";
-
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_unsupported_timestamp", "(dt timestamp(0))")) {
+        try (TestTable table = newTrinoTable("test_unsupported_timestamp", "(dt timestamp(0))")) {
             assertQueryFails(
                     format("INSERT INTO %s VALUES (TIMESTAMP '%s')", table.getName(), unsupportedTimestamp),
-                    format("Timestamp must be between %s and %s in ClickHouse: %s", minSupportedTimestamp, maxSupportedTimestamp, unsupportedTimestamp));
+                    format("Timestamp must be between %s and %s in ClickHouse: %s", MIN_SUPPORTED_DATETIME_VALUE, MAX_SUPPORTED_DATETIME_VALUE, unsupportedTimestamp));
         }
 
         try (TestTable table = new TestTable(onRemoteDatabase(), "tpch.test_unsupported_timestamp", "(dt datetime) ENGINE=Log")) {
             onRemoteDatabase().execute(format("INSERT INTO %s VALUES ('%s')", table.getName(), unsupportedTimestamp));
             assertQuery(format("SELECT dt <> TIMESTAMP '%s' FROM %s", unsupportedTimestamp, table.getName()), "SELECT true"); // Inserting an unsupported datetime in ClickHouse will turn it into another datetime
+        }
+    }
+
+    @Test
+    void testUnsupportedDateTimeWithTimeZone()
+    {
+        for (ZoneId zoneId : timezones()) {
+            String inputType = DATETIME_TYPE_FACTORY.apply(zoneId);
+            testUnsupportedDateTimeWithTimeZone(inputType, "1969-12-31 23:59:59 UTC", "1969-12-31 23:59:59"); // MIN_SUPPORTED_DATETIME_VALUE - 1 second
+            testUnsupportedDateTimeWithTimeZone(inputType, "2106-02-07 06:28:16 UTC", "2106-02-07 06:28:16"); // MAX_SUPPORTED_DATETIME_VALUE + 1 second
+            testUnsupportedDateTimeWithTimeZone(inputType, "1970-01-01 00:00:00 Asia/Kathmandu", "1969-12-31 18:30:00");
+            testUnsupportedDateTimeWithTimeZone(inputType, "1970-01-01 00:13:42 Asia/Kathmandu", "1969-12-31 18:43:42");
+        }
+    }
+
+    private void testUnsupportedDateTimeWithTimeZone(String inputType, String unsupportedTimestampWithTz, String unsupportedTimestampUtc)
+    {
+        try (TestTable table = new TestTable(onRemoteDatabase(), "tpch.test_unsupported_timestamp_with_tz", "(dt %s) ENGINE=Log".formatted(inputType))) {
+            assertQueryFails(
+                    "INSERT INTO %s VALUES (TIMESTAMP '%s')".formatted(table.getName(), unsupportedTimestampWithTz),
+                    "Timestamp must be between %s and %s in ClickHouse: %s".formatted(MIN_SUPPORTED_DATETIME_VALUE, MAX_SUPPORTED_DATETIME_VALUE, unsupportedTimestampUtc));
         }
     }
 
@@ -783,54 +1047,59 @@ public abstract class BaseClickHouseTypeMapping
             Session session = Session.builder(getSession())
                     .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
                     .build();
+            SqlDataTypeTest.create()
+                    .addRoundTrip("DateTime('Asia/Kathmandu')", "timestamp '2024-01-01 12:34:56'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2024-01-01 05:19:56 +05:45'")
+                    .addRoundTrip("DateTime('Asia/Kathmandu')", "timestamp '2024-01-01 12:34:56 Asia/Kathmandu'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2024-01-01 12:34:56 +05:45'")
+                    .addRoundTrip("DateTime('Asia/Kathmandu')", "timestamp '2024-01-01 12:34:56 +00:00'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2024-01-01 18:19:56 +05:45'")
+                    .addRoundTrip("DateTime('Asia/Kathmandu')", "timestamp '2024-01-01 12:34:56 -01:00'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2024-01-01 19:19:56 +05:45'")
+                    .execute(getQueryRunner(), session, clickhouseCreateAndTrinoInsert("tpch.test_timestamp_with_time_zone"));
 
-            dateTimeWithTimeZoneTest(clickhouseDateTimeInputTypeFactory("datetime"))
+            dateTimeWithTimeZoneTest(DATETIME_TYPE_FACTORY)
                     .execute(getQueryRunner(), session, clickhouseCreateAndInsert("tpch.datetime_tz"));
         }
     }
 
     private SqlDataTypeTest dateTimeWithTimeZoneTest(Function<ZoneId, String> inputTypeFactory)
     {
-        ZoneId utc = ZoneId.of("UTC");
         SqlDataTypeTest tests = SqlDataTypeTest.create()
-                .addRoundTrip(format("Nullable(%s)", inputTypeFactory.apply(utc)), "NULL", TIMESTAMP_TZ_SECONDS, "CAST(NULL AS TIMESTAMP(0) WITH TIME ZONE)")
+                .addRoundTrip(format("Nullable(%s)", inputTypeFactory.apply(UTC)), "NULL", TIMESTAMP_TZ_SECONDS, "CAST(NULL AS TIMESTAMP(0) WITH TIME ZONE)")
 
                 // Since ClickHouse datetime(timezone) does not support values before epoch, we do not test this here.
 
                 // epoch
-                .addRoundTrip(inputTypeFactory.apply(utc), "0", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1970-01-01 00:00:00 Z'")
-                .addRoundTrip(inputTypeFactory.apply(utc), "'1970-01-01 00:00:00'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1970-01-01 00:00:00 Z'")
-                .addRoundTrip(inputTypeFactory.apply(kathmandu), "'1970-01-01 00:00:00'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1970-01-01 05:30:00 +05:30'")
+                .addRoundTrip(inputTypeFactory.apply(UTC), "0", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1970-01-01 00:00:00 Z'")
+                .addRoundTrip(inputTypeFactory.apply(UTC), "'1970-01-01 00:00:00'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1970-01-01 00:00:00 Z'")
+                // DateTime supports the range [1970-01-01 00:00:00, 2106-02-07 06:28:15]
+                // Values outside this range gets stored incorrectly in ClickHouse.
+                // For example, 1970-01-01 00:00:00 in Asia/Kathmandu could be stored as 1970-01-01 05:30:00
+                .addRoundTrip(inputTypeFactory.apply(KATHMANDU), "'1970-01-01 00:00:00'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1970-01-01 05:30:00 +05:30'")
 
                 // after epoch
-                .addRoundTrip(inputTypeFactory.apply(utc), "'2019-03-18 10:01:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2019-03-18 10:01:17 Z'")
-                .addRoundTrip(inputTypeFactory.apply(kathmandu), "'2019-03-18 10:01:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2019-03-18 10:01:17 +05:45'")
+                .addRoundTrip(inputTypeFactory.apply(UTC), "'2019-03-18 10:01:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2019-03-18 10:01:17 Z'")
+                .addRoundTrip(inputTypeFactory.apply(KATHMANDU), "'2019-03-18 10:01:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2019-03-18 10:01:17 +05:45'")
                 .addRoundTrip(inputTypeFactory.apply(ZoneId.of("GMT")), "'2019-03-18 10:01:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2019-03-18 10:01:17 Z'")
                 .addRoundTrip(inputTypeFactory.apply(ZoneId.of("UTC+00:00")), "'2019-03-18 10:01:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2019-03-18 10:01:17 Z'")
 
                 // time doubled in JVM zone
-                .addRoundTrip(inputTypeFactory.apply(utc), "'2018-10-28 01:33:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 01:33:17 Z'")
-                .addRoundTrip(inputTypeFactory.apply(jvmZone), "'2018-10-28 01:33:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 01:33:17 -05:00'")
-                .addRoundTrip(inputTypeFactory.apply(kathmandu), "'2018-10-28 01:33:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 01:33:17 +05:45'")
+                .addRoundTrip(inputTypeFactory.apply(UTC), "'2018-10-28 01:33:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 01:33:17 Z'")
+                .addRoundTrip(inputTypeFactory.apply(JVM_ZONE), "'2018-10-28 01:33:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 01:33:17 -05:00'")
+                .addRoundTrip(inputTypeFactory.apply(KATHMANDU), "'2018-10-28 01:33:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 01:33:17 +05:45'")
 
                 // time doubled in Vilnius
-                .addRoundTrip(inputTypeFactory.apply(utc), "'2018-10-28 03:33:33'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 03:33:33 Z'")
-                .addRoundTrip(inputTypeFactory.apply(vilnius), "'2018-10-28 03:33:33'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 03:33:33 +03:00'")
-                .addRoundTrip(inputTypeFactory.apply(kathmandu), "'2018-10-28 03:33:33'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 03:33:33 +05:45'")
+                .addRoundTrip(inputTypeFactory.apply(UTC), "'2018-10-28 03:33:33'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 03:33:33 Z'")
+                .addRoundTrip(inputTypeFactory.apply(VILNIUS), "'2018-10-28 03:33:33'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 03:33:33 +03:00'")
+                .addRoundTrip(inputTypeFactory.apply(KATHMANDU), "'2018-10-28 03:33:33'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-10-28 03:33:33 +05:45'")
 
                 // time gap in JVM zone
-                .addRoundTrip(inputTypeFactory.apply(utc), "'1970-01-01 00:13:42'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1970-01-01 00:13:42 Z'")
-                // TODO: Check the range of DateTime(timezone) values written from Trino to ClickHouse to prevent ClickHouse from storing incorrect results.
-                //       e.g. 1970-01-01 00:13:42 will become 1970-01-01 05:30:00
-                // .addRoundTrip(inputTypeFactory.apply(kathmandu), "'1970-01-01 00:13:42'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1970-01-01 00:13:42 +05:30'")
-                .addRoundTrip(inputTypeFactory.apply(utc), "'2018-04-01 02:13:55'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-04-01 02:13:55 Z'")
-                .addRoundTrip(inputTypeFactory.apply(kathmandu), "'2018-04-01 02:13:55'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-04-01 02:13:55 +05:45'")
+                .addRoundTrip(inputTypeFactory.apply(UTC), "'1970-01-01 00:13:42'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1970-01-01 00:13:42 Z'")
+                .addRoundTrip(inputTypeFactory.apply(UTC), "'2018-04-01 02:13:55'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-04-01 02:13:55 Z'")
+                .addRoundTrip(inputTypeFactory.apply(KATHMANDU), "'2018-04-01 02:13:55'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-04-01 02:13:55 +05:45'")
 
                 // time gap in Vilnius
-                .addRoundTrip(inputTypeFactory.apply(kathmandu), "'2018-03-25 03:17:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-03-25 03:17:17 +05:45'")
+                .addRoundTrip(inputTypeFactory.apply(KATHMANDU), "'2018-03-25 03:17:17'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '2018-03-25 03:17:17 +05:45'")
 
                 // time gap in Kathmandu
-                .addRoundTrip(inputTypeFactory.apply(vilnius), "'1986-01-01 00:13:07'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1986-01-01 00:13:07 +03:00'");
+                .addRoundTrip(inputTypeFactory.apply(VILNIUS), "'1986-01-01 00:13:07'", TIMESTAMP_TZ_SECONDS, "TIMESTAMP '1986-01-01 00:13:07 +03:00'");
 
         return tests;
     }
@@ -839,10 +1108,10 @@ public abstract class BaseClickHouseTypeMapping
     {
         return ImmutableList.of(
                 UTC,
-                jvmZone,
+                JVM_ZONE,
                 // using two non-JVM zones so that we don't need to worry what ClickHouse system zone is
-                vilnius,
-                kathmandu,
+                VILNIUS,
+                KATHMANDU,
                 TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
     }
 
@@ -896,6 +1165,17 @@ public abstract class BaseClickHouseTypeMapping
                 .execute(getQueryRunner(), clickhouseCreateAndTrinoInsert("tpch.test_ip"));
     }
 
+    @Test
+    public void testUnsupportedPoint()
+    {
+        Session convertToVarchar = Session.builder(getSession())
+                .setCatalogSessionProperty("clickhouse", UNSUPPORTED_TYPE_HANDLING, CONVERT_TO_VARCHAR.name())
+                .build();
+        SqlDataTypeTest.create()
+                .addRoundTrip("Point", "(10, 10)", VARCHAR, "varchar '(10.0,10.0)'")
+                .execute(getQueryRunner(), convertToVarchar, clickhouseCreateAndInsert("tpch.point"));
+    }
+
     protected static Session mapStringAsVarcharSession()
     {
         return testSessionBuilder()
@@ -938,10 +1218,5 @@ public abstract class BaseClickHouseTypeMapping
     protected SqlExecutor onRemoteDatabase()
     {
         return clickhouseServer::execute;
-    }
-
-    private static Function<ZoneId, String> clickhouseDateTimeInputTypeFactory(String inputTypePrefix)
-    {
-        return zone -> format("%s('%s')", inputTypePrefix, zone);
     }
 }

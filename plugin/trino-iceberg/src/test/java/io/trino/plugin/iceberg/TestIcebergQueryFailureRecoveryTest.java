@@ -13,8 +13,8 @@
  */
 package io.trino.plugin.iceberg;
 
+import com.google.inject.Module;
 import io.trino.operator.RetryPolicy;
-import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.exchange.filesystem.containers.MinioStorage;
 import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
@@ -46,20 +46,19 @@ public class TestIcebergQueryFailureRecoveryTest
     protected QueryRunner createQueryRunner(
             List<TpchTable<?>> requiredTpchTables,
             Map<String, String> configProperties,
-            Map<String, String> coordinatorProperties)
+            Map<String, String> coordinatorProperties,
+            Module failureInjectionModule)
             throws Exception
     {
-        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomNameSuffix());
+        this.minioStorage = closeAfterClass(new MinioStorage("test-exchange-spooling-" + randomNameSuffix()));
         minioStorage.start();
 
         return IcebergQueryRunner.builder()
-                .setInitialTables(requiredTpchTables)
                 .setCoordinatorProperties(coordinatorProperties)
                 .setExtraProperties(configProperties)
-                .setAdditionalSetup(runner -> {
-                    runner.installPlugin(new FileSystemExchangePlugin());
-                    runner.loadExchangeManager("filesystem", getExchangeManagerProperties(minioStorage));
-                })
+                .withExchange("filesystem", getExchangeManagerProperties(minioStorage))
+                .setAdditionalModule(failureInjectionModule)
+                .setInitialTables(requiredTpchTables)
                 .build();
     }
 
@@ -67,9 +66,6 @@ public class TestIcebergQueryFailureRecoveryTest
     public void destroy()
             throws Exception
     {
-        if (minioStorage != null) {
-            minioStorage.close();
-            minioStorage = null;
-        }
+        minioStorage = null; // closed by closeAfterClass
     }
 }

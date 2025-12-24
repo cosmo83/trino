@@ -44,25 +44,15 @@ public interface EnvironmentListener
 {
     Logger log = Logger.get(EnvironmentListener.class);
 
-    EnvironmentListener NOOP = new EnvironmentListener()
-    {
-    };
+    EnvironmentListener NOOP = new EnvironmentListener() {};
 
-    default void environmentStarting(Environment environment)
-    {
-    }
+    default void environmentStarting(Environment environment) {}
 
-    default void environmentStarted(Environment environment)
-    {
-    }
+    default void environmentStarted(Environment environment) {}
 
-    default void environmentStopped(Environment environment)
-    {
-    }
+    default void environmentStopped(Environment environment) {}
 
-    default void environmentStopping(Environment environment)
-    {
-    }
+    default void environmentStopping(Environment environment) {}
 
     static void tryInvokeListener(FailsafeExecutor<?> executor, Consumer<EnvironmentListener> call, EnvironmentListener... listeners)
     {
@@ -231,10 +221,7 @@ public interface EnvironmentListener
             public void environmentStarted(Environment environment)
             {
                 // Print stats for all containers every 30s after environment is started
-                executorService.scheduleWithFixedDelay(() ->
-                {
-                    printContainerStats();
-                }, 5 * 1000L, 30 * 1000L, MILLISECONDS);
+                executorService.scheduleWithFixedDelay(this::printContainerStats, 5 * 1000L, 30 * 1000L, MILLISECONDS);
             }
 
             @Override
@@ -259,7 +246,7 @@ public interface EnvironmentListener
                     log.info("Container stats:\n%s", statistics.render());
                 }
                 catch (Exception e) {
-                    e.printStackTrace();
+                    log.error(e, "Error printing container stats");
                 }
             }
         };

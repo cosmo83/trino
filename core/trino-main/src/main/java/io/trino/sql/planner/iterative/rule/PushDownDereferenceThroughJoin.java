@@ -20,8 +20,8 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SubscriptExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
@@ -90,9 +90,9 @@ public class PushDownDereferenceThroughJoin
 
         // Consider dereferences in projections and join filter for pushdown
         ImmutableList.Builder<Expression> expressionsBuilder = ImmutableList.builder();
-        expressionsBuilder.addAll(projectNode.getAssignments().getExpressions());
+        expressionsBuilder.addAll(projectNode.getAssignments().expressions());
         joinNode.getFilter().ifPresent(expressionsBuilder::add);
-        Set<SubscriptExpression> dereferences = extractRowSubscripts(expressionsBuilder.build(), false);
+        Set<FieldReference> dereferences = extractRowSubscripts(expressionsBuilder.build(), false);
 
         // Exclude criteria symbols
         ImmutableSet.Builder<Symbol> criteriaSymbolsBuilder = ImmutableSet.builder();
@@ -114,7 +114,7 @@ public class PushDownDereferenceThroughJoin
         Assignments dereferenceAssignments = Assignments.of(dereferences, context.getSymbolAllocator());
 
         // Rewrite project node assignments using new symbols for dereference expressions
-        Map<Expression, SymbolReference> mappings = HashBiMap.create(dereferenceAssignments.getMap())
+        Map<Expression, Reference> mappings = HashBiMap.create(dereferenceAssignments.assignments())
                 .inverse()
                 .entrySet().stream()
                 .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));
@@ -145,7 +145,7 @@ public class PushDownDereferenceThroughJoin
         PlanNode rightNode = createProjectNodeIfRequired(joinNode.getRight(), rightAssignments, context.getIdAllocator());
 
         // Prepare new output symbols for join node
-        List<Symbol> referredSymbolsInAssignments = newAssignments.getExpressions().stream()
+        List<Symbol> referredSymbolsInAssignments = newAssignments.expressions().stream()
                 .flatMap(expression -> extractAll(expression).stream())
                 .collect(toList());
 
@@ -168,8 +168,6 @@ public class PushDownDereferenceThroughJoin
                 joinNode.isMaySkipOutputDuplicates(),
                 // Use newly created symbols in filter
                 joinNode.getFilter().map(expression -> replaceExpression(expression, mappings)),
-                joinNode.getLeftHashSymbol(),
-                joinNode.getRightHashSymbol(),
                 joinNode.getDistributionType(),
                 joinNode.isSpillable(),
                 joinNode.getDynamicFilters(),

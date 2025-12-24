@@ -19,8 +19,8 @@ import io.airlift.slice.Slices;
 import io.trino.spi.type.VarcharType;
 import io.trino.sql.ir.Cast;
 import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.ir.Row;
-import io.trino.sql.ir.SymbolReference;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
@@ -42,20 +42,20 @@ public class TestPruneValuesColumns
         tester().assertThat(new PruneValuesColumns())
                 .on(p ->
                         p.project(
-                                Assignments.of(p.symbol("y"), new SymbolReference(INTEGER, "x")),
+                                Assignments.of(p.symbol("y", BIGINT), new Reference(BIGINT, "x")),
                                 p.values(
-                                        ImmutableList.of(p.symbol("unused"), p.symbol("x")),
+                                        ImmutableList.of(p.symbol("unused", BIGINT), p.symbol("x", BIGINT)),
                                         ImmutableList.of(
-                                                ImmutableList.of(new Constant(INTEGER, 1L), new Constant(INTEGER, 2L)),
-                                                ImmutableList.of(new Constant(INTEGER, 3L), new Constant(INTEGER, 4L))))))
+                                                ImmutableList.of(new Constant(BIGINT, 1L), new Constant(BIGINT, 2L)),
+                                                ImmutableList.of(new Constant(BIGINT, 3L), new Constant(BIGINT, 4L))))))
                 .matches(
                         project(
-                                ImmutableMap.of("y", PlanMatchPattern.expression(new SymbolReference(INTEGER, "x"))),
+                                ImmutableMap.of("y", PlanMatchPattern.expression(new Reference(INTEGER, "x"))),
                                 values(
                                         ImmutableList.of("x"),
                                         ImmutableList.of(
-                                                ImmutableList.of(new Constant(INTEGER, 2L)),
-                                                ImmutableList.of(new Constant(INTEGER, 4L))))));
+                                                ImmutableList.of(new Constant(BIGINT, 2L)),
+                                                ImmutableList.of(new Constant(BIGINT, 4L))))));
     }
 
     @Test
@@ -64,7 +64,7 @@ public class TestPruneValuesColumns
         tester().assertThat(new PruneValuesColumns())
                 .on(p ->
                         p.project(
-                                Assignments.of(p.symbol("y"), new SymbolReference(BIGINT, "x")),
+                                Assignments.of(p.symbol("y"), new Reference(BIGINT, "x")),
                                 p.values(p.symbol("x"))))
                 .doesNotFire();
     }
@@ -105,9 +105,9 @@ public class TestPruneValuesColumns
         tester().assertThat(new PruneValuesColumns())
                 .on(p ->
                         p.project(
-                                Assignments.of(p.symbol("x"), new SymbolReference(INTEGER, "x")),
+                                Assignments.of(p.symbol("x", INTEGER), new Reference(INTEGER, "x")),
                                 p.valuesOfExpressions(
-                                        ImmutableList.of(p.symbol("x"), p.symbol("y")),
+                                        ImmutableList.of(p.symbol("x", INTEGER), p.symbol("y")),
                                         ImmutableList.of(new Cast(new Row(ImmutableList.of(new Constant(INTEGER, 1L), new Constant(VarcharType.VARCHAR, Slices.utf8Slice("a")))), anonymousRow(BIGINT, createCharType(2)))))))
                 .doesNotFire();
     }

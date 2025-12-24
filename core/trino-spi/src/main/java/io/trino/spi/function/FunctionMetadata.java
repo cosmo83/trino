@@ -16,7 +16,6 @@ package io.trino.spi.function;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.errorprone.annotations.DoNotCall;
-import io.trino.spi.Experimental;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -26,10 +25,10 @@ import java.util.Set;
 
 import static io.trino.spi.function.FunctionKind.AGGREGATE;
 import static io.trino.spi.function.FunctionKind.SCALAR;
+import static io.trino.spi.function.FunctionKind.TABLE;
 import static io.trino.spi.function.FunctionKind.WINDOW;
 import static java.util.Objects.requireNonNull;
 
-@Experimental(eta = "2022-10-31")
 public class FunctionMetadata
 {
     // Copied from OperatorNameUtil
@@ -201,6 +200,11 @@ public class FunctionMetadata
     public static Builder windowBuilder(String canonicalName)
     {
         return builder(canonicalName, WINDOW);
+    }
+
+    public static Builder tableBuilder(String canonicalName)
+    {
+        return builder(canonicalName, TABLE);
     }
 
     public static Builder builder(String canonicalName, FunctionKind functionKind)

@@ -24,12 +24,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static io.trino.spi.security.AccessDeniedException.denyAddColumn;
 import static io.trino.spi.security.AccessDeniedException.denyAlterColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentTable;
 import static io.trino.spi.security.AccessDeniedException.denyCommentView;
+import static io.trino.spi.security.AccessDeniedException.denyCreateBranch;
 import static io.trino.spi.security.AccessDeniedException.denyCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyCreateMaterializedView;
 import static io.trino.spi.security.AccessDeniedException.denyCreateRole;
@@ -39,7 +41,9 @@ import static io.trino.spi.security.AccessDeniedException.denyCreateView;
 import static io.trino.spi.security.AccessDeniedException.denyCreateViewWithSelect;
 import static io.trino.spi.security.AccessDeniedException.denyDeleteTable;
 import static io.trino.spi.security.AccessDeniedException.denyDenySchemaPrivilege;
+import static io.trino.spi.security.AccessDeniedException.denyDenyTableBranchPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyDenyTablePrivilege;
+import static io.trino.spi.security.AccessDeniedException.denyDropBranch;
 import static io.trino.spi.security.AccessDeniedException.denyDropColumn;
 import static io.trino.spi.security.AccessDeniedException.denyDropFunction;
 import static io.trino.spi.security.AccessDeniedException.denyDropMaterializedView;
@@ -49,11 +53,14 @@ import static io.trino.spi.security.AccessDeniedException.denyDropTable;
 import static io.trino.spi.security.AccessDeniedException.denyDropView;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteProcedure;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteTableProcedure;
+import static io.trino.spi.security.AccessDeniedException.denyFastForwardBranch;
 import static io.trino.spi.security.AccessDeniedException.denyGrantRoles;
 import static io.trino.spi.security.AccessDeniedException.denyGrantSchemaPrivilege;
+import static io.trino.spi.security.AccessDeniedException.denyGrantTableBranchPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyGrantTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyInsertTable;
 import static io.trino.spi.security.AccessDeniedException.denyRefreshMaterializedView;
+import static io.trino.spi.security.AccessDeniedException.denyRefreshView;
 import static io.trino.spi.security.AccessDeniedException.denyRenameColumn;
 import static io.trino.spi.security.AccessDeniedException.denyRenameMaterializedView;
 import static io.trino.spi.security.AccessDeniedException.denyRenameSchema;
@@ -61,16 +68,20 @@ import static io.trino.spi.security.AccessDeniedException.denyRenameTable;
 import static io.trino.spi.security.AccessDeniedException.denyRenameView;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeRoles;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeSchemaPrivilege;
+import static io.trino.spi.security.AccessDeniedException.denyRevokeTableBranchPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denySelectColumns;
 import static io.trino.spi.security.AccessDeniedException.denySetCatalogSessionProperty;
+import static io.trino.spi.security.AccessDeniedException.denySetEntityAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetMaterializedViewProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetRole;
 import static io.trino.spi.security.AccessDeniedException.denySetSchemaAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetTableAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetTableProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetViewAuthorization;
+import static io.trino.spi.security.AccessDeniedException.denyShowBranches;
 import static io.trino.spi.security.AccessDeniedException.denyShowColumns;
+import static io.trino.spi.security.AccessDeniedException.denyShowCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateSchema;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateTable;
 import static io.trino.spi.security.AccessDeniedException.denyShowCurrentRoles;
@@ -414,6 +425,16 @@ public interface ConnectorAccessControl
     }
 
     /**
+     * Check if identity is allowed to change the specified materialized view's user/role.
+     *
+     * @throws io.trino.spi.security.AccessDeniedException if not allowed
+     */
+    default void checkCanSetMaterializedViewAuthorization(ConnectorSecurityContext context, SchemaTableName viewName, TrinoPrincipal principal)
+    {
+        denySetEntityAuthorization(new EntityKindAndName("MATERIALIZED VIEW", List.of(viewName.getSchemaName(), viewName.getTableName())), principal);
+    }
+
+    /**
      * Check if identity is allowed to drop the specified view.
      *
      * @throws io.trino.spi.security.AccessDeniedException if not allowed
@@ -451,6 +472,16 @@ public interface ConnectorAccessControl
     default void checkCanRefreshMaterializedView(ConnectorSecurityContext context, SchemaTableName materializedViewName)
     {
         denyRefreshMaterializedView(materializedViewName.toString());
+    }
+
+    /**
+     * Check if identity is allowed to refresh the specified view.
+     *
+     * @throws io.trino.spi.security.AccessDeniedException if not allowed
+     */
+    default void checkCanRefreshView(ConnectorSecurityContext context, SchemaTableName viewName)
+    {
+        denyRefreshView(viewName.toString());
     }
 
     /**
@@ -546,6 +577,36 @@ public interface ConnectorAccessControl
     default void checkCanRevokeTablePrivilege(ConnectorSecurityContext context, Privilege privilege, SchemaTableName tableName, TrinoPrincipal revokee, boolean grantOption)
     {
         denyRevokeTablePrivilege(privilege.toString(), tableName.toString());
+    }
+
+    /**
+     * Check if identity is allowed to grant to any other user the specified privilege on the specified branch.
+     *
+     * @throws io.trino.spi.security.AccessDeniedException if not allowed
+     */
+    default void checkCanGrantTableBranchPrivilege(ConnectorSecurityContext context, Privilege privilege, SchemaTableName tableName, String branchName, TrinoPrincipal grantee, boolean grantOption)
+    {
+        denyGrantTableBranchPrivilege(privilege.toString(), tableName.toString(), branchName);
+    }
+
+    /**
+     * Check if identity is allowed to deny to any other user the specified privilege on the specified branch.
+     *
+     * @throws io.trino.spi.security.AccessDeniedException if not allowed
+     */
+    default void checkCanDenyTableBranchPrivilege(ConnectorSecurityContext context, Privilege privilege, SchemaTableName tableName, String branchName, TrinoPrincipal grantee)
+    {
+        denyDenyTableBranchPrivilege(privilege.toString(), tableName.toString(), branchName);
+    }
+
+    /**
+     * Check if identity is allowed to revoke the specified privilege on the specified branch from any user.
+     *
+     * @throws io.trino.spi.security.AccessDeniedException if not allowed
+     */
+    default void checkCanRevokeTableBranchPrivilege(ConnectorSecurityContext context, Privilege privilege, SchemaTableName tableName, String branchName, TrinoPrincipal revokee, boolean grantOption)
+    {
+        denyRevokeTableBranchPrivilege(privilege.toString(), tableName.toString(), branchName);
     }
 
     default void checkCanCreateRole(ConnectorSecurityContext context, String role, Optional<TrinoPrincipal> grantor)
@@ -672,6 +733,56 @@ public interface ConnectorAccessControl
     }
 
     /**
+     * Check if identity is allowed to execute SHOW CREATE FUNCTION.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanShowCreateFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        denyShowCreateFunction(function.toString());
+    }
+
+    /**
+     * Check if identity is allowed to show branches of tables.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanShowBranches(ConnectorSecurityContext context, SchemaTableName tableName)
+    {
+        denyShowBranches(tableName.toString());
+    }
+
+    /**
+     * Check if identity is allowed to create the specified branch.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanCreateBranch(ConnectorSecurityContext context, SchemaTableName tableName, String branchName)
+    {
+        denyCreateBranch(tableName.toString());
+    }
+
+    /**
+     * Check if identity is allowed to drop the specified branch.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanDropBranch(ConnectorSecurityContext context, SchemaTableName tableName, String branchName)
+    {
+        denyDropBranch(tableName.toString());
+    }
+
+    /**
+     * Check if identity is allowed to fast-forward the specified branch.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanFastForwardBranch(ConnectorSecurityContext context, SchemaTableName tableName, String sourceBranchName, String targetBranchName)
+    {
+        denyFastForwardBranch(tableName.toString());
+    }
+
+    /**
      * Get row filters associated with the given table and identity.
      * <p>
      * Each filter must be a scalar SQL expression of boolean type over the columns in the table.
@@ -690,9 +801,27 @@ public interface ConnectorAccessControl
      * must be written in terms of columns in the table.
      *
      * @return the mask if present, or empty if not applicable
+     * @deprecated use {@link #getColumnMasks(ConnectorSecurityContext, SchemaTableName, List)}
      */
+    @Deprecated
     default Optional<ViewExpression> getColumnMask(ConnectorSecurityContext context, SchemaTableName tableName, String columnName, Type type)
     {
         return Optional.empty();
+    }
+
+    /**
+     * Bulk method for getting column masks for a subset of columns in a table.
+     * <p>
+     * Each mask must be a scalar SQL expression of a type coercible to the type of the column being masked. The expression
+     * must be written in terms of columns in the table.
+     *
+     * @return a mapping from columns to masks. The keys of the return Map are a subset of {@code columns}.
+     */
+    default Map<ColumnSchema, ViewExpression> getColumnMasks(ConnectorSecurityContext context, SchemaTableName tableName, List<ColumnSchema> columns)
+    {
+        return columns.stream()
+                .map(column -> Map.entry(column, getColumnMask(context, tableName, column.getName(), column.getType())))
+                .filter(entry -> entry.getValue().isPresent())
+                .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().get()));
     }
 }

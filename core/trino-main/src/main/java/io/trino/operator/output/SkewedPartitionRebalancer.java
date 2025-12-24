@@ -19,11 +19,13 @@ import com.google.errorprone.annotations.ThreadSafe;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.log.Logger;
 import io.trino.Session;
+import io.trino.SystemSessionProperties;
 import io.trino.execution.resourcegroups.IndexedPriorityQueue;
 import io.trino.operator.PartitionFunction;
-import io.trino.spi.connector.ConnectorBucketNodeMap;
 import io.trino.spi.type.Type;
+import io.trino.sql.planner.NodePartitionMap.BucketToPartition;
 import io.trino.sql.planner.NodePartitioningManager;
+import io.trino.sql.planner.PartitionFunctionProvider;
 import io.trino.sql.planner.PartitioningHandle;
 import io.trino.sql.planner.PartitioningScheme;
 import io.trino.sql.planner.SystemPartitioningHandle;
@@ -31,6 +33,7 @@ import io.trino.sql.planner.SystemPartitioningHandle;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalInt;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicLongArray;
@@ -39,6 +42,7 @@ import java.util.stream.IntStream;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.SystemSessionProperties.getMaxMemoryPerPartitionWriter;
 import static io.trino.SystemSessionProperties.getQueryMaxMemoryPerNode;
+import static io.trino.operator.RetryPolicy.TASK;
 import static io.trino.sql.planner.PartitioningHandle.isScaledWriterHashDistribution;
 import static java.lang.Double.isNaN;
 import static java.lang.Math.ceil;
@@ -75,7 +79,7 @@ public class SkewedPartitionRebalancer
     private static final Logger log = Logger.get(SkewedPartitionRebalancer.class);
     // Keep the scale writers partition count big enough such that we could rebalance skewed partitions
     // at more granularity, thus leading to less resource utilization at writer stage.
-    private static final int SCALE_WRITERS_PARTITION_COUNT = 4096;
+    public static final int SCALE_WRITERS_PARTITION_COUNT = 4096;
     // If the percentage difference between the two different task buckets with maximum and minimum processed bytes
     // since last rebalance is above 0.7 (or 70%), then we consider them skewed.
     private static final double TASK_BUCKET_SKEWNESS_THRESHOLD = 0.7;
@@ -104,26 +108,41 @@ public class SkewedPartitionRebalancer
 
     private final List<List<TaskBucket>> partitionAssignments;
 
-    public static boolean checkCanScalePartitionsRemotely(Session session, int taskCount, PartitioningHandle partitioningHandle, NodePartitioningManager nodePartitioningManager)
+    public static OptionalInt getSkewedBucketCount(Session session, PartitioningScheme partitioningScheme, BucketToPartition bucketToPartition, NodePartitioningManager nodePartitioningManager)
     {
-        // In case of connector partitioning, check if bucketToPartitions has fixed mapping or not. If it is fixed
-        // then we can't distribute a bucket across multiple tasks.
-        boolean hasFixedNodeMapping = partitioningHandle.getCatalogHandle()
-                .map(handle -> nodePartitioningManager.getConnectorBucketNodeMap(session, partitioningHandle)
-                        .map(ConnectorBucketNodeMap::hasFixedMapping)
-                        .orElse(false))
-                .orElse(false);
-        // Use skewed partition rebalancer only when there are more than one tasks
-        return taskCount > 1 && !hasFixedNodeMapping && isScaledWriterHashDistribution(partitioningHandle);
+        // FTE does not support skewed partition rebalancing
+        if (SystemSessionProperties.getRetryPolicy(session) == TASK) {
+            return OptionalInt.empty();
+        }
+
+        // If it is fixed then we can't distribute a bucket across multiple tasks.
+        if (bucketToPartition.hasFixedMapping()) {
+            return OptionalInt.empty();
+        }
+
+        PartitioningHandle partitioningHandle = partitioningScheme.getPartitioning().getHandle();
+        if (!isScaledWriterHashDistribution(partitioningHandle)) {
+            return OptionalInt.empty();
+        }
+
+        // Use skewed partition rebalancer only when there are more than one tasks (partition)
+        if (IntStream.of(bucketToPartition.bucketToPartition()).max().orElseThrow() == 0) {
+            return OptionalInt.empty();
+        }
+
+        int bucketCount = (partitioningHandle.getConnectorHandle() instanceof SystemPartitioningHandle)
+                ? SCALE_WRITERS_PARTITION_COUNT
+                : nodePartitioningManager.getDefaultBucketCount(session);
+        return OptionalInt.of(bucketCount);
     }
 
     public static PartitionFunction createPartitionFunction(
             Session session,
-            NodePartitioningManager nodePartitioningManager,
-            PartitioningScheme scheme,
+            PartitionFunctionProvider partitionFunctionProvider,
+            PartitioningHandle partitioningHandle,
+            int bucketCount,
             List<Type> partitionChannelTypes)
     {
-        PartitioningHandle handle = scheme.getPartitioning().getHandle();
         // In case of SystemPartitioningHandle we can use arbitrary bucket count so that skewness mitigation
         // is more granular.
         // Whereas, in the case of connector partitioning we have to use connector provided bucketCount
@@ -140,14 +159,9 @@ public class SkewedPartitionRebalancer
         // five artificial buckets resemble the first hive bucket. Therefore, these artificial buckets
         // have to write minPartitionDataProcessedRebalanceThreshold before they get scaled to task 1, which is slow
         // compared to only a single hive bucket reaching the min limit.
-        int bucketCount = (handle.getConnectorHandle() instanceof SystemPartitioningHandle)
-                ? SCALE_WRITERS_PARTITION_COUNT
-                : nodePartitioningManager.getBucketNodeMap(session, handle).getBucketCount();
-        return nodePartitioningManager.getPartitionFunction(
-                session,
-                scheme,
-                partitionChannelTypes,
-                IntStream.range(0, bucketCount).toArray());
+        int[] bucketToPartition = IntStream.range(0, bucketCount).toArray();
+
+        return partitionFunctionProvider.getPartitionFunction(session, partitioningHandle, partitionChannelTypes, bucketToPartition);
     }
 
     public static int getMaxWritersBasedOnMemory(Session session)
@@ -295,6 +309,7 @@ public class SkewedPartitionRebalancer
         dataProcessedAtLastRebalance.set(dataProcessed);
     }
 
+    @GuardedBy("this")
     private void calculatePartitionDataSize(long dataProcessed)
     {
         long totalPartitionRowCount = 0;
@@ -315,6 +330,7 @@ public class SkewedPartitionRebalancer
         }
     }
 
+    @GuardedBy("this")
     private long calculateTaskBucketDataSizeSinceLastRebalance(IndexedPriorityQueue<Integer> maxPartitions)
     {
         long estimatedDataSizeSinceLastRebalance = 0;
@@ -324,6 +340,7 @@ public class SkewedPartitionRebalancer
         return estimatedDataSizeSinceLastRebalance;
     }
 
+    @GuardedBy("this")
     private void rebalanceBasedOnTaskBucketSkewness(
             IndexedPriorityQueue<TaskBucket> maxTaskBuckets,
             IndexedPriorityQueue<TaskBucket> minTaskBuckets,
@@ -376,6 +393,7 @@ public class SkewedPartitionRebalancer
         }
     }
 
+    @GuardedBy("this")
     private List<TaskBucket> findSkewedMinTaskBuckets(TaskBucket maxTaskBucket, IndexedPriorityQueue<TaskBucket> minTaskBuckets)
     {
         ImmutableList.Builder<TaskBucket> minSkewedTaskBuckets = ImmutableList.builder();
@@ -395,6 +413,7 @@ public class SkewedPartitionRebalancer
         return minSkewedTaskBuckets.build();
     }
 
+    @GuardedBy("this")
     private boolean rebalancePartition(
             int partitionId,
             TaskBucket toTaskBucket,

@@ -29,7 +29,7 @@ import io.trino.spi.connector.JoinType;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Booleans;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.ConnectorExpressionTranslator;
 import io.trino.sql.planner.ConnectorExpressionTranslator.ConnectorExpressionTranslation;
@@ -46,7 +46,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.SystemSessionProperties.isAllowPushdownIntoConnectors;
@@ -103,14 +102,16 @@ public class PushJoinIntoTableScan
         TableScanNode left = captures.get(LEFT_TABLE_SCAN);
         TableScanNode right = captures.get(RIGHT_TABLE_SCAN);
 
-        verify(!left.isUpdateTarget() && !right.isUpdateTarget(), "Unexpected Join over for-update table scan");
+        if (left.isUpdateTarget() && !right.isUpdateTarget()) {
+            return Result.empty();
+        }
 
         Expression effectiveFilter = getEffectiveFilter(joinNode);
         ConnectorExpressionTranslation translation = ConnectorExpressionTranslator.translateConjuncts(
                 context.getSession(),
                 effectiveFilter);
 
-        if (!translation.remainingExpression().equals(BooleanLiteral.TRUE_LITERAL)) {
+        if (!translation.remainingExpression().equals(Booleans.TRUE)) {
             // TODO add extra filter node above join
             return Result.empty();
         }
@@ -122,10 +123,10 @@ public class PushJoinIntoTableScan
         }
 
         Map<String, ColumnHandle> leftAssignments = left.getAssignments().entrySet().stream()
-                .collect(toImmutableMap(entry -> entry.getKey().getName(), Map.Entry::getValue));
+                .collect(toImmutableMap(entry -> entry.getKey().name(), Map.Entry::getValue));
 
         Map<String, ColumnHandle> rightAssignments = right.getAssignments().entrySet().stream()
-                .collect(toImmutableMap(entry -> entry.getKey().getName(), Map.Entry::getValue));
+                .collect(toImmutableMap(entry -> entry.getKey().name(), Map.Entry::getValue));
 
         /*
          * We are (lazily) computing estimated statistics for join node and left and right table

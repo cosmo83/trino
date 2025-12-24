@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.metadata.QualifiedObjectName;
+import io.trino.spi.QueryId;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.EntityKindAndName;
@@ -38,6 +39,7 @@ import static io.trino.spi.security.AccessDeniedException.denyAlterColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentTable;
 import static io.trino.spi.security.AccessDeniedException.denyCommentView;
+import static io.trino.spi.security.AccessDeniedException.denyCreateBranch;
 import static io.trino.spi.security.AccessDeniedException.denyCreateCatalog;
 import static io.trino.spi.security.AccessDeniedException.denyCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyCreateMaterializedView;
@@ -49,7 +51,9 @@ import static io.trino.spi.security.AccessDeniedException.denyCreateViewWithSele
 import static io.trino.spi.security.AccessDeniedException.denyDeleteTable;
 import static io.trino.spi.security.AccessDeniedException.denyDenyEntityPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyDenySchemaPrivilege;
+import static io.trino.spi.security.AccessDeniedException.denyDenyTableBranchPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyDenyTablePrivilege;
+import static io.trino.spi.security.AccessDeniedException.denyDropBranch;
 import static io.trino.spi.security.AccessDeniedException.denyDropCatalog;
 import static io.trino.spi.security.AccessDeniedException.denyDropColumn;
 import static io.trino.spi.security.AccessDeniedException.denyDropFunction;
@@ -61,15 +65,18 @@ import static io.trino.spi.security.AccessDeniedException.denyDropView;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteProcedure;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteQuery;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteTableProcedure;
+import static io.trino.spi.security.AccessDeniedException.denyFastForwardBranch;
 import static io.trino.spi.security.AccessDeniedException.denyGrantEntityPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyGrantRoles;
 import static io.trino.spi.security.AccessDeniedException.denyGrantSchemaPrivilege;
+import static io.trino.spi.security.AccessDeniedException.denyGrantTableBranchPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyGrantTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyImpersonateUser;
 import static io.trino.spi.security.AccessDeniedException.denyInsertTable;
 import static io.trino.spi.security.AccessDeniedException.denyKillQuery;
 import static io.trino.spi.security.AccessDeniedException.denyReadSystemInformationAccess;
 import static io.trino.spi.security.AccessDeniedException.denyRefreshMaterializedView;
+import static io.trino.spi.security.AccessDeniedException.denyRefreshView;
 import static io.trino.spi.security.AccessDeniedException.denyRenameColumn;
 import static io.trino.spi.security.AccessDeniedException.denyRenameMaterializedView;
 import static io.trino.spi.security.AccessDeniedException.denyRenameSchema;
@@ -78,18 +85,19 @@ import static io.trino.spi.security.AccessDeniedException.denyRenameView;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeEntityPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeRoles;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeSchemaPrivilege;
+import static io.trino.spi.security.AccessDeniedException.denyRevokeTableBranchPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denySelectColumns;
 import static io.trino.spi.security.AccessDeniedException.denySetCatalogSessionProperty;
+import static io.trino.spi.security.AccessDeniedException.denySetEntityAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetMaterializedViewProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetRole;
-import static io.trino.spi.security.AccessDeniedException.denySetSchemaAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetSystemSessionProperty;
-import static io.trino.spi.security.AccessDeniedException.denySetTableAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetTableProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetUser;
-import static io.trino.spi.security.AccessDeniedException.denySetViewAuthorization;
+import static io.trino.spi.security.AccessDeniedException.denyShowBranches;
 import static io.trino.spi.security.AccessDeniedException.denyShowColumns;
+import static io.trino.spi.security.AccessDeniedException.denyShowCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateSchema;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateTable;
 import static io.trino.spi.security.AccessDeniedException.denyShowCurrentRoles;
@@ -131,7 +139,7 @@ public class DenyAllAccessControl
     }
 
     @Override
-    public void checkCanExecuteQuery(Identity identity)
+    public void checkCanExecuteQuery(Identity identity, QueryId queryId)
     {
         denyExecuteQuery();
     }
@@ -200,12 +208,6 @@ public class DenyAllAccessControl
     public void checkCanShowCreateTable(SecurityContext context, QualifiedObjectName tableName)
     {
         denyShowCreateTable(tableName.toString());
-    }
-
-    @Override
-    public void checkCanSetSchemaAuthorization(SecurityContext context, CatalogSchemaName schemaName, TrinoPrincipal principal)
-    {
-        denySetSchemaAuthorization(schemaName.toString(), principal);
     }
 
     @Override
@@ -311,12 +313,6 @@ public class DenyAllAccessControl
     }
 
     @Override
-    public void checkCanSetTableAuthorization(SecurityContext context, QualifiedObjectName tableName, TrinoPrincipal principal)
-    {
-        denySetTableAuthorization(tableName.toString(), principal);
-    }
-
-    @Override
     public void checkCanInsertIntoTable(SecurityContext context, QualifiedObjectName tableName)
     {
         denyInsertTable(tableName.toString());
@@ -353,9 +349,9 @@ public class DenyAllAccessControl
     }
 
     @Override
-    public void checkCanSetViewAuthorization(SecurityContext context, QualifiedObjectName view, TrinoPrincipal principal)
+    public void checkCanRefreshView(SecurityContext context, QualifiedObjectName viewName)
     {
-        denySetViewAuthorization(view.toString(), principal);
+        denyRefreshView(viewName.toString());
     }
 
     @Override
@@ -437,6 +433,24 @@ public class DenyAllAccessControl
     }
 
     @Override
+    public void checkCanGrantTableBranchPrivilege(SecurityContext context, Privilege privilege, QualifiedObjectName tableName, String branchName, TrinoPrincipal grantee, boolean grantOption)
+    {
+        denyGrantTableBranchPrivilege(privilege.name(), tableName.toString(), branchName);
+    }
+
+    @Override
+    public void checkCanDenyTableBranchPrivilege(SecurityContext context, Privilege privilege, QualifiedObjectName tableName, String branchName, TrinoPrincipal grantee)
+    {
+        denyDenyTableBranchPrivilege(privilege.name(), tableName.toString(), branchName);
+    }
+
+    @Override
+    public void checkCanRevokeTableBranchPrivilege(SecurityContext context, Privilege privilege, QualifiedObjectName tableName, String branchName, TrinoPrincipal revokee, boolean grantOption)
+    {
+        denyRevokeTableBranchPrivilege(privilege.name(), tableName.toString(), branchName);
+    }
+
+    @Override
     public void checkCanGrantEntityPrivilege(SecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal grantee, boolean grantOption)
     {
         denyGrantEntityPrivilege(privilege.name(), entity);
@@ -455,7 +469,7 @@ public class DenyAllAccessControl
     }
 
     @Override
-    public void checkCanSetSystemSessionProperty(Identity identity, String propertyName)
+    public void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName)
     {
         denySetSystemSessionProperty(propertyName);
     }
@@ -566,5 +580,41 @@ public class DenyAllAccessControl
     public void checkCanDropFunction(SecurityContext context, QualifiedObjectName functionName)
     {
         denyDropFunction(functionName.toString());
+    }
+
+    @Override
+    public void checkCanShowCreateFunction(SecurityContext context, QualifiedObjectName functionName)
+    {
+        denyShowCreateFunction(functionName.toString());
+    }
+
+    @Override
+    public void checkCanSetEntityAuthorization(SecurityContext context, EntityKindAndName entityKindAndName, TrinoPrincipal principal)
+    {
+        denySetEntityAuthorization(entityKindAndName, principal);
+    }
+
+    @Override
+    public void checkCanShowBranches(SecurityContext context, QualifiedObjectName tableName)
+    {
+        denyShowBranches(tableName.toString());
+    }
+
+    @Override
+    public void checkCanCreateBranch(SecurityContext context, QualifiedObjectName tableName, String branchName)
+    {
+        denyCreateBranch(tableName.toString());
+    }
+
+    @Override
+    public void checkCanDropBranch(SecurityContext context, QualifiedObjectName tableName, String branchName)
+    {
+        denyDropBranch(tableName.toString());
+    }
+
+    @Override
+    public void checkCanFastForwardBranch(SecurityContext context, QualifiedObjectName tableName, String sourceBranchName, String targetBranchName)
+    {
+        denyFastForwardBranch(tableName.toString());
     }
 }

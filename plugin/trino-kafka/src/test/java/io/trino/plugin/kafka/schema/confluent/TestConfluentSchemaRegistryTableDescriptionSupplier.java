@@ -16,6 +16,7 @@ package io.trino.plugin.kafka.schema.confluent;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
+import io.confluent.kafka.schemaregistry.avro.AvroSchema;
 import io.confluent.kafka.schemaregistry.client.MockSchemaRegistryClient;
 import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 import io.trino.plugin.kafka.KafkaTopicDescription;
@@ -24,10 +25,8 @@ import io.trino.plugin.kafka.KafkaTopicFieldGroup;
 import io.trino.plugin.kafka.schema.TableDescriptionSupplier;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.SchemaTableName;
-import io.trino.spi.type.TestingTypeManager;
 import io.trino.spi.type.Type;
 import io.trino.testing.TestingConnectorSession;
-import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
 import org.junit.jupiter.api.Test;
 
@@ -36,6 +35,7 @@ import java.util.Optional;
 
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
+import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -193,18 +193,18 @@ public class TestConfluentSchemaRegistryTableDescriptionSupplier
     {
         return new ConfluentSchemaRegistryTableDescriptionSupplier(
                 SCHEMA_REGISTRY_CLIENT,
-                ImmutableMap.of("AVRO", new AvroSchemaParser(new TestingTypeManager())),
+                ImmutableMap.of("AVRO", new AvroSchemaParser(TESTING_TYPE_MANAGER)),
                 DEFAULT_NAME,
                 new Duration(1, SECONDS));
     }
 
-    private static Schema getAvroSchema(String topicName, String columnNamePrefix)
+    private static AvroSchema getAvroSchema(String topicName, String columnNamePrefix)
     {
-        return SchemaBuilder.record(topicName)
+        return new AvroSchema(SchemaBuilder.record(topicName)
                 .fields()
                 .name(columnNamePrefix + "col1").type().intType().noDefault()
                 .name(columnNamePrefix + "col2").type().stringType().noDefault()
-                .endRecord();
+                .endRecord());
     }
 
     private static KafkaTopicFieldGroup getTopicFieldGroup(String topicName, List<KafkaTopicFieldDescription> fieldDescriptions)

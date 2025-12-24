@@ -156,9 +156,9 @@ class PathEvaluationVisitor
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             TypedValue value;
-            if (object instanceof JsonNode) {
-                value = getNumericTypedValue((JsonNode) object)
-                        .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) object).getNodeType().name()));
+            if (object instanceof JsonNode jsonNode) {
+                value = getNumericTypedValue(jsonNode)
+                        .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
             }
             else {
                 value = (TypedValue) object;
@@ -243,8 +243,8 @@ class PathEvaluationVisitor
             }
             return new TypedValue(type, floatToRawIntBits(Math.abs(value)));
         }
-        if (type instanceof DecimalType) {
-            if (((DecimalType) type).isShort()) {
+        if (type instanceof DecimalType decimalType) {
+            if (decimalType.isShort()) {
                 long value = typedValue.getLongValue();
                 if (value > 0) {
                     return typedValue;
@@ -285,9 +285,9 @@ class PathEvaluationVisitor
 
         TypedValue left;
         Object leftObject = getOnlyElement(leftSequence);
-        if (leftObject instanceof JsonNode) {
-            left = getNumericTypedValue((JsonNode) leftObject)
-                    .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) leftObject).getNodeType().name()));
+        if (leftObject instanceof JsonNode jsonNode) {
+            left = getNumericTypedValue(jsonNode)
+                    .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
         }
         else {
             left = (TypedValue) leftObject;
@@ -295,9 +295,9 @@ class PathEvaluationVisitor
 
         TypedValue right;
         Object rightObject = getOnlyElement(rightSequence);
-        if (rightObject instanceof JsonNode) {
-            right = getNumericTypedValue((JsonNode) rightObject)
-                    .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) rightObject).getNodeType().name()));
+        if (rightObject instanceof JsonNode jsonNode) {
+            right = getNumericTypedValue(jsonNode)
+                    .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
         }
         else {
             right = (TypedValue) rightObject;
@@ -336,7 +336,7 @@ class PathEvaluationVisitor
             throw new PathEvaluationException(e);
         }
 
-        return ImmutableList.of(TypedValue.fromValueAsObject(operators.getOperator().getSignature().getReturnType(), result));
+        return ImmutableList.of(TypedValue.fromValueAsObject(operators.getOperator().signature().getReturnType(), result));
     }
 
     @Override
@@ -351,9 +351,9 @@ class PathEvaluationVisitor
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             TypedValue value;
-            if (object instanceof JsonNode) {
-                value = getNumericTypedValue((JsonNode) object)
-                        .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) object).getNodeType().name()));
+            if (object instanceof JsonNode jsonNode) {
+                value = getNumericTypedValue(jsonNode)
+                        .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
             }
             else {
                 value = (TypedValue) object;
@@ -423,8 +423,8 @@ class PathEvaluationVisitor
         if (type.equals(REAL)) {
             return new TypedValue(type, RealOperators.negate(typedValue.getLongValue()));
         }
-        if (type instanceof DecimalType) {
-            if (((DecimalType) type).isShort()) {
+        if (type instanceof DecimalType decimalType) {
+            if (decimalType.isShort()) {
                 return new TypedValue(type, -typedValue.getLongValue());
             }
             Int128 negatedValue;
@@ -448,9 +448,9 @@ class PathEvaluationVisitor
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             List<Object> elements;
-            if (object instanceof JsonNode) {
-                if (((JsonNode) object).isArray()) {
-                    elements = ImmutableList.copyOf(((JsonNode) object).elements());
+            if (object instanceof JsonNode jsonNode) {
+                if (jsonNode.isArray()) {
+                    elements = ImmutableList.copyOf(jsonNode.elements());
                 }
                 else if (lax) {
                     elements = ImmutableList.of(object);
@@ -553,7 +553,7 @@ class PathEvaluationVisitor
         if (type instanceof DecimalType decimalType) {
             int precision = decimalType.getPrecision();
             int scale = decimalType.getScale();
-            if (((DecimalType) type).isShort()) {
+            if (decimalType.isShort()) {
                 long tenToScale = longTenToNth(DecimalConversions.intScale(scale));
                 return DecimalCasts.shortDecimalToBigint(value.getLongValue(), precision, scale, tenToScale);
             }
@@ -581,9 +581,9 @@ class PathEvaluationVisitor
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             TypedValue value;
-            if (object instanceof JsonNode) {
-                value = getNumericTypedValue((JsonNode) object)
-                        .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) object).getNodeType().name()));
+            if (object instanceof JsonNode jsonNode) {
+                value = getNumericTypedValue(jsonNode)
+                        .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
             }
             else {
                 value = (TypedValue) object;
@@ -671,8 +671,7 @@ class PathEvaluationVisitor
                 builder.add(boundValue);
             }
             // recurse into child nodes
-            ImmutableList.copyOf(jsonNode.fields()).stream()
-                    .forEach(field -> descendants(field.getValue(), key, builder));
+            jsonNode.properties().forEach(field -> descendants(field.getValue(), key, builder));
         }
         if (object instanceof JsonNode jsonNode && jsonNode.isArray()) {
             for (int index = 0; index < jsonNode.size(); index++) {
@@ -693,10 +692,10 @@ class PathEvaluationVisitor
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             TypedValue value;
-            if (object instanceof JsonNode) {
-                value = getNumericTypedValue((JsonNode) object)
-                        .orElseGet(() -> getTextTypedValue((JsonNode) object)
-                                .orElseThrow(() -> itemTypeError("NUMBER or TEXT", ((JsonNode) object).getNodeType().name())));
+            if (object instanceof JsonNode jsonNode) {
+                value = getNumericTypedValue(jsonNode)
+                        .orElseGet(() -> getTextTypedValue(jsonNode)
+                                .orElseThrow(() -> itemTypeError("NUMBER or TEXT", jsonNode.getNodeType().name())));
             }
             else {
                 value = (TypedValue) object;
@@ -723,7 +722,7 @@ class PathEvaluationVisitor
         if (type instanceof DecimalType decimalType) {
             int precision = decimalType.getPrecision();
             int scale = decimalType.getScale();
-            if (((DecimalType) type).isShort()) {
+            if (decimalType.isShort()) {
                 long tenToScale = longTenToNth(DecimalConversions.intScale(scale));
                 return new TypedValue(DOUBLE, shortDecimalToDouble(typedValue.getLongValue(), precision, scale, tenToScale));
             }
@@ -775,9 +774,9 @@ class PathEvaluationVisitor
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
             TypedValue value;
-            if (object instanceof JsonNode) {
-                value = getNumericTypedValue((JsonNode) object)
-                        .orElseThrow(() -> itemTypeError("NUMBER", ((JsonNode) object).getNodeType().name()));
+            if (object instanceof JsonNode jsonNode) {
+                value = getNumericTypedValue(jsonNode)
+                        .orElseThrow(() -> itemTypeError("NUMBER", jsonNode.getNodeType().name()));
             }
             else {
                 value = (TypedValue) object;
@@ -804,7 +803,7 @@ class PathEvaluationVisitor
         if (type instanceof DecimalType decimalType) {
             int scale = decimalType.getScale();
             DecimalType resultType = DecimalType.createDecimalType(decimalType.getPrecision() - scale + Math.min(scale, 1), 0);
-            if (((DecimalType) type).isShort()) {
+            if (decimalType.isShort()) {
                 return new TypedValue(resultType, floorShort(scale, typedValue.getLongValue()));
             }
             if (resultType.isShort()) {
@@ -843,16 +842,16 @@ class PathEvaluationVisitor
 
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
-            if (!(object instanceof JsonNode)) {
+            if (!(object instanceof JsonNode jsonNode)) {
                 throw itemTypeError("OBJECT", ((TypedValue) object).getType().getDisplayName());
             }
-            if (!((JsonNode) object).isObject()) {
-                throw itemTypeError("OBJECT", ((JsonNode) object).getNodeType().name());
+            if (!jsonNode.isObject()) {
+                throw itemTypeError("OBJECT", jsonNode.getNodeType().name());
             }
 
             // non-unique keys are not supported. if they were, we should follow the spec here on handling them.
             // see the comment in `visitIrMemberAccessor` method.
-            ((JsonNode) object).fields().forEachRemaining(
+            jsonNode.properties().forEach(
                     field -> outputSequence.add(new ObjectNode(
                             JsonNodeFactory.instance,
                             ImmutableMap.of(
@@ -960,8 +959,8 @@ class PathEvaluationVisitor
 
         ImmutableList.Builder<Object> outputSequence = ImmutableList.builder();
         for (Object object : sequence) {
-            if (object instanceof JsonNode && ((JsonNode) object).isArray()) {
-                outputSequence.add(new TypedValue(INTEGER, ((JsonNode) object).size()));
+            if (object instanceof JsonNode jsonNode && jsonNode.isArray()) {
+                outputSequence.add(new TypedValue(INTEGER, jsonNode.size()));
             }
             else {
                 if (lax) {
@@ -969,8 +968,8 @@ class PathEvaluationVisitor
                 }
                 else {
                     String type;
-                    if (object instanceof JsonNode) {
-                        type = ((JsonNode) object).getNodeType().name();
+                    if (object instanceof JsonNode jsonNode) {
+                        type = jsonNode.getNodeType().name();
                     }
                     else {
                         type = ((TypedValue) object).getType().getDisplayName();
@@ -995,8 +994,8 @@ class PathEvaluationVisitor
         // constant JsonPathAnalyzer.TYPE_METHOD_RESULT_TYPE, which determines the resultType.
         // Today it is only enough to fit the longest of the result strings below.
         for (Object object : sequence) {
-            if (object instanceof JsonNode) {
-                switch (((JsonNode) object).getNodeType()) {
+            if (object instanceof JsonNode jsonNode) {
+                switch (jsonNode.getNodeType()) {
                     case NUMBER:
                         outputSequence.add(new TypedValue(resultType, utf8Slice("number")));
                         break;
@@ -1016,7 +1015,7 @@ class PathEvaluationVisitor
                         outputSequence.add(new TypedValue(resultType, utf8Slice("null")));
                         break;
                     default:
-                        throw new IllegalArgumentException("unexpected Json node type: " + ((JsonNode) object).getNodeType());
+                        throw new IllegalArgumentException("unexpected Json node type: " + jsonNode.getNodeType());
                 }
             }
             else {

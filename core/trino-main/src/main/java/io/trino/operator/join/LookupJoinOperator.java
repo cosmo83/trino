@@ -16,14 +16,15 @@ package io.trino.operator.join;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.trino.operator.HashGenerator;
 import io.trino.operator.OperatorInfo;
-import io.trino.operator.PageBuffer;
 import io.trino.operator.ProcessorContext;
+import io.trino.operator.SpillMetrics;
 import io.trino.operator.WorkProcessor;
-import io.trino.operator.WorkProcessorOperatorAdapter.AdapterWorkProcessorOperator;
+import io.trino.operator.WorkProcessorOperator;
 import io.trino.operator.join.JoinProbe.JoinProbeFactory;
 import io.trino.operator.join.LookupJoinOperatorFactory.JoinType;
 import io.trino.operator.join.PageJoiner.PageJoinerFactory;
 import io.trino.spi.Page;
+import io.trino.spi.metrics.Metrics;
 import io.trino.spi.type.Type;
 import io.trino.spiller.PartitioningSpillerFactory;
 
@@ -31,17 +32,18 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
 
+import static com.google.common.util.concurrent.Futures.transform;
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.trino.operator.WorkProcessor.flatten;
 
 public class LookupJoinOperator
-        implements AdapterWorkProcessorOperator
+        implements WorkProcessorOperator
 {
     private final ListenableFuture<LookupSourceProvider> lookupSourceProviderFuture;
-    private final boolean waitForBuild;
-    private final PageBuffer pageBuffer;
     private final WorkProcessor<Page> pages;
     private final SpillingJoinProcessor joinProcessor;
     private final JoinStatisticsCounter statisticsCounter;
+    private final SpillMetrics spillMetrics = new SpillMetrics("Probe");
 
     LookupJoinOperator(
             List<Type> probeTypes,
@@ -56,12 +58,10 @@ public class LookupJoinOperator
             HashGenerator hashGenerator,
             PartitioningSpillerFactory partitioningSpillerFactory,
             ProcessorContext processorContext,
-            Optional<WorkProcessor<Page>> sourcePages)
+            WorkProcessor<Page> sourcePages)
     {
         this.statisticsCounter = new JoinStatisticsCounter(joinType);
-        this.waitForBuild = waitForBuild;
         lookupSourceProviderFuture = lookupSourceFactory.createLookupSourceProvider();
-        pageBuffer = new PageBuffer();
         PageJoinerFactory pageJoinerFactory = (lookupSourceProvider, joinerPartitioningSpillerFactory, savedRows) ->
                 new DefaultPageJoiner(
                         processorContext,
@@ -69,6 +69,7 @@ public class LookupJoinOperator
                         buildOutputTypes,
                         joinType,
                         outputSingleMatch,
+                        spillMetrics,
                         hashGenerator,
                         joinProbeFactory,
                         lookupSourceFactory,
@@ -83,9 +84,21 @@ public class LookupJoinOperator
                 lookupSourceFactory,
                 lookupSourceProviderFuture,
                 partitioningSpillerFactory,
+                spillMetrics,
                 pageJoinerFactory,
-                sourcePages.orElse(pageBuffer.pages()));
-        pages = flatten(WorkProcessor.create(joinProcessor));
+                sourcePages);
+        WorkProcessor<Page> pages = flatten(WorkProcessor.create(joinProcessor));
+        if (waitForBuild) {
+            // wait for build side before fetching any probe pages
+            pages = pages.blocking(() -> transform(lookupSourceProviderFuture, ignored -> null, directExecutor()));
+        }
+        this.pages = pages;
+    }
+
+    @Override
+    public WorkProcessor<Page> getOutputPages()
+    {
+        return pages;
     }
 
     @Override
@@ -95,27 +108,9 @@ public class LookupJoinOperator
     }
 
     @Override
-    public boolean needsInput()
+    public Metrics getMetrics()
     {
-        return (!waitForBuild || lookupSourceProviderFuture.isDone()) && pageBuffer.isEmpty() && !pageBuffer.isFinished();
-    }
-
-    @Override
-    public void addInput(Page page)
-    {
-        pageBuffer.add(page);
-    }
-
-    @Override
-    public void finish()
-    {
-        pageBuffer.finish();
-    }
-
-    @Override
-    public WorkProcessor<Page> getOutputPages()
-    {
-        return pages;
+        return spillMetrics.getMetrics();
     }
 
     @Override

@@ -13,29 +13,32 @@
  */
 package io.trino.tests.product.deltalake;
 
-import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.model.ListObjectsV2Result;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Inject;
 import com.google.inject.name.Named;
+import io.trino.tempto.AfterMethodWithContext;
 import io.trino.tempto.BeforeMethodWithContext;
 import io.trino.tempto.assertions.QueryAssert.Row;
 import io.trino.testng.services.Flaky;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 
 import java.util.List;
+import java.util.Map;
 
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.tempto.assertions.QueryAssert.assertQueryFailure;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS;
-import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_104;
-import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_113;
-import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_122;
-import static io.trino.tests.product.TestGroups.DELTA_LAKE_EXCLUDE_91;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_133;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_143;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_154;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_164;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_OSS;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
+import static io.trino.tests.product.deltalake.S3ClientFactory.createS3Client;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_ISSUE;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_MATCH;
 import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.dropDeltaTableWithRetry;
@@ -53,15 +56,22 @@ public class TestDeltaLakeChangeDataFeedCompatibility
     @Named("s3.server_type")
     private String s3ServerType;
 
-    private AmazonS3 s3Client;
+    private S3Client s3Client;
 
     @BeforeMethodWithContext
     public void setup()
     {
-        s3Client = new S3ClientFactory().createS3Client(s3ServerType);
+        s3Client = createS3Client(s3ServerType);
     }
 
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_OSS, DELTA_LAKE_EXCLUDE_91, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingModeDataProvider")
+    @AfterMethodWithContext
+    public void cleanUp()
+    {
+        s3Client.close();
+        s3Client = null;
+    }
+
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingModeDataProvider")
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testUpdateTableWithCdf(String columnMappingMode)
     {
@@ -97,7 +107,7 @@ public class TestDeltaLakeChangeDataFeedCompatibility
         }
     }
 
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_OSS, DELTA_LAKE_EXCLUDE_91, PROFILE_SPECIFIC_TESTS})
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS})
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testUpdateTableWithChangeDataFeedWriterFeature()
     {
@@ -109,6 +119,13 @@ public class TestDeltaLakeChangeDataFeedCompatibility
                 "TBLPROPERTIES ('delta.enableChangeDataFeed'=true, 'delta.minWriterVersion'=7)");
         try {
             assertThat(onTrino().executeQuery("SHOW CREATE TABLE delta.default." + tableName).getOnlyValue().toString()).contains("change_data_feed_enabled = true");
+
+            // TODO https://github.com/trinodb/trino/issues/23620 Fix incorrect CDC entry when deletion vector is enabled
+            Map<String, String> properties = getTablePropertiesOnDelta("default", tableName);
+            if (properties.getOrDefault("delta.enableChangeDataFeed", "false").equals("true") &&
+                    properties.getOrDefault("delta.enableDeletionVectors", "false").equals("true")) {
+                return;
+            }
 
             onDelta().executeQuery("INSERT INTO default." + tableName + " VALUES ('testValue1', 1), ('testValue2', 2), ('testValue3', 3)");
             onTrino().executeQuery("UPDATE delta.default." + tableName + " SET updated_column = 30 WHERE col1 = 'testValue3'");
@@ -191,7 +208,7 @@ public class TestDeltaLakeChangeDataFeedCompatibility
         }
     }
 
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_OSS, DELTA_LAKE_EXCLUDE_91, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingModeDataProvider")
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingModeDataProvider")
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testUpdatePartitionedTableWithCdf(String columnMappingMode)
     {
@@ -202,6 +219,13 @@ public class TestDeltaLakeChangeDataFeedCompatibility
                     "PARTITIONED BY (partitioning_column_1, partitioning_column_2) " +
                     "LOCATION 's3://" + bucketName + "/databricks-compatibility-test-" + tableName + "'" +
                     "TBLPROPERTIES (delta.enableChangeDataFeed = true, 'delta.columnMapping.mode'='" + columnMappingMode + "')");
+
+            // TODO https://github.com/trinodb/trino/issues/23620 Fix incorrect CDC entry when deletion vector is enabled
+            Map<String, String> properties = getTablePropertiesOnDelta("default", tableName);
+            if (properties.getOrDefault("delta.enableChangeDataFeed", "false").equals("true") &&
+                    properties.getOrDefault("delta.enableDeletionVectors", "false").equals("true")) {
+                return;
+            }
 
             onDelta().executeQuery("INSERT INTO default." + tableName + " VALUES ('testValue1', 1, 'partition1')");
             onDelta().executeQuery("INSERT INTO default." + tableName + " VALUES ('testValue2', 2, 'partition2')");
@@ -370,7 +394,7 @@ public class TestDeltaLakeChangeDataFeedCompatibility
         }
     }
 
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_OSS, DELTA_LAKE_EXCLUDE_91, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingModeDataProvider")
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingModeDataProvider")
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testDeleteFromTableWithCdf(String columnMappingMode)
     {
@@ -380,6 +404,13 @@ public class TestDeltaLakeChangeDataFeedCompatibility
                     "USING DELTA " +
                     "LOCATION 's3://" + bucketName + "/databricks-compatibility-test-" + tableName + "'" +
                     "TBLPROPERTIES (delta.enableChangeDataFeed = true, 'delta.columnMapping.mode' = '" + columnMappingMode + "')");
+
+            // TODO https://github.com/trinodb/trino/issues/23620 Fix incorrect CDC entry when deletion vector is enabled
+            Map<String, String> properties = getTablePropertiesOnDelta("default", tableName);
+            if (properties.getOrDefault("delta.enableChangeDataFeed", "false").equals("true") &&
+                    properties.getOrDefault("delta.enableDeletionVectors", "false").equals("true")) {
+                return;
+            }
 
             onDelta().executeQuery("INSERT INTO default." + tableName + " VALUES('testValue1', 1)");
             onDelta().executeQuery("INSERT INTO default." + tableName + " VALUES('testValue2', 2)");
@@ -509,7 +540,7 @@ public class TestDeltaLakeChangeDataFeedCompatibility
         }
     }
 
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_104, DELTA_LAKE_DATABRICKS_113, DELTA_LAKE_DATABRICKS_122, DELTA_LAKE_OSS, DELTA_LAKE_EXCLUDE_91, PROFILE_SPECIFIC_TESTS})
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_133, DELTA_LAKE_DATABRICKS_143, DELTA_LAKE_DATABRICKS_154, DELTA_LAKE_DATABRICKS_164, DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS})
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testMergeMixedDeleteAndUpdateIntoTableWithCdfEnabled()
     {
@@ -523,6 +554,13 @@ public class TestDeltaLakeChangeDataFeedCompatibility
             onDelta().executeQuery("CREATE TABLE default." + sourceTableName + " (page_id INT, page_url STRING, views INT) " +
                     "USING DELTA " +
                     "LOCATION 's3://" + bucketName + "/databricks-compatibility-test-" + sourceTableName + "'");
+
+            // TODO https://github.com/trinodb/trino/issues/23620 Fix incorrect CDC entry when deletion vector is enabled
+            Map<String, String> properties = getTablePropertiesOnDelta("default", targetTableName);
+            if (properties.getOrDefault("delta.enableChangeDataFeed", "false").equals("true") &&
+                    properties.getOrDefault("delta.enableDeletionVectors", "false").equals("true")) {
+                return;
+            }
 
             onDelta().executeQuery("INSERT INTO default." + targetTableName + " VALUES (1, 'pageUrl1', 100)");
             onDelta().executeQuery("INSERT INTO default." + targetTableName + " VALUES (2, 'pageUrl2', 200)");
@@ -856,7 +894,7 @@ public class TestDeltaLakeChangeDataFeedCompatibility
     private void assertThatThereIsNoChangeDataFiles(String tableName)
     {
         String prefix = "databricks-compatibility-test-" + tableName + "/_change_data/";
-        ListObjectsV2Result listResult = s3Client.listObjectsV2(bucketName, prefix);
-        assertThat(listResult.getObjectSummaries()).isEmpty();
+        ListObjectsV2Response response = s3Client.listObjectsV2(request -> request.bucket(bucketName).prefix(prefix));
+        assertThat(response.contents()).isEmpty();
     }
 }

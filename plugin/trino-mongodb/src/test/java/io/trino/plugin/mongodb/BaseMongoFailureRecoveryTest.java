@@ -13,9 +13,8 @@
  */
 package io.trino.plugin.mongodb;
 
-import com.google.common.collect.ImmutableMap;
+import com.google.inject.Module;
 import io.trino.operator.RetryPolicy;
-import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.testing.BaseFailureRecoveryTest;
 import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
@@ -24,7 +23,6 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Map;
 
-import static io.trino.plugin.mongodb.MongoQueryRunner.createMongoQueryRunner;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.abort;
 
@@ -40,20 +38,17 @@ public abstract class BaseMongoFailureRecoveryTest
     protected QueryRunner createQueryRunner(
             List<TpchTable<?>> requiredTpchTables,
             Map<String, String> configProperties,
-            Map<String, String> coordinatorProperties)
+            Map<String, String> coordinatorProperties,
+            Module failureInjectionModule)
             throws Exception
     {
-        return createMongoQueryRunner(
-                closeAfterClass(new MongoServer()),
-                configProperties,
-                coordinatorProperties,
-                Map.of(),
-                requiredTpchTables,
-                runner -> {
-                    runner.installPlugin(new FileSystemExchangePlugin());
-                    runner.loadExchangeManager("filesystem", ImmutableMap.of(
-                            "exchange.base-directories", System.getProperty("java.io.tmpdir") + "/trino-local-file-system-exchange-manager"));
-                });
+        return MongoQueryRunner.builder(closeAfterClass(new MongoServer()))
+                .setExtraProperties(configProperties)
+                .setCoordinatorProperties(coordinatorProperties)
+                .withExchange("filesystem")
+                .setAdditionalModule(failureInjectionModule)
+                .setInitialTables(requiredTpchTables)
+                .build();
     }
 
     @Test

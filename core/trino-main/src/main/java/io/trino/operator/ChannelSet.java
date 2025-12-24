@@ -24,7 +24,6 @@ import static io.trino.spi.function.InvocationConvention.InvocationArgumentConve
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FLAT_RETURN;
 import static io.trino.spi.function.InvocationConvention.simpleConvention;
-import static io.trino.spi.type.BigintType.BIGINT;
 import static java.util.Objects.requireNonNull;
 
 public class ChannelSet
@@ -77,7 +76,7 @@ public class ChannelSet
                     type,
                     typeOperators.getReadValueOperator(type, simpleConvention(FLAT_RETURN, BLOCK_POSITION_NOT_NULL)),
                     typeOperators.getHashCodeOperator(type, simpleConvention(FAIL_ON_NULL, FLAT)),
-                    typeOperators.getDistinctFromOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, BLOCK_POSITION_NOT_NULL)),
+                    typeOperators.getIdenticalOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, BLOCK_POSITION_NOT_NULL)),
                     typeOperators.getHashCodeOperator(type, simpleConvention(FAIL_ON_NULL, BLOCK_POSITION_NOT_NULL)));
             this.memoryContext = requireNonNull(memoryContext, "memoryContext is null");
             this.memoryContext.setBytes(set.getEstimatedSize());
@@ -88,24 +87,14 @@ public class ChannelSet
             return new ChannelSet(set);
         }
 
-        public void addAll(Block valueBlock, Block hashBlock)
+        public void addAll(Block valueBlock)
         {
             if (valueBlock.getPositionCount() == 0) {
                 return;
             }
 
             if (valueBlock instanceof RunLengthEncodedBlock rleBlock) {
-                if (hashBlock != null) {
-                    set.add(rleBlock.getValue(), 0, BIGINT.getLong(hashBlock, 0));
-                }
-                else {
-                    set.add(rleBlock.getValue(), 0);
-                }
-            }
-            else if (hashBlock != null) {
-                for (int position = 0; position < valueBlock.getPositionCount(); position++) {
-                    set.add(valueBlock, position, BIGINT.getLong(hashBlock, position));
-                }
+                set.add(rleBlock.getValue(), 0);
             }
             else {
                 for (int position = 0; position < valueBlock.getPositionCount(); position++) {

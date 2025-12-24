@@ -31,8 +31,8 @@ import io.trino.server.BasicQueryInfo;
 import io.trino.spi.ErrorCode;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
-import org.joda.time.DateTime;
 
+import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -42,6 +42,7 @@ import static com.google.common.util.concurrent.Futures.nonCancellationPropagati
 import static io.airlift.concurrent.MoreFutures.addExceptionCallback;
 import static io.airlift.concurrent.MoreFutures.addSuccessCallback;
 import static io.airlift.concurrent.MoreFutures.tryGetFutureValue;
+import static io.airlift.units.Duration.succinctDuration;
 import static io.trino.SystemSessionProperties.getRequiredWorkers;
 import static io.trino.SystemSessionProperties.getRequiredWorkersMaxWait;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
@@ -93,8 +94,13 @@ public class LocalDispatchQuery
 
         stateMachine.addStateChangeListener(state -> {
             if (state == QueryState.FAILED) {
+                // notificationSentOrGuaranteed.compareAndSet(false, true) ensures the queryCompletedEvent is only fired once.
+                // Either via an immediateFailureEvent or a finalQueryInfoListener.
+                // In cases when finalQueryInfoListener wins the race AND finalQueryInfo is not set the listener isn't triggered.
+                // getFullQueryInfo() force sets finalQueryInfo so the finalQueryInfoListener condition is met.
+                ExecutionFailureInfo failureInfo = getFullQueryInfo().getFailureInfo();
                 if (notificationSentOrGuaranteed.compareAndSet(false, true)) {
-                    queryMonitor.queryImmediateFailureEvent(getBasicQueryInfo(), getFullQueryInfo().getFailureInfo());
+                    queryMonitor.queryImmediateFailureEvent(getBasicQueryInfo(), failureInfo);
                 }
             }
             // any PLANNING or later state means the query has been submitted for execution
@@ -127,7 +133,7 @@ public class LocalDispatchQuery
             ListenableFuture<Void> minimumWorkerFuture = clusterSizeMonitor.waitForMinimumWorkers(executionMinCount, getRequiredWorkersMaxWait(session));
             // when worker requirement is met, start the execution
             addSuccessCallback(minimumWorkerFuture, () -> startExecution(queryExecution), queryExecutor);
-            addExceptionCallback(minimumWorkerFuture, throwable -> stateMachine.transitionToFailed(throwable), queryExecutor);
+            addExceptionCallback(minimumWorkerFuture, stateMachine::transitionToFailed, queryExecutor);
 
             // cancel minimumWorkerFuture if query fails for some reason or is cancelled by user
             stateMachine.addStateChangeListener(state -> {
@@ -166,7 +172,7 @@ public class LocalDispatchQuery
     }
 
     @Override
-    public DateTime getLastHeartbeat()
+    public Instant getLastHeartbeat()
     {
         return stateMachine.getLastHeartbeat();
     }
@@ -208,13 +214,13 @@ public class LocalDispatchQuery
     }
 
     @Override
-    public DateTime getCreateTime()
+    public Instant getCreateTime()
     {
         return stateMachine.getCreateTime();
     }
 
     @Override
-    public Optional<DateTime> getExecutionStartTime()
+    public Optional<Instant> getExecutionStartTime()
     {
         return stateMachine.getExecutionStartTime();
     }
@@ -226,7 +232,7 @@ public class LocalDispatchQuery
     }
 
     @Override
-    public Optional<DateTime> getEndTime()
+    public Optional<Instant> getEndTime()
     {
         return stateMachine.getEndTime();
     }
@@ -236,7 +242,7 @@ public class LocalDispatchQuery
     {
         return tryGetQueryExecution()
                 .map(QueryExecution::getTotalCpuTime)
-                .orElseGet(() -> new Duration(0, MILLISECONDS));
+                .orElseGet(() -> succinctDuration(0, MILLISECONDS));
     }
 
     @Override
@@ -302,6 +308,12 @@ public class LocalDispatchQuery
     }
 
     @Override
+    public boolean isInfoPruned()
+    {
+        return stateMachine.isQueryInfoPruned();
+    }
+
+    @Override
     public Optional<ErrorCode> getErrorCode()
     {
         return stateMachine.getFailureInfo().map(ExecutionFailureInfo::getErrorCode);
@@ -318,7 +330,7 @@ public class LocalDispatchQuery
         try {
             return tryGetFutureValue(queryExecutionFuture);
         }
-        catch (Exception ignored) {
+        catch (Exception _) {
             return Optional.empty();
         }
         catch (Error e) {

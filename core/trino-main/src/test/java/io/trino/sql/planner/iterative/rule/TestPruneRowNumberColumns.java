@@ -15,7 +15,7 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.assertions.RowNumberSymbolMatcher;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
@@ -48,7 +48,7 @@ public class TestPruneRowNumberColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a"))),
+                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a"))),
                                 values(ImmutableList.of("a"))));
 
         // partitioning is present, no limit per partition
@@ -62,7 +62,7 @@ public class TestPruneRowNumberColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a"))),
+                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a"))),
                                 values(ImmutableList.of("a"))));
 
         // no partitioning, limit per partition is present
@@ -76,7 +76,7 @@ public class TestPruneRowNumberColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a"))),
+                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a"))),
                                 limit(
                                         5,
                                         values(ImmutableList.of("a")))));
@@ -93,13 +93,13 @@ public class TestPruneRowNumberColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a"))),
+                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a"))),
                                 rowNumber(
                                         pattern -> pattern
                                                 .partitionBy(ImmutableList.of("a"))
                                                 .maxRowCountPerPartition(Optional.of(5)),
                                         strictProject(
-                                                ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a"))),
+                                                ImmutableMap.of("a", expression(new Reference(BIGINT, "a"))),
                                                 values(ImmutableList.of("a", "b"))))));
     }
 
@@ -124,10 +124,9 @@ public class TestPruneRowNumberColumns
                 .on(p -> {
                     Symbol a = p.symbol("a");
                     Symbol rowNumber = p.symbol("row_number");
-                    Symbol hash = p.symbol("hash");
                     return p.project(
                             Assignments.identity(a, rowNumber),
-                            p.rowNumber(ImmutableList.of(a), Optional.empty(), rowNumber, Optional.of(hash), p.values(a, hash)));
+                            p.rowNumber(ImmutableList.of(a), Optional.empty(), rowNumber, p.values(a)));
                 })
                 .doesNotFire();
     }
@@ -145,7 +144,7 @@ public class TestPruneRowNumberColumns
                 })
                 .matches(
                         strictProject(
-                                ImmutableMap.of("row_number", expression(new SymbolReference(BIGINT, "row_number"))),
+                                ImmutableMap.of("row_number", expression(new Reference(BIGINT, "row_number"))),
                                 rowNumber(
                                         pattern -> pattern
                                                 .partitionBy(ImmutableList.of()),

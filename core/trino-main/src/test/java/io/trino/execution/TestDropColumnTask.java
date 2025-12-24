@@ -14,6 +14,7 @@
 package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.QualifiedObjectName;
@@ -24,6 +25,7 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.RowType.Field;
 import io.trino.sql.tree.DropColumn;
+import io.trino.sql.tree.NodeLocation;
 import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
@@ -48,11 +50,11 @@ public class TestDropColumnTask
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
         metadata.createTable(testSession, TEST_CATALOG_NAME, simpleTable(tableName), FAIL);
         TableHandle table = metadata.getTableHandle(testSession, tableName).get();
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(new ColumnMetadata("a", BIGINT), new ColumnMetadata("b", BIGINT));
 
         getFutureValue(executeDropColumn(asQualifiedName(tableName), QualifiedName.of("b"), false, false));
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(new ColumnMetadata("a", BIGINT));
     }
 
@@ -62,7 +64,7 @@ public class TestDropColumnTask
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
         metadata.createTable(testSession, TEST_CATALOG_NAME, someTable(tableName), FAIL);
         TableHandle table = metadata.getTableHandle(testSession, tableName).get();
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(new ColumnMetadata("test", BIGINT));
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropColumn(asQualifiedName(tableName), QualifiedName.of("test"), false, false)))
@@ -108,7 +110,7 @@ public class TestDropColumnTask
         TableHandle table = metadata.getTableHandle(testSession, tableName).get();
 
         getFutureValue(executeDropColumn(asQualifiedName(tableName), QualifiedName.of("c"), false, true));
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(new ColumnMetadata("a", BIGINT), new ColumnMetadata("b", BIGINT));
     }
 
@@ -118,13 +120,13 @@ public class TestDropColumnTask
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
         metadata.createTable(testSession, TEST_CATALOG_NAME, rowTable(tableName, new Field(Optional.of("a"), BIGINT), new Field(Optional.of("a"), BIGINT)), FAIL);
         TableHandle table = metadata.getTableHandle(testSession, tableName).get();
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .isEqualTo(ImmutableList.of(new ColumnMetadata("col", RowType.rowType(
                         new Field(Optional.of("a"), BIGINT), new Field(Optional.of("a"), BIGINT)))));
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropColumn(asQualifiedName(tableName), QualifiedName.of("col", "a"), false, false)))
                 .hasErrorCode(COLUMN_NOT_FOUND)
-                .hasMessageContaining("Field path [a] within row(a bigint, a bigint) is ambiguous");
+                .hasMessageContaining("Field path [a] within row(\"a\" bigint, \"a\" bigint) is ambiguous");
     }
 
     @Test
@@ -133,7 +135,7 @@ public class TestDropColumnTask
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
         metadata.createTable(testSession, TEST_CATALOG_NAME, rowTable(tableName, new Field(Optional.of("a"), BIGINT)), FAIL);
         TableHandle table = metadata.getTableHandle(testSession, tableName).get();
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(new ColumnMetadata("col", RowType.rowType(new Field(Optional.of("a"), BIGINT))));
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropColumn(asQualifiedName(tableName), QualifiedName.of("col", "a"), false, false)))
@@ -145,7 +147,7 @@ public class TestDropColumnTask
     public void testDropColumnOnView()
     {
         QualifiedObjectName viewName = qualifiedObjectName("existing_view");
-        metadata.createView(testSession, viewName, someView(), false);
+        metadata.createView(testSession, viewName, someView(), ImmutableMap.of(), false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropColumn(asQualifiedName(viewName), QualifiedName.of("test"), false, false)))
                 .hasErrorCode(TABLE_NOT_FOUND)
@@ -166,7 +168,7 @@ public class TestDropColumnTask
     private ListenableFuture<Void> executeDropColumn(QualifiedName table, QualifiedName column, boolean tableExists, boolean columnExists)
     {
         return new DropColumnTask(plannerContext.getMetadata(), new AllowAllAccessControl())
-                .execute(new DropColumn(table, column, tableExists, columnExists), queryStateMachine, ImmutableList.of(), WarningCollector.NOOP);
+                .execute(new DropColumn(new NodeLocation(1, 1), table, column, tableExists, columnExists), queryStateMachine, ImmutableList.of(), WarningCollector.NOOP);
     }
 
     private static ConnectorTableMetadata simpleTable(QualifiedObjectName tableName)

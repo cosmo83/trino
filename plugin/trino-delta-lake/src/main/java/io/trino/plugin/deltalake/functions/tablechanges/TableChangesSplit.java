@@ -14,7 +14,6 @@
 package io.trino.plugin.deltalake.functions.tablechanges;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.SizeOf;
 import io.trino.spi.SplitWeight;
 import io.trino.spi.connector.ConnectorSplit;
@@ -36,16 +35,6 @@ public record TableChangesSplit(
         implements ConnectorSplit
 {
     private static final int INSTANCE_SIZE = instanceSize(TableChangesSplit.class);
-
-    @JsonIgnore
-    @Override
-    public Object getInfo()
-    {
-        return ImmutableMap.builder()
-                .put("path", path)
-                .put("length", fileSize)
-                .buildOrThrow();
-    }
 
     @JsonIgnore
     @Override

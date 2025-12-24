@@ -16,14 +16,17 @@ package io.trino.eventlistener;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Inject;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.log.Logger;
 import io.airlift.stats.TimeStat;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Tracer;
+import io.trino.client.NodeVersion;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.eventlistener.EventListener;
 import io.trino.spi.eventlistener.EventListenerFactory;
 import io.trino.spi.eventlistener.QueryCompletedEvent;
 import io.trino.spi.eventlistener.QueryCreatedEvent;
-import io.trino.spi.eventlistener.SplitCompletedEvent;
 import jakarta.annotation.PreDestroy;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
@@ -38,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -59,15 +63,19 @@ public class EventListenerManager
     private final List<EventListener> providedEventListeners = Collections.synchronizedList(new ArrayList<>());
     private final AtomicReference<List<EventListener>> configuredEventListeners = new AtomicReference<>(ImmutableList.of());
     private final AtomicBoolean loading = new AtomicBoolean(false);
+    private final AtomicInteger concurrentQueryCompletedEvents = new AtomicInteger();
 
     private final TimeStat queryCreatedTime = new TimeStat(MILLISECONDS);
     private final TimeStat queryCompletedTime = new TimeStat(MILLISECONDS);
-    private final TimeStat splitCompletedTime = new TimeStat(MILLISECONDS);
+    private final SecretsResolver secretsResolver;
+    private final EventListenerContextInstance context;
 
     @Inject
-    public EventListenerManager(EventListenerConfig config)
+    public EventListenerManager(EventListenerConfig config, SecretsResolver secretsResolver, OpenTelemetry openTelemetry, Tracer tracer, NodeVersion version)
     {
         this.configFiles = ImmutableList.copyOf(config.getEventListenerFiles());
+        this.secretsResolver = requireNonNull(secretsResolver, "secretsResolver is null");
+        this.context = new EventListenerContextInstance(version.toString(), openTelemetry, tracer);
     }
 
     public void addEventListenerFactory(EventListenerFactory eventListenerFactory)
@@ -123,8 +131,8 @@ public class EventListenerManager
         checkArgument(factory != null, "Event listener factory '%s' is not registered. Available factories: %s", name, eventListenerFactories.keySet());
 
         EventListener eventListener;
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
-            eventListener = factory.create(properties);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
+            eventListener = factory.create(secretsResolver.getResolvedConfiguration(properties), context);
         }
 
         log.info("-- Loaded event listener %s --", configFile);
@@ -143,8 +151,10 @@ public class EventListenerManager
 
     public void queryCompleted(Function<Boolean, QueryCompletedEvent> queryCompletedEventProvider)
     {
-        try (TimeStat.BlockTimer ignored = queryCompletedTime.time()) {
+        try (TimeStat.BlockTimer _ = queryCompletedTime.time()) {
+            concurrentQueryCompletedEvents.incrementAndGet();
             doQueryCompleted(queryCompletedEventProvider);
+            concurrentQueryCompletedEvents.decrementAndGet();
         }
     }
 
@@ -163,7 +173,7 @@ public class EventListenerManager
 
     public void queryCreated(QueryCreatedEvent queryCreatedEvent)
     {
-        try (TimeStat.BlockTimer ignored = queryCreatedTime.time()) {
+        try (TimeStat.BlockTimer _ = queryCreatedTime.time()) {
             doQueryCreated(queryCreatedEvent);
         }
     }
@@ -176,25 +186,6 @@ public class EventListenerManager
             }
             catch (Throwable e) {
                 log.warn(e, "Failed to publish QueryCreatedEvent for query %s", queryCreatedEvent.getMetadata().getQueryId());
-            }
-        }
-    }
-
-    public void splitCompleted(SplitCompletedEvent splitCompletedEvent)
-    {
-        try (TimeStat.BlockTimer ignored = splitCompletedTime.time()) {
-            doSplitCompleted(splitCompletedEvent);
-        }
-    }
-
-    private void doSplitCompleted(SplitCompletedEvent splitCompletedEvent)
-    {
-        for (EventListener listener : configuredEventListeners.get()) {
-            try {
-                listener.splitCompleted(splitCompletedEvent);
-            }
-            catch (Throwable e) {
-                log.warn(e, "Failed to publish SplitCompletedEvent for query %s", splitCompletedEvent.getQueryId());
             }
         }
     }
@@ -214,10 +205,9 @@ public class EventListenerManager
     }
 
     @Managed
-    @Nested
-    public TimeStat getSplitCompletedTime()
+    public int getConcurrentQueryCompletedEvents()
     {
-        return splitCompletedTime;
+        return concurrentQueryCompletedEvents.get();
     }
 
     @PreDestroy
@@ -228,7 +218,7 @@ public class EventListenerManager
                 listener.shutdown();
             }
             catch (Throwable e) {
-                log.warn(e, "Failed to shutdown event listener: " + listener.getClass().getCanonicalName());
+                log.warn(e, "Failed to shutdown event listener: %s", listener.getClass().getCanonicalName());
             }
         }
     }

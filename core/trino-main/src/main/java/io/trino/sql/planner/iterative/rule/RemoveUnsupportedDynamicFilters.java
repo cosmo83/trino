@@ -24,8 +24,8 @@ import io.trino.sql.ir.Cast;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.ir.ExpressionRewriter;
 import io.trino.sql.ir.ExpressionTreeRewriter;
-import io.trino.sql.ir.LogicalExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Logical;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.optimizations.PlanOptimizer;
 import io.trino.sql.planner.plan.DynamicFilterId;
@@ -53,7 +53,7 @@ import static io.trino.spi.function.OperatorType.SATURATED_FLOOR_CAST;
 import static io.trino.sql.DynamicFilters.extractDynamicFilters;
 import static io.trino.sql.DynamicFilters.getDescriptor;
 import static io.trino.sql.DynamicFilters.isDynamicFilter;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
 import static io.trino.sql.ir.IrUtils.combinePredicates;
 import static io.trino.sql.ir.IrUtils.extractConjuncts;
@@ -120,7 +120,7 @@ public class RemoveUnsupportedDynamicFilters
         public PlanWithConsumedDynamicFilters visitJoin(JoinNode node, Set<DynamicFilterId> allowedDynamicFilterIds)
         {
             Map<DynamicFilterId, Symbol> currentJoinDynamicFilters = getJoinDynamicFilters(node);
-            ImmutableSet<DynamicFilterId> allowedDynamicFilterIdsProbeSide = ImmutableSet.<DynamicFilterId>builder()
+            Set<DynamicFilterId> allowedDynamicFilterIdsProbeSide = ImmutableSet.<DynamicFilterId>builder()
                     .addAll(currentJoinDynamicFilters.keySet())
                     .addAll(allowedDynamicFilterIds)
                     .build();
@@ -138,7 +138,7 @@ public class RemoveUnsupportedDynamicFilters
 
             Optional<Expression> filter = node
                     .getFilter().map(this::removeAllDynamicFilters)  // no DF support at Join operators.
-                    .filter(expression -> !expression.equals(TRUE_LITERAL));
+                    .filter(expression -> !expression.equals(TRUE));
 
             PlanNode left = leftResult.getNode();
             PlanNode right = rightResult.getNode();
@@ -156,8 +156,6 @@ public class RemoveUnsupportedDynamicFilters
                         node.getRightOutputSymbols(),
                         node.isMaySkipOutputDuplicates(),
                         filter,
-                        node.getLeftHashSymbol(),
-                        node.getRightHashSymbol(),
                         node.getDistributionType(),
                         node.isSpillable(),
                         // When there was no dynamic filter in join, it should remain empty
@@ -241,8 +239,6 @@ public class RemoveUnsupportedDynamicFilters
                         node.getSourceJoinSymbol(),
                         node.getFilteringSourceJoinSymbol(),
                         node.getSemiJoinOutput(),
-                        node.getSourceHashSymbol(),
-                        node.getFilteringSourceHashSymbol(),
                         node.getDistributionType(),
                         // When there was no dynamic filter in semi-join, it should remain empty
                         node.getDynamicFilterId().isEmpty() ? Optional.empty() : newFilterId),
@@ -270,7 +266,7 @@ public class RemoveUnsupportedDynamicFilters
                 modified = removeAllDynamicFilters(original);
             }
 
-            if (TRUE_LITERAL.equals(modified)) {
+            if (TRUE.equals(modified)) {
                 return new PlanWithConsumedDynamicFilters(source, consumedDynamicFilterIds.build());
             }
 
@@ -303,13 +299,13 @@ public class RemoveUnsupportedDynamicFilters
 
         private boolean isSupportedDynamicFilterExpression(Expression expression)
         {
-            if (expression instanceof SymbolReference) {
+            if (expression instanceof Reference) {
                 return true;
             }
             if (!(expression instanceof Cast castExpression)) {
                 return false;
             }
-            if (!(castExpression.getExpression() instanceof SymbolReference)) {
+            if (!(castExpression.expression() instanceof Reference)) {
                 return false;
             }
             Type castSourceType = castExpression.expression().type();
@@ -347,16 +343,16 @@ public class RemoveUnsupportedDynamicFilters
             return ExpressionTreeRewriter.rewriteWith(new ExpressionRewriter<>()
             {
                 @Override
-                public Expression rewriteLogicalExpression(LogicalExpression node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
+                public Expression rewriteLogical(Logical node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
                 {
-                    LogicalExpression rewrittenNode = treeRewriter.defaultRewrite(node, context);
+                    Logical rewrittenNode = treeRewriter.defaultRewrite(node, context);
 
                     boolean modified = (node != rewrittenNode);
                     ImmutableList.Builder<Expression> expressionBuilder = ImmutableList.builder();
 
-                    for (Expression term : rewrittenNode.getTerms()) {
+                    for (Expression term : rewrittenNode.terms()) {
                         if (isDynamicFilter(term)) {
-                            expressionBuilder.add(TRUE_LITERAL);
+                            expressionBuilder.add(TRUE);
                             modified = true;
                         }
                         else {
@@ -367,7 +363,7 @@ public class RemoveUnsupportedDynamicFilters
                     if (!modified) {
                         return node;
                     }
-                    return combinePredicates(node.getOperator(), expressionBuilder.build());
+                    return combinePredicates(node.operator(), expressionBuilder.build());
                 }
             }, expression);
         }

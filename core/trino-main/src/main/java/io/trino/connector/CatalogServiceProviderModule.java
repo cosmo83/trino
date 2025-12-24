@@ -20,6 +20,7 @@ import com.google.inject.Provides;
 import com.google.inject.Singleton;
 import io.trino.SystemSessionPropertiesProvider;
 import io.trino.metadata.AnalyzePropertyManager;
+import io.trino.metadata.BranchPropertyManager;
 import io.trino.metadata.CatalogProcedures;
 import io.trino.metadata.CatalogTableFunctions;
 import io.trino.metadata.CatalogTableProcedures;
@@ -29,12 +30,13 @@ import io.trino.metadata.SchemaPropertyManager;
 import io.trino.metadata.SessionPropertyManager;
 import io.trino.metadata.TableProceduresPropertyManager;
 import io.trino.metadata.TablePropertyManager;
+import io.trino.metadata.ViewPropertyManager;
 import io.trino.security.AccessControlManager;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorIndexProvider;
 import io.trino.spi.connector.ConnectorNodePartitioningProvider;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
-import io.trino.spi.connector.ConnectorPageSourceProvider;
+import io.trino.spi.connector.ConnectorPageSourceProviderFactory;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.function.FunctionProvider;
 
@@ -59,9 +61,9 @@ public class CatalogServiceProviderModule
 
     @Provides
     @Singleton
-    public static CatalogServiceProvider<ConnectorPageSourceProvider> createPageSourceProvider(ConnectorServicesProvider connectorServicesProvider)
+    public static CatalogServiceProvider<ConnectorPageSourceProviderFactory> createPageSourceProviderFactory(ConnectorServicesProvider connectorServicesProvider)
     {
-        return new ConnectorCatalogServiceProvider<>("page source provider", connectorServicesProvider, connector -> connector.getPageSourceProvider().orElse(null));
+        return new ConnectorCatalogServiceProvider<>("page source provider factory", connectorServicesProvider, connector -> connector.getPageSourceProviderFactory().orElse(null));
     }
 
     @Provides
@@ -136,6 +138,13 @@ public class CatalogServiceProviderModule
 
     @Provides
     @Singleton
+    public static ViewPropertyManager createViewPropertyManager(ConnectorServicesProvider connectorServicesProvider)
+    {
+        return new ViewPropertyManager(new ConnectorCatalogServiceProvider<>("view properties", connectorServicesProvider, ConnectorServices::getViewProperties));
+    }
+
+    @Provides
+    @Singleton
     public static MaterializedViewPropertyManager createMaterializedViewPropertyManager(ConnectorServicesProvider connectorServicesProvider)
     {
         return new MaterializedViewPropertyManager(new ConnectorCatalogServiceProvider<>("materialized view properties", connectorServicesProvider, ConnectorServices::getMaterializedViewProperties));
@@ -146,6 +155,13 @@ public class CatalogServiceProviderModule
     public static AnalyzePropertyManager createAnalyzePropertyManager(ConnectorServicesProvider connectorServicesProvider)
     {
         return new AnalyzePropertyManager(new ConnectorCatalogServiceProvider<>("analyze properties", connectorServicesProvider, ConnectorServices::getAnalyzeProperties));
+    }
+
+    @Provides
+    @Singleton
+    public static BranchPropertyManager createBranchPropertyManager(ConnectorServicesProvider connectorServicesProvider)
+    {
+        return new BranchPropertyManager(new ConnectorCatalogServiceProvider<>("branch properties", connectorServicesProvider, ConnectorServices::getAnalyzeProperties));
     }
 
     @Provides

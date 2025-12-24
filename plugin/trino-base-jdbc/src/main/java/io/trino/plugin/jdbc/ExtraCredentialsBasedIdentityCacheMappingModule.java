@@ -16,6 +16,9 @@ package io.trino.plugin.jdbc;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
+import io.trino.plugin.base.cache.identity.IdentityCacheMapping;
+
+import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
 
 public class ExtraCredentialsBasedIdentityCacheMappingModule
         implements Module
@@ -23,6 +26,6 @@ public class ExtraCredentialsBasedIdentityCacheMappingModule
     @Override
     public void configure(Binder binder)
     {
-        binder.bind(IdentityCacheMapping.class).to(ExtraCredentialsBasedIdentityCacheMapping.class).in(Scopes.SINGLETON);
+        newOptionalBinder(binder, IdentityCacheMapping.class).setBinding().to(ExtraCredentialsBasedIdentityCacheMapping.class).in(Scopes.SINGLETON);
     }
 }

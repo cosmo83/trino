@@ -15,13 +15,13 @@ package io.trino.split;
 
 import com.google.inject.Inject;
 import io.trino.Session;
+import io.trino.connector.CatalogHandle;
 import io.trino.connector.CatalogServiceProvider;
 import io.trino.metadata.InsertTableHandle;
 import io.trino.metadata.MergeHandle;
 import io.trino.metadata.OutputTableHandle;
 import io.trino.metadata.TableExecuteHandle;
 import io.trino.metadata.TableHandle;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorMergeSink;
 import io.trino.spi.connector.ConnectorPageSink;
 import io.trino.spi.connector.ConnectorPageSinkId;
@@ -44,33 +44,33 @@ public class PageSinkManager
     @Override
     public ConnectorPageSink createPageSink(Session session, OutputTableHandle tableHandle, ConnectorPageSinkId pageSinkId)
     {
-        ConnectorSession connectorSession = session.toConnectorSession(tableHandle.getCatalogHandle());
-        return providerFor(tableHandle.getCatalogHandle()).createPageSink(tableHandle.getTransactionHandle(), connectorSession, tableHandle.getConnectorHandle(), pageSinkId);
+        ConnectorSession connectorSession = session.toConnectorSession(tableHandle.catalogHandle());
+        return providerFor(tableHandle.catalogHandle()).createPageSink(tableHandle.transactionHandle(), connectorSession, tableHandle.connectorHandle(), pageSinkId);
     }
 
     @Override
     public ConnectorPageSink createPageSink(Session session, InsertTableHandle tableHandle, ConnectorPageSinkId pageSinkId)
     {
         // assumes connectorId and catalog are the same
-        ConnectorSession connectorSession = session.toConnectorSession(tableHandle.getCatalogHandle());
-        return providerFor(tableHandle.getCatalogHandle()).createPageSink(tableHandle.getTransactionHandle(), connectorSession, tableHandle.getConnectorHandle(), pageSinkId);
+        ConnectorSession connectorSession = session.toConnectorSession(tableHandle.catalogHandle());
+        return providerFor(tableHandle.catalogHandle()).createPageSink(tableHandle.transactionHandle(), connectorSession, tableHandle.connectorHandle(), pageSinkId);
     }
 
     @Override
     public ConnectorPageSink createPageSink(Session session, TableExecuteHandle tableHandle, ConnectorPageSinkId pageSinkId)
     {
         // assumes connectorId and catalog are the same
-        ConnectorSession connectorSession = session.toConnectorSession(tableHandle.getCatalogHandle());
-        return providerFor(tableHandle.getCatalogHandle()).createPageSink(tableHandle.getTransactionHandle(), connectorSession, tableHandle.getConnectorHandle(), pageSinkId);
+        ConnectorSession connectorSession = session.toConnectorSession(tableHandle.catalogHandle());
+        return providerFor(tableHandle.catalogHandle()).createPageSink(tableHandle.transactionHandle(), connectorSession, tableHandle.connectorHandle(), pageSinkId);
     }
 
     @Override
     public ConnectorMergeSink createMergeSink(Session session, MergeHandle mergeHandle, ConnectorPageSinkId pageSinkId)
     {
         // assumes connectorId and catalog are the same
-        TableHandle tableHandle = mergeHandle.getTableHandle();
-        ConnectorSession connectorSession = session.toConnectorSession(tableHandle.getCatalogHandle());
-        return providerFor(tableHandle.getCatalogHandle()).createMergeSink(tableHandle.getTransaction(), connectorSession, mergeHandle.getConnectorMergeHandle(), pageSinkId);
+        TableHandle tableHandle = mergeHandle.tableHandle();
+        ConnectorSession connectorSession = session.toConnectorSession(tableHandle.catalogHandle());
+        return providerFor(tableHandle.catalogHandle()).createMergeSink(tableHandle.transaction(), connectorSession, mergeHandle.connectorMergeHandle(), pageSinkId);
     }
 
     private ConnectorPageSinkProvider providerFor(CatalogHandle catalogHandle)

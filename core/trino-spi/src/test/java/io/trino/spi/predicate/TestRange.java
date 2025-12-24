@@ -23,14 +23,14 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class TestRange
+class TestRange
 {
     @Test
     public void testInvertedBounds()
     {
         assertThatThrownBy(() -> Range.range(BIGINT, 1L, true, 0L, true))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("low must be less than or equal to high");
+                .hasMessage("low must be less than or equal to high. Actual: low=1, high=0");
     }
 
     /**

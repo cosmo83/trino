@@ -13,14 +13,11 @@
  */
 package io.trino.plugin.base.util;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteSource;
 import com.google.inject.Injector;
-import com.google.inject.TypeLiteral;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.http.server.HttpServerInfo;
-import io.airlift.http.server.TheServlet;
 import io.airlift.http.server.testing.TestingHttpServerModule;
 import io.airlift.node.testing.TestingNodeModule;
 import jakarta.servlet.Servlet;
@@ -33,7 +30,8 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.util.Map;
+
+import static java.util.Objects.requireNonNull;
 
 public class TestingHttpServer
         implements Closeable
@@ -41,18 +39,19 @@ public class TestingHttpServer
     private final LifeCycleManager lifeCycleManager;
     private final URI baseUri;
 
-    public TestingHttpServer()
+    public TestingHttpServer(String name)
     {
+        requireNonNull(name, "name is null");
         Bootstrap app = new Bootstrap(
                 new TestingNodeModule(),
-                new TestingHttpServerModule(),
+                new TestingHttpServerModule(name),
                 binder -> {
-                    binder.bind(new TypeLiteral<Map<String, String>>() {}).annotatedWith(TheServlet.class).toInstance(ImmutableMap.of());
-                    binder.bind(Servlet.class).annotatedWith(TheServlet.class).toInstance(new TestingHttpServlet());
+                    binder.bind(Servlet.class).toInstance(new TestingHttpServlet());
                 });
 
         Injector injector = app
                 .doNotInitializeLogging()
+                .disableSystemProperties()
                 .quiet()
                 .initialize();
 

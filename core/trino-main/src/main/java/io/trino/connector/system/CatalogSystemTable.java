@@ -44,6 +44,7 @@ public class CatalogSystemTable
             .column("catalog_name", createUnboundedVarcharType())
             .column("connector_id", createUnboundedVarcharType())
             .column("connector_name", createUnboundedVarcharType())
+            .column("state", createUnboundedVarcharType())
             .build();
     private final Metadata metadata;
     private final AccessControl accessControl;
@@ -74,9 +75,10 @@ public class CatalogSystemTable
         Builder table = InMemoryRecordSet.builder(CATALOG_TABLE);
         for (CatalogInfo catalogInfo : listCatalogs(session, metadata, accessControl)) {
             table.addRow(
-                    catalogInfo.getCatalogName(),
-                    catalogInfo.getCatalogName(),
-                    catalogInfo.getConnectorName().toString());
+                    catalogInfo.catalogName(),
+                    catalogInfo.catalogName(),
+                    catalogInfo.connectorName().toString(),
+                    catalogInfo.catalogStatus().toString());
         }
         return table.build().cursor();
     }

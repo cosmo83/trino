@@ -16,6 +16,7 @@ package io.trino.metadata;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
+import io.trino.spi.connector.ConnectorMaterializedViewDefinition.WhenStaleBehavior;
 import io.trino.spi.security.Identity;
 
 import java.time.Duration;
@@ -31,6 +32,7 @@ public class MaterializedViewDefinition
         extends ViewDefinition
 {
     private final Optional<Duration> gracePeriod;
+    private final Optional<WhenStaleBehavior> whenStaleBehavior;
     private final Optional<CatalogSchemaTableName> storageTable;
 
     public MaterializedViewDefinition(
@@ -39,20 +41,27 @@ public class MaterializedViewDefinition
             Optional<String> schema,
             List<ViewColumn> columns,
             Optional<Duration> gracePeriod,
+            Optional<WhenStaleBehavior> whenStaleBehavior,
             Optional<String> comment,
             Identity owner,
             List<CatalogSchemaName> path,
             Optional<CatalogSchemaTableName> storageTable)
     {
         super(originalSql, catalog, schema, columns, comment, Optional.of(owner), path);
+        this.gracePeriod = requireNonNull(gracePeriod, "gracePeriod is null");
         checkArgument(gracePeriod.isEmpty() || !gracePeriod.get().isNegative(), "gracePeriod cannot be negative: %s", gracePeriod);
-        this.gracePeriod = gracePeriod;
+        this.whenStaleBehavior = requireNonNull(whenStaleBehavior, "whenStaleBehavior is null");
         this.storageTable = requireNonNull(storageTable, "storageTable is null");
     }
 
     public Optional<Duration> getGracePeriod()
     {
         return gracePeriod;
+    }
+
+    public Optional<WhenStaleBehavior> getWhenStaleBehavior()
+    {
+        return whenStaleBehavior;
     }
 
     public Optional<CatalogSchemaTableName> getStorageTable()
@@ -68,9 +77,10 @@ public class MaterializedViewDefinition
                 getCatalog(),
                 getSchema(),
                 getColumns().stream()
-                        .map(column -> new ConnectorMaterializedViewDefinition.Column(column.getName(), column.getType(), column.getComment()))
+                        .map(column -> new ConnectorMaterializedViewDefinition.Column(column.name(), column.type(), column.comment()))
                         .collect(toImmutableList()),
                 getGracePeriod(),
+                whenStaleBehavior,
                 getComment(),
                 getRunAsIdentity().map(Identity::getUser),
                 getPath());
@@ -85,6 +95,7 @@ public class MaterializedViewDefinition
                 .add("schema", getSchema().orElse(null))
                 .add("columns", getColumns())
                 .add("gracePeriod", gracePeriod.orElse(null))
+                .add("whenStaleBehavior", whenStaleBehavior.orElse(null))
                 .add("comment", getComment().orElse(null))
                 .add("runAsIdentity", getRunAsIdentity())
                 .add("path", getPath())

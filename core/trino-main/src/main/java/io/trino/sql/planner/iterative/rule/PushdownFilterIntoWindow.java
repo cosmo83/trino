@@ -13,7 +13,6 @@
  */
 package io.trino.sql.planner.iterative.rule;
 
-import com.google.common.collect.ImmutableList;
 import io.trino.Session;
 import io.trino.matching.Capture;
 import io.trino.matching.Captures;
@@ -23,7 +22,7 @@ import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Booleans;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.DomainTranslator;
 import io.trino.sql.planner.Symbol;
@@ -58,6 +57,7 @@ public class PushdownFilterIntoWindow
 
     private final Pattern<FilterNode> pattern;
     private final PlannerContext plannerContext;
+    private final DomainTranslator domainTranslator;
 
     public PushdownFilterIntoWindow(PlannerContext plannerContext)
     {
@@ -67,6 +67,7 @@ public class PushdownFilterIntoWindow
                         .matching(window -> window.getOrderingScheme().isPresent())
                         .matching(window -> toTopNRankingType(window).isPresent())
                         .capturedAs(childCapture)));
+        this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
     }
 
     @Override
@@ -101,7 +102,7 @@ public class PushdownFilterIntoWindow
         }
 
         if (upperBound.getAsInt() <= 0) {
-            return Result.ofPlanNode(new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of()));
+            return Result.ofPlanNode(new ValuesNode(node.getId(), node.getOutputSymbols()));
         }
         TopNRankingNode newSource = new TopNRankingNode(
                 windowNode.getId(),
@@ -110,8 +111,7 @@ public class PushdownFilterIntoWindow
                 rankingType.get(),
                 rankingSymbol,
                 upperBound.getAsInt(),
-                false,
-                Optional.empty());
+                false);
 
         if (!allRowNumberValuesInDomain(tupleDomain, rankingSymbol, upperBound.getAsInt())) {
             return Result.ofPlanNode(new FilterNode(node.getId(), newSource, node.getPredicate()));
@@ -121,9 +121,9 @@ public class PushdownFilterIntoWindow
         TupleDomain<Symbol> newTupleDomain = tupleDomain.filter((symbol, domain) -> !symbol.equals(rankingSymbol));
         Expression newPredicate = combineConjuncts(
                 extractionResult.getRemainingExpression(),
-                new DomainTranslator().toPredicate(newTupleDomain));
+                domainTranslator.toPredicate(newTupleDomain));
 
-        if (newPredicate.equals(BooleanLiteral.TRUE_LITERAL)) {
+        if (newPredicate.equals(Booleans.TRUE)) {
             return Result.ofPlanNode(newSource);
         }
         return Result.ofPlanNode(new FilterNode(node.getId(), newSource, newPredicate));

@@ -47,24 +47,12 @@ public record Constant(Type type, @JsonIgnore Object value)
         }
     }
 
-    @Deprecated
-    @JsonProperty
-    public Type getType()
-    {
-        return type;
-    }
-
     @JsonProperty
     public Block getValueAsBlock()
     {
         BlockBuilder blockBuilder = type.createBlockBuilder(null, 1);
         writeNativeValue(type, blockBuilder, value);
         return blockBuilder.build();
-    }
-
-    public Object getValue()
-    {
-        return value;
     }
 
     @Override
@@ -74,7 +62,7 @@ public record Constant(Type type, @JsonIgnore Object value)
     }
 
     @Override
-    public List<? extends Expression> getChildren()
+    public List<? extends Expression> children()
     {
         return ImmutableList.of();
     }
@@ -82,8 +70,8 @@ public record Constant(Type type, @JsonIgnore Object value)
     @Override
     public String toString()
     {
-        return "Constant[%s, %s]".formatted(
-                type,
-                value == null ? "<null>" : type.getObjectValue(null, getValueAsBlock(), 0));
+        return "[%s]::%s".formatted(
+                value == null ? "<null>" : type.getObjectValue(getValueAsBlock(), 0),
+                type);
     }
 }

@@ -35,7 +35,7 @@ import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkState;
 import static io.trino.matching.Pattern.empty;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.IrExpressions.ifExpression;
 import static io.trino.sql.planner.optimizations.QueryCardinalityUtil.extractCardinality;
 import static io.trino.sql.planner.plan.JoinType.FULL;
@@ -71,7 +71,8 @@ public class TransformUncorrelatedSubqueryToJoin
 
         checkState(
                 correlatedJoinNode.getType() == RIGHT || correlatedJoinNode.getType() == FULL,
-                "unexpected CorrelatedJoin type: " + correlatedJoinNode.getType());
+                "unexpected CorrelatedJoin type: %s",
+                correlatedJoinNode.getType());
 
         // handle RIGHT and FULL correlated join ON TRUE
         JoinType type;
@@ -81,9 +82,9 @@ public class TransformUncorrelatedSubqueryToJoin
         else {
             type = JoinType.LEFT;
         }
-        JoinNode joinNode = rewriteToJoin(correlatedJoinNode, type, TRUE_LITERAL, context.getLookup());
+        JoinNode joinNode = rewriteToJoin(correlatedJoinNode, type, TRUE, context.getLookup());
 
-        if (correlatedJoinNode.getFilter().equals(TRUE_LITERAL)) {
+        if (correlatedJoinNode.getFilter().equals(TRUE)) {
             return Result.ofPlanNode(joinNode);
         }
 
@@ -96,7 +97,7 @@ public class TransformUncorrelatedSubqueryToJoin
             for (Symbol inputSymbol : Sets.intersection(
                     ImmutableSet.copyOf(correlatedJoinNode.getInput().getOutputSymbols()),
                     ImmutableSet.copyOf(correlatedJoinNode.getOutputSymbols()))) {
-                Type inputType = inputSymbol.getType();
+                Type inputType = inputSymbol.type();
                 assignments.put(inputSymbol, ifExpression(correlatedJoinNode.getFilter(), inputSymbol.toSymbolReference(), new Constant(inputType, null)));
             }
             ProjectNode projectNode = new ProjectNode(
@@ -113,7 +114,7 @@ public class TransformUncorrelatedSubqueryToJoin
 
     private JoinNode rewriteToJoin(CorrelatedJoinNode parent, JoinType type, Expression filter, Lookup lookup)
     {
-        if (type == JoinType.LEFT && extractCardinality(parent.getSubquery(), lookup).isAtLeastScalar() && filter.equals(TRUE_LITERAL)) {
+        if (type == JoinType.LEFT && extractCardinality(parent.getSubquery(), lookup).isAtLeastScalar() && filter.equals(TRUE)) {
             // input rows will always be matched against subquery rows
             type = JoinType.INNER;
         }
@@ -126,9 +127,7 @@ public class TransformUncorrelatedSubqueryToJoin
                 parent.getInput().getOutputSymbols(),
                 parent.getSubquery().getOutputSymbols(),
                 false,
-                filter.equals(TRUE_LITERAL) ? Optional.empty() : Optional.of(filter),
-                Optional.empty(),
-                Optional.empty(),
+                filter.equals(TRUE) ? Optional.empty() : Optional.of(filter),
                 Optional.empty(),
                 Optional.empty(),
                 ImmutableMap.of(),

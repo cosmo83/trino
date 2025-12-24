@@ -13,86 +13,40 @@
  */
 package io.trino.sql.planner;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 import io.trino.spi.type.Type;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 @JsonSerialize(keyUsing = SymbolKeySerializer.class)
-public class Symbol
-        implements Comparable<Symbol>
+public record Symbol(Type type, String name)
 {
-    private final String name;
-    private final Type type;
-
     public static Symbol from(Expression expression)
     {
-        if (!(expression instanceof SymbolReference symbol)) {
+        if (!(expression instanceof Reference symbol)) {
             throw new IllegalArgumentException("Unexpected expression: " + expression);
         }
         return new Symbol(symbol.type(), symbol.name());
     }
 
-    @JsonCreator
-    public Symbol(Type type, String name)
+    public Symbol
     {
         requireNonNull(name, "name is null");
+        checkArgument(!name.isEmpty(), "name is empty");
         requireNonNull(type, "type is null");
-        this.type = type;
-        this.name = name;
     }
 
-    @JsonProperty
-    public String getName()
+    public Reference toSymbolReference()
     {
-        return name;
-    }
-
-    @JsonProperty
-    public Type getType()
-    {
-        return type;
-    }
-
-    public SymbolReference toSymbolReference()
-    {
-        return new SymbolReference(type, name);
+        return new Reference(type, name);
     }
 
     @Override
     public String toString()
     {
         return name + "::[" + type + "]";
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-
-        Symbol symbol = (Symbol) o;
-
-        return name.equals(symbol.name);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return name.hashCode();
-    }
-
-    @Override
-    public int compareTo(Symbol o)
-    {
-        return name.compareTo(o.name);
     }
 }

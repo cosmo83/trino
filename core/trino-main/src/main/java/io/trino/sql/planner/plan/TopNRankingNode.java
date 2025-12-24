@@ -22,7 +22,6 @@ import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 
 import java.util.List;
-import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Iterables.concat;
@@ -45,7 +44,6 @@ public final class TopNRankingNode
     private final Symbol rankingSymbol;
     private final int maxRankingPerPartition;
     private final boolean partial;
-    private final Optional<Symbol> hashSymbol;
 
     @JsonCreator
     public TopNRankingNode(
@@ -55,18 +53,16 @@ public final class TopNRankingNode
             @JsonProperty("rankingType") RankingType rankingType,
             @JsonProperty("rankingSymbol") Symbol rankingSymbol,
             @JsonProperty("maxRankingPerPartition") int maxRankingPerPartition,
-            @JsonProperty("partial") boolean partial,
-            @JsonProperty("hashSymbol") Optional<Symbol> hashSymbol)
+            @JsonProperty("partial") boolean partial)
     {
         super(id);
 
         requireNonNull(source, "source is null");
         requireNonNull(specification, "specification is null");
-        checkArgument(specification.getOrderingScheme().isPresent(), "specification orderingScheme is absent");
+        checkArgument(specification.orderingScheme().isPresent(), "specification orderingScheme is absent");
         requireNonNull(rankingType, "rankingType is null");
         requireNonNull(rankingSymbol, "rankingSymbol is null");
         checkArgument(maxRankingPerPartition > 0, "maxRankingPerPartition must be > 0");
-        requireNonNull(hashSymbol, "hashSymbol is null");
 
         this.source = source;
         this.specification = specification;
@@ -74,7 +70,6 @@ public final class TopNRankingNode
         this.rankingSymbol = rankingSymbol;
         this.maxRankingPerPartition = maxRankingPerPartition;
         this.partial = partial;
-        this.hashSymbol = hashSymbol;
     }
 
     @Override
@@ -106,12 +101,12 @@ public final class TopNRankingNode
 
     public List<Symbol> getPartitionBy()
     {
-        return specification.getPartitionBy();
+        return specification.partitionBy();
     }
 
     public OrderingScheme getOrderingScheme()
     {
-        return specification.getOrderingScheme().get();
+        return specification.orderingScheme().get();
     }
 
     @JsonProperty
@@ -138,12 +133,6 @@ public final class TopNRankingNode
         return partial;
     }
 
-    @JsonProperty
-    public Optional<Symbol> getHashSymbol()
-    {
-        return hashSymbol;
-    }
-
     @Override
     public <R, C> R accept(PlanVisitor<R, C> visitor, C context)
     {
@@ -153,6 +142,6 @@ public final class TopNRankingNode
     @Override
     public PlanNode replaceChildren(List<PlanNode> newChildren)
     {
-        return new TopNRankingNode(getId(), Iterables.getOnlyElement(newChildren), specification, rankingType, rankingSymbol, maxRankingPerPartition, partial, hashSymbol);
+        return new TopNRankingNode(getId(), Iterables.getOnlyElement(newChildren), specification, rankingType, rankingSymbol, maxRankingPerPartition, partial);
     }
 }

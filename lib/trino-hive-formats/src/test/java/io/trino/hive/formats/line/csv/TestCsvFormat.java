@@ -22,6 +22,7 @@ import io.trino.hive.formats.line.LineDeserializer;
 import io.trino.hive.formats.line.LineSerializer;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
+import io.trino.spi.TrinoException;
 import io.trino.spi.type.RowType;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.serde2.Deserializer;
@@ -124,6 +125,10 @@ public class TestCsvFormat
         // If escape character is `\0` then escaping is simply disabled, even if this would cause output that does not round trip
         assertTrinoHiveByteForByte(true, Arrays.asList("f**", "b*r", "b*z"), Optional.of('\t'), Optional.of('*'), Optional.of('#'));
         assertTrinoHiveByteForByte(false, Arrays.asList("f**", "b*r", "b*z"), Optional.of('\t'), Optional.of('*'), Optional.of('\0'));
+
+        // If both the quote character and escape character are `\0` then quoting and escaping is simply disabled, even if this would cause output that does not round trip
+        assertTrinoHiveByteForByte(true, Arrays.asList("foo", "bar", "baz"), Optional.of('\t'), Optional.of('\0'), Optional.of('\0'));
+        assertTrinoHiveByteForByte(false, Arrays.asList("f\t\t", "\tbar\t", "baz"), Optional.of('\t'), Optional.of('\0'), Optional.of('\0'));
 
         // These cases don't round trip, because Hive uses different default escape characters for serialization and deserialization.
         // For serialization the pipe character is escaped with a quote char, but for deserialization escape character is the backslash character
@@ -269,6 +274,9 @@ public class TestCsvFormat
                 .isInstanceOf(SerDeException.class)
                 .hasMessage("java.lang.UnsupportedOperationException: The separator, quote, and escape characters must be different!");
         assertThatThrownBy(() -> new CsvDeserializerFactory().create(createReadColumns(3), createCsvProperties(separatorChar, quoteChar, escapeChar)))
+                .isInstanceOf(TrinoException.class)
+                .hasMessageMatching("CSV not supported")
+                .cause()
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageMatching("(Quote|Separator) character cannot be '\\\\' when escape character is '\"'");
     }

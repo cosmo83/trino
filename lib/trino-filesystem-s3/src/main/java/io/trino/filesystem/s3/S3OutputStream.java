@@ -13,7 +13,8 @@
  */
 package io.trino.filesystem.s3;
 
-import io.trino.filesystem.s3.S3FileSystemConfig.S3SseType;
+import com.google.common.annotations.VisibleForTesting;
+import io.trino.filesystem.encryption.EncryptionKey;
 import io.trino.memory.context.AggregatedMemoryContext;
 import io.trino.memory.context.LocalMemoryContext;
 import software.amazon.awssdk.core.exception.SdkException;
@@ -23,8 +24,15 @@ import software.amazon.awssdk.services.s3.model.AbortMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.CompletedPart;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectTaggingRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectTaggingResponse;
+import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.RequestPayer;
+import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.s3.model.StorageClass;
+import software.amazon.awssdk.services.s3.model.Tag;
+import software.amazon.awssdk.services.s3.model.Tagging;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 import software.amazon.awssdk.services.s3.model.UploadPartResponse;
 
@@ -32,34 +40,50 @@ import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.file.FileAlreadyExistsException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
+import java.util.function.Predicate;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
+import static com.google.common.base.Verify.verify;
+import static io.trino.filesystem.s3.S3FileSystemConfig.ObjectCannedAcl.getCannedAcl;
+import static io.trino.filesystem.s3.S3FileSystemConfig.S3SseType.NONE;
+import static io.trino.filesystem.s3.S3FileSystemConfig.StorageClassType.toStorageClass;
+import static io.trino.filesystem.s3.S3SseCUtils.encoded;
+import static io.trino.filesystem.s3.S3SseCUtils.md5Checksum;
+import static io.trino.filesystem.s3.S3SseRequestConfigurator.setEncryptionSettings;
 import static java.lang.Math.clamp;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.System.arraycopy;
+import static java.net.HttpURLConnection.HTTP_PRECON_FAILED;
+import static java.util.Objects.checkFromIndexSize;
 import static java.util.Objects.requireNonNull;
+import static java.util.UUID.randomUUID;
 import static java.util.concurrent.CompletableFuture.supplyAsync;
-import static software.amazon.awssdk.services.s3.model.ServerSideEncryption.AES256;
-import static software.amazon.awssdk.services.s3.model.ServerSideEncryption.AWS_KMS;
 
 final class S3OutputStream
         extends OutputStream
 {
+    private static final String TRINO_CREATION_TAG = "TrinoCreationId";
+
     private final List<CompletedPart> parts = new ArrayList<>();
     private final LocalMemoryContext memoryContext;
+    private final Executor uploadExecutor;
     private final S3Client client;
     private final S3Location location;
     private final S3Context context;
     private final int partSize;
     private final RequestPayer requestPayer;
-    private final S3SseType sseType;
-    private final String sseKmsKeyId;
+    private final StorageClass storageClass;
+    private final ObjectCannedACL cannedAcl;
+    private final Optional<EncryptionKey> key;
 
     private int currentPartNumber;
     private byte[] buffer = new byte[0];
@@ -76,16 +100,20 @@ final class S3OutputStream
     // Visibility is ensured by calling get() on inProgressUploadFuture.
     private Optional<String> uploadId = Optional.empty();
 
-    public S3OutputStream(AggregatedMemoryContext memoryContext, S3Client client, S3Context context, S3Location location)
+    public S3OutputStream(AggregatedMemoryContext memoryContext, Executor uploadExecutor, S3Client client, S3Context context, S3Location location, Optional<EncryptionKey> key)
     {
         this.memoryContext = memoryContext.newLocalMemoryContext(S3OutputStream.class.getSimpleName());
+        this.uploadExecutor = requireNonNull(uploadExecutor, "uploadExecutor is null");
         this.client = requireNonNull(client, "client is null");
         this.location = requireNonNull(location, "location is null");
         this.context = requireNonNull(context, "context is null");
         this.partSize = context.partSize();
         this.requestPayer = context.requestPayer();
-        this.sseType = context.sseType();
-        this.sseKmsKeyId = context.sseKmsKeyId();
+        this.storageClass = toStorageClass(context.storageClass());
+        this.cannedAcl = getCannedAcl(context.cannedAcl());
+        this.key = requireNonNull(key, "key is null");
+
+        verify(key.isEmpty() || context.s3SseContext().sseType() == NONE, "Encryption key cannot be used with SSE configuration");
     }
 
     @SuppressWarnings("NumericCastThatLosesPrecision")
@@ -162,6 +190,10 @@ final class S3OutputStream
         }
         catch (SdkException e) {
             abortUploadSuppressed(e);
+            // when `location` already exists, the operation will fail with `412 Precondition Failed`
+            if (e instanceof S3Exception s3Exception && s3Exception.statusCode() == HTTP_PRECON_FAILED) {
+                throw new FileAlreadyExistsException(location.toString());
+            }
             throw new IOException(e);
         }
     }
@@ -193,30 +225,21 @@ final class S3OutputStream
     {
         // skip multipart upload if there would only be one part
         if (finished && !multipartUploadStarted) {
-            PutObjectRequest request = PutObjectRequest.builder()
-                    .overrideConfiguration(context::applyCredentialProviderOverride)
-                    .requestPayer(requestPayer)
-                    .bucket(location.bucket())
-                    .key(location.key())
-                    .contentLength((long) bufferSize)
-                    .applyMutation(builder -> {
-                        switch (sseType) {
-                            case NONE -> { /* ignored */ }
-                            case S3 -> builder.serverSideEncryption(AES256);
-                            case KMS -> builder.serverSideEncryption(AWS_KMS).ssekmsKeyId(sseKmsKeyId);
-                        }
-                    })
-                    .build();
-
-            ByteBuffer bytes = ByteBuffer.wrap(buffer, 0, bufferSize);
-
             try {
-                client.putObject(request, RequestBody.fromByteBuffer(bytes));
+                putObject(
+                        client,
+                        context,
+                        location,
+                        key,
+                        false,
+                        buffer,
+                        0,
+                        bufferSize);
                 return;
             }
-            catch (SdkException e) {
+            catch (Throwable e) {
                 failed = true;
-                throw new IOException(e);
+                throw e;
             }
         }
 
@@ -244,11 +267,12 @@ final class S3OutputStream
                 throw e;
             }
             multipartUploadStarted = true;
-            inProgressUploadFuture = supplyAsync(() -> uploadPage(data, length));
+            inProgressUploadFuture = supplyAsync(() -> uploadPage(data, length), uploadExecutor);
         }
     }
 
-    private void waitForPreviousUploadFinish()
+    @VisibleForTesting
+    void waitForPreviousUploadFinish()
             throws IOException
     {
         if (inProgressUploadFuture == null) {
@@ -272,16 +296,18 @@ final class S3OutputStream
         if (uploadId.isEmpty()) {
             CreateMultipartUploadRequest request = CreateMultipartUploadRequest.builder()
                     .overrideConfiguration(context::applyCredentialProviderOverride)
+                    .acl(cannedAcl)
                     .requestPayer(requestPayer)
                     .bucket(location.bucket())
                     .key(location.key())
-                    .applyMutation(builder -> {
-                        switch (sseType) {
-                            case NONE -> { /* ignored */ }
-                            case S3 -> builder.serverSideEncryption(AES256);
-                            case KMS -> builder.serverSideEncryption(AWS_KMS).ssekmsKeyId(sseKmsKeyId);
-                        }
-                    })
+                    .storageClass(storageClass)
+                    .applyMutation(builder ->
+                            key.ifPresentOrElse(
+                                    encryption ->
+                                            builder.sseCustomerKey(encoded(encryption))
+                                                    .sseCustomerAlgorithm(encryption.algorithm())
+                                                    .sseCustomerKeyMD5(md5Checksum(encryption)),
+                                    () -> setEncryptionSettings(builder, context.s3SseContext())))
                     .build();
 
             uploadId = Optional.of(client.createMultipartUpload(request).uploadId());
@@ -296,6 +322,13 @@ final class S3OutputStream
                 .contentLength((long) length)
                 .uploadId(uploadId.get())
                 .partNumber(currentPartNumber)
+                .applyMutation(builder ->
+                        key.ifPresentOrElse(
+                                encryption ->
+                                        builder.sseCustomerKey(encoded(encryption))
+                                                .sseCustomerAlgorithm(encryption.algorithm())
+                                                .sseCustomerKeyMD5(md5Checksum(encryption)),
+                                () -> setEncryptionSettings(builder, context.s3SseContext())))
                 .build();
 
         ByteBuffer bytes = ByteBuffer.wrap(data, 0, length);
@@ -320,6 +353,12 @@ final class S3OutputStream
                 .key(location.key())
                 .uploadId(uploadId)
                 .multipartUpload(x -> x.parts(parts))
+                .applyMutation(builder -> key.ifPresentOrElse(
+                        encryption ->
+                                builder.sseCustomerKey(encoded(encryption))
+                                        .sseCustomerAlgorithm(encryption.algorithm())
+                                        .sseCustomerKeyMD5(md5Checksum(encryption)),
+                        () -> setEncryptionSettings(builder, context.s3SseContext())))
                 .build();
 
         client.completeMultipartUpload(request);
@@ -348,5 +387,121 @@ final class S3OutputStream
                 throwable.addSuppressed(t);
             }
         }
+    }
+
+    static void putObject(
+            S3Client client,
+            S3Context context,
+            S3Location location,
+            Optional<EncryptionKey> key,
+            boolean exclusiveCreate,
+            byte[] data,
+            int dataOffset,
+            int dataLength)
+            throws IOException
+    {
+        checkFromIndexSize(dataOffset, dataLength, data.length);
+
+        // A random unique value identifying this upload attempt, used in exclusive create checks
+        // to workaround AWS SDK limitation: conditional writes and SDK's retries do not work well with each other.
+        String trinoCreationId = randomUUID().toString();
+
+        PutObjectRequest request = PutObjectRequest.builder()
+                .overrideConfiguration(context::applyCredentialProviderOverride)
+                .acl(getCannedAcl(context.cannedAcl()))
+                .requestPayer(context.requestPayer())
+                .bucket(location.bucket())
+                .key(location.key())
+                .storageClass(toStorageClass(context.storageClass()))
+                .contentLength((long) dataLength)
+                .applyMutation(builder -> {
+                    if (exclusiveCreate) {
+                        builder.tagging(trinoCreationTag(trinoCreationId));
+                        builder.ifNoneMatch("*");
+                    }
+                    key.ifPresent(encryption -> {
+                        builder.sseCustomerKey(encoded(encryption));
+                        builder.sseCustomerAlgorithm(encryption.algorithm());
+                        builder.sseCustomerKeyMD5(md5Checksum(encryption));
+                    });
+                    setEncryptionSettings(builder, context.s3SseContext());
+                })
+                .build();
+
+        ByteBuffer bytes = ByteBuffer.wrap(data, dataOffset, dataLength);
+
+        try {
+            client.putObject(request, RequestBody.fromByteBuffer(bytes));
+        }
+        catch (SdkException putObjectException) {
+            // When `location` already exists, the operation will fail with `412 Precondition Failed`
+            // This is possible when
+            // - object already existed
+            // - object was created by us in a request, but then client side retry logic retried the request
+            boolean objectAlreadyExists = putObjectException instanceof S3Exception s3Exception &&
+                    s3Exception.statusCode() == HTTP_PRECON_FAILED;
+            if (objectAlreadyExists) {
+                UncertainBoolean createdByUs = UncertainBoolean.FALSE;
+                if (exclusiveCreate && firstNonNull(putObjectException.numAttempts(), 0) > 1) {
+                    // Check if the object was actually created by a previous attempt of AWS SDK's implicit retries
+                    // This is workaround for AWS SDK limitation: https://github.com/aws/aws-sdk-java-v2/issues/6580
+                    try {
+                        if (isCreatedByUs(client, context, location, trinoCreationId)) {
+                            createdByUs = UncertainBoolean.TRUE;
+                        }
+                    }
+                    catch (Exception getObjectTaggingException) {
+                        createdByUs = UncertainBoolean.MAYBE;
+                        if (putObjectException != getObjectTaggingException) {
+                            putObjectException.addSuppressed(getObjectTaggingException);
+                        }
+                    }
+                }
+                switch (createdByUs) {
+                    case TRUE -> {
+                        return;
+                    }
+                    case FALSE -> throw new FileAlreadyExistsException(location.toString());
+                    case MAYBE ->
+                            throw new IOException("Put failed for bucket [%s] key [%s] but provenance could not be verified".formatted(location.bucket(), location.key()), putObjectException);
+                }
+            }
+            throw new IOException("Put failed for bucket [%s] key [%s]: %s".formatted(location.bucket(), location.key(), putObjectException), putObjectException);
+        }
+    }
+
+    private static boolean isCreatedByUs(S3Client client, S3Context context, S3Location location, String trinoCreationId)
+    {
+        GetObjectTaggingResponse tagging = client.getObjectTagging(GetObjectTaggingRequest.builder()
+                .overrideConfiguration(context::applyCredentialProviderOverride)
+                .requestPayer(context.requestPayer())
+                .bucket(location.bucket())
+                .key(location.key())
+                .build());
+        List<Tag> tags = firstNonNull(tagging.tagSet(), List.of());
+        return tags.stream().anyMatch(isOurTrinoCreationTag(trinoCreationId));
+    }
+
+    private static Tagging trinoCreationTag(String trinoCreationId)
+    {
+        return Tagging.builder()
+                .tagSet(Tag.builder()
+                        .key(TRINO_CREATION_TAG)
+                        .value(trinoCreationId)
+                        .build())
+                .build();
+    }
+
+    private static Predicate<Tag> isOurTrinoCreationTag(String trinoCreationId)
+    {
+        return tag -> tag.key().equals(TRINO_CREATION_TAG) &&
+                tag.value().equals(trinoCreationId);
+    }
+
+    enum UncertainBoolean
+    {
+        TRUE,
+        FALSE,
+        MAYBE,
     }
 }

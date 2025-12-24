@@ -68,21 +68,21 @@ public class TestIcebergPartitionEvolution
 
         assertThat(onTrino().executeQuery("SHOW STATS FOR test_dropped_partition_field"))
                 .containsOnly(
-                        row("a", 664.0, 3.0, 1. / 6, null, null, null),
-                        row("b", 666.0, 3.0, 1. / 6, null, null, null),
-                        row("c", 639.0, 4.0, 0., null, null, null),
+                        row("a", 599.0, 3.0, 1. / 6, null, null, null),
+                        row("b", 602.0, 3.0, 1. / 6, null, null, null),
+                        row("c", 585.0, 4.0, 0., null, null, null),
                         row(null, null, null, null, 6., null, null));
 
         assertThat(onTrino().executeQuery("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'test_dropped_partition_field$partitions'"))
                 .containsOnly(
-                        row("partition", "row(a varchar, b varchar)"),
+                        row("partition", "row(\"a\" varchar, \"b\" varchar)"),
                         row("record_count", "bigint"),
                         row("file_count", "bigint"),
                         row("total_size", "bigint"),
                         row("data", "row(" +
                                 // A/B is now partitioning column in the first partitioning spec, and non-partitioning in new one
-                                (dropFirst ? "a" : "b") + " row(min varchar, max varchar, null_count bigint, nan_count bigint), " +
-                                "c row(min varchar, max varchar, null_count bigint, nan_count bigint))"));
+                                (dropFirst ? "\"a\"" : "\"b\"") + " row(\"min\" varchar, \"max\" varchar, \"null_count\" bigint, \"nan_count\" bigint), " +
+                                "\"c\" row(\"min\" varchar, \"max\" varchar, \"null_count\" bigint, \"nan_count\" bigint))"));
         assertThat(onTrino().executeQuery("SELECT partition, record_count, file_count, data FROM \"test_dropped_partition_field$partitions\""))
                 .containsOnly(
                         row(

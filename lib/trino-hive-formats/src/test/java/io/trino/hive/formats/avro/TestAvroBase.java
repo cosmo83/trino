@@ -303,12 +303,13 @@ public abstract class TestAvroBase
         try (AvroFileReader fileReader = new AvroFileReader(
                 createWrittenFileWithData(schema, testRecordsExpected.build(), temp1),
                 schema,
-                NoOpAvroTypeManager.INSTANCE)) {
+                new BaseAvroTypeBlockHandler())) {
             while (fileReader.hasNext()) {
                 pages.add(fileReader.next());
             }
         }
 
+        RowType type = (RowType) new BaseAvroTypeBlockHandler().typeFor(schema);
         try (AvroFileWriter fileWriter = new AvroFileWriter(
                 trinoLocalFilesystem.newOutputFile(temp2).create(),
                 schema,
@@ -316,7 +317,8 @@ public abstract class TestAvroBase
                 compressionKind,
                 ImmutableMap.of(),
                 schema.getFields().stream().map(Schema.Field::name).collect(toImmutableList()),
-                AvroTypeUtils.typeFromAvro(schema, NoOpAvroTypeManager.INSTANCE).getTypeParameters(), false)) {
+                type.getFieldTypes(),
+                false)) {
             for (Page p : pages.build()) {
                 fileWriter.write(p);
             }
@@ -330,7 +332,7 @@ public abstract class TestAvroBase
                 testRecordsActual.add(genericRecordDataFileReader.next());
             }
         }
-        assertThat(testRecordsExpected.build().size()).isEqualTo(testRecordsActual.build().size());
+        assertThat(testRecordsExpected.build()).hasSize(testRecordsActual.build().size());
         List<GenericRecord> expected = testRecordsExpected.build();
         List<GenericRecord> actual = testRecordsActual.build();
         for (int i = 0; i < expected.size(); i++) {
@@ -375,7 +377,7 @@ public abstract class TestAvroBase
         assertBlockEquals(INTEGER, ARRAY_INTEGER.getObject(p.getBlock(8), 0), createIntsBlock(1, 2, 3, 4));
         // test map
         assertThat(p.getBlock(9)).isInstanceOf(MapBlock.class);
-        assertThat(MAP_VARCHAR_INTEGER.getObjectValue(null, p.getBlock(9), 0)).isEqualTo(ImmutableMap.of("key1", 1, "key2", 2));
+        assertThat(MAP_VARCHAR_INTEGER.getObjectValue(p.getBlock(9), 0)).isEqualTo(ImmutableMap.of("key1", 1, "key2", 2));
         // test enum
         assertThat(p.getBlock(10)).isInstanceOf(VariableWidthBlock.class);
         assertThat(VARCHAR.getObject(p.getBlock(10), 0)).isEqualTo(Slices.utf8Slice("A"));

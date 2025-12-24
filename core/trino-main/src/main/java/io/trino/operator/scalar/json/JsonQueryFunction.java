@@ -163,12 +163,12 @@ public class JsonQueryFunction
         // translate sequence to JSON items
         ImmutableList.Builder<JsonNode> builder = ImmutableList.builder();
         for (Object item : pathResult) {
-            if (item instanceof TypedValue) {
-                Optional<JsonNode> jsonNode = getJsonNode((TypedValue) item);
+            if (item instanceof TypedValue typedValue) {
+                Optional<JsonNode> jsonNode = getJsonNode(typedValue);
                 if (jsonNode.isEmpty()) {
                     return handleSpecialCase(errorBehavior, () -> new JsonOutputConversionException(format(
                             "JSON path returned a scalar SQL value of type %s that cannot be represented as JSON",
-                            ((TypedValue) item).getType())));
+                            typedValue.getType())));
                 }
                 builder.add(jsonNode.get());
             }
@@ -206,16 +206,11 @@ public class JsonQueryFunction
 
     private static JsonNode handleSpecialCase(long behavior, Supplier<TrinoException> error)
     {
-        switch (EmptyOrErrorBehavior.values()[(int) behavior]) {
-            case NULL:
-                return null;
-            case ERROR:
-                throw error.get();
-            case EMPTY_ARRAY:
-                return EMPTY_ARRAY_RESULT;
-            case EMPTY_OBJECT:
-                return EMPTY_OBJECT_RESULT;
-        }
-        throw new IllegalStateException("unexpected behavior");
+        return switch (EmptyOrErrorBehavior.values()[(int) behavior]) {
+            case NULL -> null;
+            case ERROR -> throw error.get();
+            case EMPTY_ARRAY -> EMPTY_ARRAY_RESULT;
+            case EMPTY_OBJECT -> EMPTY_OBJECT_RESULT;
+        };
     }
 }

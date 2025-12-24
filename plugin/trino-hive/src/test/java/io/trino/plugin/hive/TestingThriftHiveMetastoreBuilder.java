@@ -28,11 +28,14 @@ import io.trino.plugin.hive.metastore.thrift.UgiBasedMetastoreClientFactory;
 
 import java.net.URI;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.function.Consumer;
 
 import static com.google.common.base.Preconditions.checkState;
 import static io.trino.plugin.base.security.UserNameProvider.SIMPLE_USER_NAME_PROVIDER;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_STATS;
+import static io.trino.plugin.hive.HiveTestUtils.SESSION;
 import static io.trino.plugin.hive.metastore.thrift.TestingTokenAwareMetastoreClientFactory.TIMEOUT;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newFixedThreadPool;
@@ -95,15 +98,17 @@ public final class TestingThriftHiveMetastoreBuilder
         return this;
     }
 
-    public ThriftMetastore build()
+    public ThriftMetastore build(Consumer<AutoCloseable> registerResource)
     {
         checkState(tokenAwareMetastoreClientFactory != null, "metastore client not set");
+        ExecutorService executorService = newFixedThreadPool(thriftMetastoreConfig.getWriteStatisticsThreads());
+        registerResource.accept(executorService);
         ThriftHiveMetastoreFactory metastoreFactory = new ThriftHiveMetastoreFactory(
                 new UgiBasedMetastoreClientFactory(tokenAwareMetastoreClientFactory, SIMPLE_USER_NAME_PROVIDER, thriftMetastoreConfig),
                 new HiveMetastoreConfig().isHideDeltaLakeTables(),
                 thriftMetastoreConfig,
                 fileSystemFactory,
-                newFixedThreadPool(thriftMetastoreConfig.getWriteStatisticsThreads()));
-        return metastoreFactory.createMetastore(Optional.empty());
+                executorService);
+        return metastoreFactory.createMetastore(Optional.of(SESSION.getIdentity()));
     }
 }

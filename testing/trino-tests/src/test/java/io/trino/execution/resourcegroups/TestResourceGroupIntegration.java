@@ -18,12 +18,11 @@ import io.trino.plugin.resourcegroups.ResourceGroupManagerPlugin;
 import io.trino.server.ResourceGroupInfo;
 import io.trino.spi.resourcegroups.ResourceGroupId;
 import io.trino.testing.QueryRunner;
-import io.trino.tests.tpch.TpchQueryRunnerBuilder;
+import io.trino.tests.tpch.TpchQueryRunner;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static io.airlift.testing.Assertions.assertLessThan;
 import static io.airlift.units.Duration.nanosSince;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -35,7 +34,7 @@ public class TestResourceGroupIntegration
     public void testMemoryFraction()
             throws Exception
     {
-        try (QueryRunner queryRunner = TpchQueryRunnerBuilder.builder().build()) {
+        try (QueryRunner queryRunner = TpchQueryRunner.builder().build()) {
             queryRunner.installPlugin(new ResourceGroupManagerPlugin());
             getResourceGroupManager(queryRunner).setConfigurationManager("file", ImmutableMap.of(
                     "resource-groups.config-file", getResourceFilePath("resource_groups_memory_percentage.json")));
@@ -49,7 +48,7 @@ public class TestResourceGroupIntegration
     public void testPathToRoot()
             throws Exception
     {
-        try (QueryRunner queryRunner = TpchQueryRunnerBuilder.builder().build()) {
+        try (QueryRunner queryRunner = TpchQueryRunner.builder().build()) {
             queryRunner.installPlugin(new ResourceGroupManagerPlugin());
             InternalResourceGroupManager<?> manager = getResourceGroupManager(queryRunner);
             manager.setConfigurationManager("file", ImmutableMap.of(
@@ -58,11 +57,11 @@ public class TestResourceGroupIntegration
             queryRunner.execute(testSessionBuilder().setCatalog("tpch").setSchema("tiny").setSource("dashboard-foo").build(), "SELECT COUNT(*), clerk FROM orders GROUP BY clerk");
             List<ResourceGroupInfo> path = manager.tryGetPathToRoot(new ResourceGroupId(new ResourceGroupId(new ResourceGroupId("global"), "user-user"), "dashboard-user"))
                     .orElseThrow(() -> new IllegalStateException("Resource group not found"));
-            assertThat(path.size()).isEqualTo(3);
-            assertThat(path.get(1).getSubGroups()).isPresent();
-            assertThat(path.get(2).getId()).isEqualTo(new ResourceGroupId("global"));
-            assertThat(path.get(2).getHardConcurrencyLimit()).isEqualTo(100);
-            assertThat(path.get(2).getRunningQueries()).isNotPresent();
+            assertThat(path).hasSize(3);
+            assertThat(path.get(1).subGroups()).isPresent();
+            assertThat(path.get(2).id()).isEqualTo(new ResourceGroupId("global"));
+            assertThat(path.get(2).hardConcurrencyLimit()).isEqualTo(100);
+            assertThat(path.get(2).runningQueries()).isNotPresent();
         }
     }
 
@@ -79,10 +78,10 @@ public class TestResourceGroupIntegration
             SECONDS.sleep(1);
             ResourceGroupInfo global = getResourceGroupManager(queryRunner).tryGetResourceGroupInfo(new ResourceGroupId("global"))
                     .orElseThrow(() -> new IllegalStateException("Resource group not found"));
-            if (global.getSoftMemoryLimit().toBytes() > 0) {
+            if (global.softMemoryLimit().toBytes() > 0) {
                 break;
             }
-            assertLessThan(nanosSince(startTime).roundTo(SECONDS), 60L);
+            assertThat(nanosSince(startTime).roundTo(SECONDS)).isLessThan(60L);
         }
     }
 

@@ -13,11 +13,10 @@
  */
 package io.trino.spi.function;
 
-import io.trino.spi.Experimental;
 import io.trino.spi.function.table.ConnectorTableFunctionHandle;
 import io.trino.spi.function.table.TableFunctionProcessorProvider;
+import io.trino.spi.function.table.TableFunctionProcessorProviderFactory;
 
-@Experimental(eta = "2023-03-31")
 public interface FunctionProvider
 {
     default ScalarFunctionImplementation getScalarFunctionImplementation(
@@ -42,5 +41,11 @@ public interface FunctionProvider
     default TableFunctionProcessorProvider getTableFunctionProcessorProvider(ConnectorTableFunctionHandle functionHandle)
     {
         throw new UnsupportedOperationException("%s does not provide table functions".formatted(getClass().getName()));
+    }
+
+    default TableFunctionProcessorProviderFactory getTableFunctionProcessorProviderFactory(ConnectorTableFunctionHandle functionHandle)
+    {
+        var tableFunctionProvider = getTableFunctionProcessorProvider(functionHandle);
+        return () -> tableFunctionProvider;
     }
 }

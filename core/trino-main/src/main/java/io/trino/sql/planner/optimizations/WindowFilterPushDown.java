@@ -21,7 +21,7 @@ import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.ir.BooleanLiteral;
+import io.trino.sql.ir.Booleans;
 import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.DomainTranslator;
 import io.trino.sql.planner.PlanNodeIdAllocator;
@@ -87,9 +87,9 @@ public class WindowFilterPushDown
             this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
             this.session = requireNonNull(session, "session is null");
-            rowNumberFunctionId = plannerContext.getMetadata().resolveBuiltinFunction("row_number", ImmutableList.of()).getFunctionId();
-            rankFunctionId = plannerContext.getMetadata().resolveBuiltinFunction("rank", ImmutableList.of()).getFunctionId();
-            domainTranslator = new DomainTranslator();
+            rowNumberFunctionId = plannerContext.getMetadata().resolveBuiltinFunction("row_number", ImmutableList.of()).functionId();
+            rankFunctionId = plannerContext.getMetadata().resolveBuiltinFunction("rank", ImmutableList.of()).functionId();
+            this.domainTranslator = new DomainTranslator(plannerContext.getMetadata());
         }
 
         @Override
@@ -103,7 +103,6 @@ public class WindowFilterPushDown
                         node.getPartitionBy(),
                         false,
                         getOnlyElement(node.getWindowFunctions().keySet()),
-                        Optional.empty(),
                         Optional.empty());
             }
             return replaceChildren(node, ImmutableList.of(rewrittenSource));
@@ -161,7 +160,7 @@ public class WindowFilterPushDown
 
                 if (upperBound.isPresent()) {
                     if (upperBound.getAsInt() <= 0) {
-                        return new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of());
+                        return new ValuesNode(node.getId(), node.getOutputSymbols());
                     }
                     source = mergeLimit((RowNumberNode) source, upperBound.getAsInt());
                     return rewriteFilterSource(node, source, rowNumberSymbol, ((RowNumberNode) source).getMaxRowCountPerPartition().get());
@@ -175,7 +174,7 @@ public class WindowFilterPushDown
 
                     if (upperBound.isPresent()) {
                         if (upperBound.getAsInt() <= 0) {
-                            return new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of());
+                            return new ValuesNode(node.getId(), node.getOutputSymbols());
                         }
                         source = convertToTopNRanking(windowNode, rankingType.get(), upperBound.getAsInt());
                         return rewriteFilterSource(node, source, rankingSymbol, upperBound.getAsInt());
@@ -200,7 +199,7 @@ public class WindowFilterPushDown
                     extractionResult.getRemainingExpression(),
                     domainTranslator.toPredicate(newTupleDomain));
 
-            if (newPredicate.equals(BooleanLiteral.TRUE_LITERAL)) {
+            if (newPredicate.equals(Booleans.TRUE)) {
                 return source;
             }
             return new FilterNode(filterNode.getId(), source, newPredicate);
@@ -262,8 +261,7 @@ public class WindowFilterPushDown
                     node.getPartitionBy(),
                     node.isOrderSensitive(),
                     node.getRowNumberSymbol(),
-                    Optional.of(newRowCountPerPartition),
-                    node.getHashSymbol());
+                    Optional.of(newRowCountPerPartition));
         }
 
         private TopNRankingNode convertToTopNRanking(WindowNode windowNode, RankingType rankingType, int limit)
@@ -274,8 +272,7 @@ public class WindowFilterPushDown
                     rankingType,
                     getOnlyElement(windowNode.getWindowFunctions().keySet()),
                     limit,
-                    false,
-                    Optional.empty());
+                    false);
         }
 
         private boolean canReplaceWithRowNumber(WindowNode node)
@@ -284,7 +281,7 @@ public class WindowFilterPushDown
                 return false;
             }
             Symbol rankingSymbol = getOnlyElement(node.getWindowFunctions().entrySet()).getKey();
-            FunctionId functionId = node.getWindowFunctions().get(rankingSymbol).getResolvedFunction().getFunctionId();
+            FunctionId functionId = node.getWindowFunctions().get(rankingSymbol).getResolvedFunction().functionId();
             return functionId.equals(rowNumberFunctionId) && node.getOrderingScheme().isEmpty();
         }
 
@@ -294,7 +291,7 @@ public class WindowFilterPushDown
                 return Optional.empty();
             }
             Symbol rankingSymbol = getOnlyElement(node.getWindowFunctions().entrySet()).getKey();
-            FunctionId functionId = node.getWindowFunctions().get(rankingSymbol).getResolvedFunction().getFunctionId();
+            FunctionId functionId = node.getWindowFunctions().get(rankingSymbol).getResolvedFunction().functionId();
             if (functionId.equals(rowNumberFunctionId)) {
                 return Optional.of(ROW_NUMBER);
             }

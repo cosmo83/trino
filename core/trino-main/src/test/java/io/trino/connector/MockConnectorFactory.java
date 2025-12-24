@@ -40,8 +40,9 @@ import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.JoinApplicationResult;
-import io.trino.spi.connector.JoinCondition;
+import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
+import io.trino.spi.connector.MaterializedViewFreshness;
 import io.trino.spi.connector.ProjectionApplicationResult;
 import io.trino.spi.connector.RelationColumnsMetadata;
 import io.trino.spi.connector.SchemaTableName;
@@ -53,7 +54,6 @@ import io.trino.spi.connector.TableProcedureMetadata;
 import io.trino.spi.connector.TableScanRedirectApplicationResult;
 import io.trino.spi.connector.TopNApplicationResult;
 import io.trino.spi.connector.WriterScalingOptions;
-import io.trino.spi.eventlistener.EventListener;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.function.FunctionProvider;
@@ -79,6 +79,7 @@ import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BiFunction;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -95,17 +96,20 @@ public class MockConnectorFactory
         implements ConnectorFactory
 {
     private final String name;
-    private final List<PropertyMetadata<?>> sessionProperty;
+    private final List<PropertyMetadata<?>> sessionProperties;
     private final Function<ConnectorMetadata, ConnectorMetadata> metadataWrapper;
+    private final Consumer<ConnectorSession> cleanupQuery;
     private final Function<ConnectorSession, List<String>> listSchemaNames;
     private final BiFunction<ConnectorSession, String, List<String>> listTables;
     private final Optional<BiFunction<ConnectorSession, SchemaTablePrefix, Iterator<TableColumnsMetadata>>> streamTableColumns;
     private final Optional<MockConnectorFactory.StreamRelationColumns> streamRelationColumns;
     private final BiFunction<ConnectorSession, SchemaTablePrefix, Map<SchemaTableName, ConnectorViewDefinition>> getViews;
+    private final Supplier<List<PropertyMetadata<?>>> getViewProperties;
     private final Supplier<List<PropertyMetadata<?>>> getMaterializedViewProperties;
     private final BiFunction<ConnectorSession, SchemaTablePrefix, Map<SchemaTableName, ConnectorMaterializedViewDefinition>> getMaterializedViews;
     private final BiFunction<ConnectorSession, SchemaTableName, Boolean> delegateMaterializedViewRefreshToConnector;
     private final BiFunction<ConnectorSession, SchemaTableName, CompletableFuture<?>> refreshMaterializedView;
+    private final BiFunction<ConnectorSession, SchemaTableName, MaterializedViewFreshness> getMaterializedViewFreshness;
     private final BiFunction<ConnectorSession, SchemaTableName, ConnectorTableHandle> getTableHandle;
     private final Function<SchemaTableName, List<ColumnMetadata>> getColumns;
     private final Function<SchemaTableName, Optional<String>> getComment;
@@ -124,8 +128,8 @@ public class MockConnectorFactory
     private final BiFunction<ConnectorSession, Type, Optional<Type>> getSupportedType;
     private final BiFunction<ConnectorSession, ConnectorTableHandle, ConnectorTableProperties> getTableProperties;
     private final BiFunction<ConnectorSession, SchemaTablePrefix, List<GrantInfo>> listTablePrivileges;
-    private final Supplier<Iterable<EventListener>> eventListeners;
     private final Collection<FunctionMetadata> functions;
+    private final Collection<String> branches;
     private final Function<SchemaTableName, List<List<?>>> data;
     private final Function<SchemaTableName, Metrics> metrics;
     private final Set<Procedure> procedures;
@@ -148,20 +152,24 @@ public class MockConnectorFactory
 
     private final WriterScalingOptions writerScalingOptions;
     private final Supplier<Set<ConnectorCapabilities>> capabilities;
+    private final boolean allowSplittingReadIntoMultipleSubQueries;
 
     private MockConnectorFactory(
             String name,
-            List<PropertyMetadata<?>> sessionProperty,
+            List<PropertyMetadata<?>> sessionProperties,
             Function<ConnectorMetadata, ConnectorMetadata> metadataWrapper,
+            Consumer<ConnectorSession> cleanupQuery,
             Function<ConnectorSession, List<String>> listSchemaNames,
             BiFunction<ConnectorSession, String, List<String>> listTables,
             Optional<BiFunction<ConnectorSession, SchemaTablePrefix, Iterator<TableColumnsMetadata>>> streamTableColumns,
-            Optional<MockConnectorFactory.StreamRelationColumns> streamRelationColumns,
+            Optional<StreamRelationColumns> streamRelationColumns,
             BiFunction<ConnectorSession, SchemaTablePrefix, Map<SchemaTableName, ConnectorViewDefinition>> getViews,
+            Supplier<List<PropertyMetadata<?>>> getViewProperties,
             Supplier<List<PropertyMetadata<?>>> getMaterializedViewProperties,
             BiFunction<ConnectorSession, SchemaTablePrefix, Map<SchemaTableName, ConnectorMaterializedViewDefinition>> getMaterializedViews,
             BiFunction<ConnectorSession, SchemaTableName, Boolean> delegateMaterializedViewRefreshToConnector,
             BiFunction<ConnectorSession, SchemaTableName, CompletableFuture<?>> refreshMaterializedView,
+            BiFunction<ConnectorSession, SchemaTableName, MaterializedViewFreshness> getMaterializedViewFreshness,
             BiFunction<ConnectorSession, SchemaTableName, ConnectorTableHandle> getTableHandle,
             Function<SchemaTableName, List<ColumnMetadata>> getColumns,
             Function<SchemaTableName, Optional<String>> getComment,
@@ -180,8 +188,8 @@ public class MockConnectorFactory
             BiFunction<ConnectorSession, Type, Optional<Type>> getSupportedType,
             BiFunction<ConnectorSession, ConnectorTableHandle, ConnectorTableProperties> getTableProperties,
             BiFunction<ConnectorSession, SchemaTablePrefix, List<GrantInfo>> listTablePrivileges,
-            Supplier<Iterable<EventListener>> eventListeners,
             Collection<FunctionMetadata> functions,
+            Collection<String> branches,
             Function<SchemaTableName, List<List<?>>> data,
             Function<SchemaTableName, Metrics> metrics,
             Set<Procedure> procedures,
@@ -200,20 +208,24 @@ public class MockConnectorFactory
             OptionalInt maxWriterTasks,
             BiFunction<ConnectorSession, ConnectorTableExecuteHandle, Optional<ConnectorTableLayout>> getLayoutForTableExecute,
             WriterScalingOptions writerScalingOptions,
-            Supplier<Set<ConnectorCapabilities>> capabilities)
+            Supplier<Set<ConnectorCapabilities>> capabilities,
+            boolean allowSplittingReadIntoMultipleSubQueries)
     {
         this.name = requireNonNull(name, "name is null");
-        this.sessionProperty = ImmutableList.copyOf(requireNonNull(sessionProperty, "sessionProperty is null"));
+        this.sessionProperties = ImmutableList.copyOf(requireNonNull(sessionProperties, "sessionProperties is null"));
         this.metadataWrapper = requireNonNull(metadataWrapper, "metadataWrapper is null");
+        this.cleanupQuery = requireNonNull(cleanupQuery, "cleanupQuery is null");
         this.listSchemaNames = requireNonNull(listSchemaNames, "listSchemaNames is null");
         this.listTables = requireNonNull(listTables, "listTables is null");
         this.streamTableColumns = requireNonNull(streamTableColumns, "streamTableColumns is null");
         this.streamRelationColumns = requireNonNull(streamRelationColumns, "streamRelationColumns is null");
         this.getViews = requireNonNull(getViews, "getViews is null");
+        this.getViewProperties = requireNonNull(getViewProperties, "getViewProperties is null");
         this.getMaterializedViewProperties = requireNonNull(getMaterializedViewProperties, "getMaterializedViewProperties is null");
         this.getMaterializedViews = requireNonNull(getMaterializedViews, "getMaterializedViews is null");
         this.delegateMaterializedViewRefreshToConnector = requireNonNull(delegateMaterializedViewRefreshToConnector, "delegateMaterializedViewRefreshToConnector is null");
         this.refreshMaterializedView = requireNonNull(refreshMaterializedView, "refreshMaterializedView is null");
+        this.getMaterializedViewFreshness = requireNonNull(getMaterializedViewFreshness, "getMaterializedViewFreshness is null");
         this.getTableHandle = requireNonNull(getTableHandle, "getTableHandle is null");
         this.getColumns = requireNonNull(getColumns, "getColumns is null");
         this.getComment = requireNonNull(getComment, "getComment is null");
@@ -232,8 +244,8 @@ public class MockConnectorFactory
         this.getSupportedType = requireNonNull(getSupportedType, "getSupportedType is null");
         this.getTableProperties = requireNonNull(getTableProperties, "getTableProperties is null");
         this.listTablePrivileges = requireNonNull(listTablePrivileges, "listTablePrivileges is null");
-        this.eventListeners = requireNonNull(eventListeners, "eventListeners is null");
         this.functions = ImmutableList.copyOf(functions);
+        this.branches = ImmutableList.copyOf(branches);
         this.analyzeProperties = requireNonNull(analyzeProperties, "analyzeProperties is null");
         this.schemaProperties = requireNonNull(schemaProperties, "schemaProperties is null");
         this.tableProperties = requireNonNull(tableProperties, "tableProperties is null");
@@ -253,6 +265,7 @@ public class MockConnectorFactory
         this.getLayoutForTableExecute = requireNonNull(getLayoutForTableExecute, "getLayoutForTableExecute is null");
         this.writerScalingOptions = requireNonNull(writerScalingOptions, "writerScalingOptions is null");
         this.capabilities = requireNonNull(capabilities, "capabilities is null");
+        this.allowSplittingReadIntoMultipleSubQueries = allowSplittingReadIntoMultipleSubQueries;
     }
 
     @Override
@@ -265,17 +278,20 @@ public class MockConnectorFactory
     public Connector create(String catalogName, Map<String, String> config, ConnectorContext context)
     {
         return new MockConnector(
+                sessionProperties,
                 metadataWrapper,
-                sessionProperty,
+                cleanupQuery,
                 listSchemaNames,
                 listTables,
                 streamTableColumns,
                 streamRelationColumns,
                 getViews,
+                getViewProperties,
                 getMaterializedViewProperties,
                 getMaterializedViews,
                 delegateMaterializedViewRefreshToConnector,
                 refreshMaterializedView,
+                getMaterializedViewFreshness,
                 getTableHandle,
                 getColumns,
                 getComment,
@@ -294,8 +310,8 @@ public class MockConnectorFactory
                 getSupportedType,
                 getTableProperties,
                 listTablePrivileges,
-                eventListeners,
                 functions,
+                branches,
                 roleGrants,
                 partitioningProvider,
                 accessControl,
@@ -314,7 +330,8 @@ public class MockConnectorFactory
                 maxWriterTasks,
                 getLayoutForTableExecute,
                 writerScalingOptions,
-                capabilities);
+                capabilities,
+                allowSplittingReadIntoMultipleSubQueries);
     }
 
     public static MockConnectorFactory create()
@@ -370,9 +387,10 @@ public class MockConnectorFactory
                 JoinType joinType,
                 ConnectorTableHandle left,
                 ConnectorTableHandle right,
-                List<JoinCondition> joinConditions,
+                ConnectorExpression joinCondition,
                 Map<String, ColumnHandle> leftAssignments,
-                Map<String, ColumnHandle> rightAssignments);
+                Map<String, ColumnHandle> rightAssignments,
+                JoinStatistics statistics);
     }
 
     @FunctionalInterface
@@ -414,16 +432,21 @@ public class MockConnectorFactory
     {
         private String name = "mock";
         private final List<PropertyMetadata<?>> sessionProperties = new ArrayList<>();
+        private Consumer<ConnectorSession> cleanupQuery = session -> {};
         private Function<ConnectorMetadata, ConnectorMetadata> metadataWrapper = identity();
         private Function<ConnectorSession, List<String>> listSchemaNames = defaultListSchemaNames();
         private BiFunction<ConnectorSession, String, List<String>> listTables = defaultListTables();
         private Optional<BiFunction<ConnectorSession, SchemaTablePrefix, Iterator<TableColumnsMetadata>>> streamTableColumns = Optional.empty();
         private Optional<MockConnectorFactory.StreamRelationColumns> streamRelationColumns = Optional.empty();
         private BiFunction<ConnectorSession, SchemaTablePrefix, Map<SchemaTableName, ConnectorViewDefinition>> getViews = defaultGetViews();
+        private Supplier<List<PropertyMetadata<?>>> getViewProperties = defaultGetViewProperties();
         private Supplier<List<PropertyMetadata<?>>> getMaterializedViewProperties = defaultGetMaterializedViewProperties();
         private BiFunction<ConnectorSession, SchemaTablePrefix, Map<SchemaTableName, ConnectorMaterializedViewDefinition>> getMaterializedViews = defaultGetMaterializedViews();
         private BiFunction<ConnectorSession, SchemaTableName, Boolean> delegateMaterializedViewRefreshToConnector = (session, viewName) -> false;
         private BiFunction<ConnectorSession, SchemaTableName, CompletableFuture<?>> refreshMaterializedView = (session, viewName) -> CompletableFuture.completedFuture(null);
+        private BiFunction<ConnectorSession, SchemaTableName, MaterializedViewFreshness> getMaterializedViewFreshness = (_, _) -> {
+            throw new UnsupportedOperationException("getMaterializedViewFreshness is not implemented");
+        };
         private BiFunction<ConnectorSession, SchemaTableName, ConnectorTableHandle> getTableHandle = defaultGetTableHandle();
         private Function<SchemaTableName, List<ColumnMetadata>> getColumns = defaultGetColumns();
         private Function<SchemaTableName, Optional<String>> getComment = schemaTableName -> Optional.empty();
@@ -431,14 +454,14 @@ public class MockConnectorFactory
         private Function<SchemaTableName, List<String>> checkConstraints = schemaTableName -> ImmutableList.of();
         private ApplyProjection applyProjection = (session, handle, projections, assignments) -> Optional.empty();
         private ApplyAggregation applyAggregation = (session, handle, aggregates, assignments, groupingSets) -> Optional.empty();
-        private ApplyJoin applyJoin = (session, joinType, left, right, joinConditions, leftAssignments, rightAssignments) -> Optional.empty();
+        private ApplyJoin applyJoin = (_, _, _, _, _, _, _, _) -> Optional.empty();
         private BiFunction<ConnectorSession, SchemaTableName, Optional<ConnectorTableLayout>> getInsertLayout = defaultGetInsertLayout();
         private BiFunction<ConnectorSession, ConnectorTableMetadata, Optional<ConnectorTableLayout>> getNewTableLayout = defaultGetNewTableLayout();
         private BiFunction<ConnectorSession, Type, Optional<Type>> getSupportedType = (session, type) -> Optional.empty();
         private BiFunction<ConnectorSession, ConnectorTableHandle, ConnectorTableProperties> getTableProperties = defaultGetTableProperties();
         private BiFunction<ConnectorSession, SchemaTablePrefix, List<GrantInfo>> listTablePrivileges = defaultListTablePrivileges();
-        private Supplier<Iterable<EventListener>> eventListeners = ImmutableList::of;
         private Collection<FunctionMetadata> functions = ImmutableList.of();
+        private Collection<String> branches = ImmutableList.of();
         private ApplyTopN applyTopN = (session, handle, topNCount, sortItems, assignments) -> Optional.empty();
         private ApplyFilter applyFilter = (session, handle, constraint) -> Optional.empty();
         private ApplyTableFunction applyTableFunction = (session, handle) -> Optional.empty();
@@ -469,6 +492,7 @@ public class MockConnectorFactory
         private BiFunction<ConnectorSession, ConnectorTableExecuteHandle, Optional<ConnectorTableLayout>> getLayoutForTableExecute = (session, handle) -> Optional.empty();
         private WriterScalingOptions writerScalingOptions = WriterScalingOptions.DISABLED;
         private Supplier<Set<ConnectorCapabilities>> capabilities = ImmutableSet::of;
+        private boolean allowSplittingReadIntoMultipleSubQueries;
 
         private Builder() {}
 
@@ -489,6 +513,12 @@ public class MockConnectorFactory
             for (PropertyMetadata<?> sessionProperty : sessionProperties) {
                 withSessionProperty(sessionProperty);
             }
+            return this;
+        }
+
+        public Builder withCleanupQuery(Consumer<ConnectorSession> cleanupQuery)
+        {
+            this.cleanupQuery = cleanupQuery;
             return this;
         }
 
@@ -528,6 +558,12 @@ public class MockConnectorFactory
             return this;
         }
 
+        public Builder withGetViewProperties(Supplier<List<PropertyMetadata<?>>> getViewProperties)
+        {
+            this.getViewProperties = requireNonNull(getViewProperties, "getViewProperties is null");
+            return this;
+        }
+
         public Builder withGetMaterializedViewProperties(Supplier<List<PropertyMetadata<?>>> getMaterializedViewProperties)
         {
             this.getMaterializedViewProperties = requireNonNull(getMaterializedViewProperties, "getMaterializedViewProperties is null");
@@ -549,6 +585,12 @@ public class MockConnectorFactory
         public Builder withRefreshMaterializedView(BiFunction<ConnectorSession, SchemaTableName, CompletableFuture<?>> refreshMaterializedView)
         {
             this.refreshMaterializedView = requireNonNull(refreshMaterializedView, "refreshMaterializedView is null");
+            return this;
+        }
+
+        public Builder withGetMaterializedViewsFreshness(BiFunction<ConnectorSession, SchemaTableName, MaterializedViewFreshness> getMaterializedViewFreshness)
+        {
+            this.getMaterializedViewFreshness = getMaterializedViewFreshness;
             return this;
         }
 
@@ -667,27 +709,17 @@ public class MockConnectorFactory
             return this;
         }
 
-        public Builder withEventListener(EventListener listener)
-        {
-            requireNonNull(listener, "listener is null");
-
-            withEventListener(() -> listener);
-            return this;
-        }
-
-        public Builder withEventListener(Supplier<EventListener> listenerFactory)
-        {
-            requireNonNull(listenerFactory, "listenerFactory is null");
-
-            this.eventListeners = () -> ImmutableList.of(listenerFactory.get());
-            return this;
-        }
-
         public Builder withFunctions(Collection<FunctionMetadata> functions)
         {
             requireNonNull(functions, "functions is null");
 
             this.functions = ImmutableList.copyOf(functions);
+            return this;
+        }
+
+        public Builder withBranches(Collection<String> branches)
+        {
+            this.branches = ImmutableList.copyOf(branches);
             return this;
         }
 
@@ -822,6 +854,12 @@ public class MockConnectorFactory
             return this;
         }
 
+        public Builder withAllowSplittingReadIntoMultipleSubQueries(boolean allowSplittingReadIntoMultipleSubQueries)
+        {
+            this.allowSplittingReadIntoMultipleSubQueries = allowSplittingReadIntoMultipleSubQueries;
+            return this;
+        }
+
         public MockConnectorFactory build()
         {
             Optional<ConnectorAccessControl> accessControl = Optional.empty();
@@ -832,15 +870,18 @@ public class MockConnectorFactory
                     name,
                     sessionProperties,
                     metadataWrapper,
+                    cleanupQuery,
                     listSchemaNames,
                     listTables,
                     streamTableColumns,
                     streamRelationColumns,
                     getViews,
+                    getViewProperties,
                     getMaterializedViewProperties,
                     getMaterializedViews,
                     delegateMaterializedViewRefreshToConnector,
                     refreshMaterializedView,
+                    getMaterializedViewFreshness,
                     getTableHandle,
                     getColumns,
                     getComment,
@@ -859,8 +900,8 @@ public class MockConnectorFactory
                     getSupportedType,
                     getTableProperties,
                     listTablePrivileges,
-                    eventListeners,
                     functions,
+                    branches,
                     data,
                     metrics,
                     procedures,
@@ -879,7 +920,8 @@ public class MockConnectorFactory
                     maxWriterTasks,
                     getLayoutForTableExecute,
                     writerScalingOptions,
-                    capabilities);
+                    capabilities,
+                    allowSplittingReadIntoMultipleSubQueries);
         }
 
         public static Function<ConnectorSession, List<String>> defaultListSchemaNames()
@@ -900,6 +942,11 @@ public class MockConnectorFactory
         public static BiFunction<ConnectorSession, SchemaTablePrefix, Map<SchemaTableName, ConnectorViewDefinition>> defaultGetViews()
         {
             return (session, schemaTablePrefix) -> ImmutableMap.of();
+        }
+
+        public static Supplier<List<PropertyMetadata<?>>> defaultGetViewProperties()
+        {
+            return ImmutableList::of;
         }
 
         public static Supplier<List<PropertyMetadata<?>>> defaultGetMaterializedViewProperties()

@@ -14,7 +14,7 @@
 package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableMap;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
@@ -40,14 +40,14 @@ public class TestPruneOffsetColumns
     public void testNotAllInputsReferenced()
     {
         tester().assertThat(new PruneOffsetColumns())
-                .on(p -> buildProjectedOffset(p, symbol -> symbol.getName().equals("b")))
+                .on(p -> buildProjectedOffset(p, symbol -> symbol.name().equals("b")))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("b", expression(new SymbolReference(BIGINT, "b"))),
+                                ImmutableMap.of("b", expression(new Reference(BIGINT, "b"))),
                                 offset(
                                         1,
                                         strictProject(
-                                                ImmutableMap.of("b", expression(new SymbolReference(BIGINT, "b"))),
+                                                ImmutableMap.of("b", expression(new Reference(BIGINT, "b"))),
                                                 values("a", "b")))));
     }
 

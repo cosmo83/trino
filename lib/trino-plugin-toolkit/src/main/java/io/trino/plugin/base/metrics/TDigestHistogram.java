@@ -11,19 +11,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package io.trino.plugin.base.metrics;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
-import com.fasterxml.jackson.databind.annotation.JsonSerialize;
-import com.fasterxml.jackson.databind.util.StdConverter;
-import io.airlift.slice.Slice;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import com.google.errorprone.annotations.DoNotCall;
 import io.airlift.stats.TDigest;
 import io.trino.spi.metrics.Distribution;
 
-import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -33,11 +29,14 @@ import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.airlift.slice.Slices.wrappedBuffer;
 import static java.lang.String.format;
 
+@JsonTypeInfo(use = JsonTypeInfo.Id.NONE) // Do not add @class property
 public class TDigestHistogram
         implements Distribution<TDigestHistogram>
 {
-    @JsonSerialize(converter = TDigestToBase64Converter.class)
-    @JsonDeserialize(converter = Base64ToTDigestConverter.class)
+    // This is important so that we can instruct Jackson to ignore this property
+    // in certain places (e.g. UiQueryResource)
+    public static final String DIGEST_PROPERTY = "digest";
+
     private final TDigest digest;
 
     public static TDigestHistogram fromValue(double value)
@@ -52,16 +51,27 @@ public class TDigestHistogram
         return new TDigestHistogram(digest);
     }
 
-    @JsonCreator
     public TDigestHistogram(TDigest digest)
     {
         this.digest = digest;
     }
 
-    @JsonProperty
     public synchronized TDigest getDigest()
     {
         return TDigest.copyOf(digest);
+    }
+
+    @JsonProperty(DIGEST_PROPERTY)
+    public synchronized byte[] serialize()
+    {
+        return digest.serialize().getBytes();
+    }
+
+    @JsonCreator
+    @DoNotCall
+    public static TDigestHistogram deserialize(@JsonProperty(DIGEST_PROPERTY) byte[] digest)
+    {
+        return new TDigestHistogram(TDigest.deserialize(wrappedBuffer(digest)));
     }
 
     @Override
@@ -98,20 +108,22 @@ public class TDigestHistogram
         return (long) digest.getCount();
     }
 
-    // Below are extra properties that make it easy to read and parse serialized distribution
-    // in operator summaries and event listener.
+    @Override
     @JsonProperty
     public synchronized double getMin()
     {
         return digest.getMin();
     }
 
+    @Override
     @JsonProperty
     public synchronized double getMax()
     {
         return digest.getMax();
     }
 
+    // Below are extra properties that make it easy to read and parse serialized distribution
+    // in operator summaries and event listener.
     @JsonProperty
     public synchronized double getP01()
     {
@@ -167,9 +179,13 @@ public class TDigestHistogram
     }
 
     @Override
-    public synchronized double getPercentile(double percentile)
+    public synchronized double[] getPercentiles(double... percentiles)
     {
-        return digest.valueAt(percentile / 100.0);
+        double[] digestPercentiles = new double[percentiles.length];
+        for (int i = 0; i < percentiles.length; i++) {
+            digestPercentiles[i] = percentiles[i] / 100.0;
+        }
+        return digest.valuesAt(digestPercentiles);
     }
 
     @Override
@@ -203,35 +219,5 @@ public class TDigestHistogram
     private static String formatDouble(double value)
     {
         return format(Locale.US, "%.2f", value);
-    }
-
-    public static class TDigestToBase64Converter
-            extends StdConverter<TDigest, String>
-    {
-        public TDigestToBase64Converter()
-        {
-        }
-
-        @Override
-        public String convert(TDigest value)
-        {
-            Slice slice = value.serialize();
-            return Base64.getEncoder().encodeToString(slice.getBytes());
-        }
-    }
-
-    public static class Base64ToTDigestConverter
-            extends StdConverter<String, TDigest>
-    {
-        public Base64ToTDigestConverter()
-        {
-        }
-
-        @Override
-        public TDigest convert(String value)
-        {
-            Slice slice = wrappedBuffer(Base64.getDecoder().decode(value));
-            return TDigest.deserialize(slice);
-        }
     }
 }

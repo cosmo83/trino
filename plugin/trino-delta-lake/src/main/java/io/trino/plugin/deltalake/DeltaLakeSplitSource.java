@@ -23,6 +23,7 @@ import io.airlift.log.Logger;
 import io.airlift.units.Duration;
 import io.trino.plugin.hive.util.AsyncQueue;
 import io.trino.plugin.hive.util.ThrottledAsyncQueue;
+import io.trino.spi.ErrorCodeSupplier;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorSplitSource;
@@ -41,12 +42,13 @@ import java.util.concurrent.ExecutorService;
 import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Throwables.getCausalChain;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.util.concurrent.Futures.immediateFailedFuture;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.concurrent.MoreFutures.toCompletableFuture;
-import static io.trino.plugin.deltalake.DeltaLakeSplitManager.partitionMatchesPredicate;
+import static io.trino.plugin.deltalake.util.DeltaLakeDomains.partitionMatchesPredicate;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -90,7 +92,7 @@ public class DeltaLakeSplitSource
                 .exceptionally(throwable -> {
                     // set trinoException before finishing the queue to ensure failure is observed instead of successful completion
                     // (the field is declared as volatile to make sure that the change is visible right away to other threads)
-                    trinoException = new TrinoException(GENERIC_INTERNAL_ERROR, "Failed to generate splits for " + this.tableName, throwable);
+                    trinoException = new TrinoException(findErrorCode(throwable), "Failed to generate splits for " + this.tableName, throwable);
                     try {
                         // Finish the queue to wake up threads from queue.getBatchAsync()
                         queue.finish();
@@ -103,13 +105,23 @@ public class DeltaLakeSplitSource
                 });
     }
 
+    private ErrorCodeSupplier findErrorCode(Throwable throwable)
+    {
+        return getCausalChain(throwable).stream()
+                .filter(TrinoException.class::isInstance)
+                .map(TrinoException.class::cast)
+                .findFirst()
+                .map(t -> (ErrorCodeSupplier) t::getErrorCode)
+                .orElse(GENERIC_INTERNAL_ERROR);
+    }
+
     @Override
     public CompletableFuture<ConnectorSplitBatch> getNextBatch(int maxSize)
     {
         long timeLeft = dynamicFilteringWaitTimeoutMillis - dynamicFilterWaitStopwatch.elapsed(MILLISECONDS);
         if (dynamicFilter.isAwaitable() && timeLeft > 0) {
             return dynamicFilter.isBlocked()
-                    .thenApply(ignored -> EMPTY_BATCH)
+                    .thenApply(_ -> EMPTY_BATCH)
                     .completeOnTimeout(EMPTY_BATCH, timeLeft, MILLISECONDS);
         }
 
@@ -126,7 +138,7 @@ public class DeltaLakeSplitSource
                         return new ConnectorSplitBatch(ImmutableList.of(), noMoreSplits);
                     }
                     Map<DeltaLakeColumnHandle, Domain> partitionColumnDomains = dynamicFilterPredicate.getDomains().orElseThrow().entrySet().stream()
-                            .filter(entry -> entry.getKey().getColumnType() == DeltaLakeColumnType.PARTITION_KEY)
+                            .filter(entry -> entry.getKey().columnType() == DeltaLakeColumnType.PARTITION_KEY)
                             .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
                     List<ConnectorSplit> filteredSplits = splits.stream()
                             .map(DeltaLakeSplit.class::cast)

@@ -15,31 +15,32 @@ package io.trino.execution;
 
 import com.google.common.base.Ticker;
 import io.airlift.units.Duration;
-import org.joda.time.DateTime;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static io.airlift.units.Duration.succinctDuration;
 import static io.airlift.units.Duration.succinctNanos;
 import static java.lang.Math.max;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 class QueryStateTimer
 {
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
     private final Ticker ticker;
 
-    private final DateTime createTime = DateTime.now();
+    private final Instant createTime = Instant.now();
 
     private final long createNanos;
     private final AtomicReference<Long> beginResourceWaitingNanos = new AtomicReference<>();
     private final AtomicReference<Long> beginDispatchingNanos = new AtomicReference<>();
     private final AtomicReference<Long> beginPlanningNanos = new AtomicReference<>();
     private final AtomicReference<Long> beginPlanningCpuNanos = new AtomicReference<>();
+    private final AtomicReference<Long> beginStartingNanos = new AtomicReference<>();
     private final AtomicReference<Long> beginFinishingNanos = new AtomicReference<>();
     private final AtomicReference<Long> endNanos = new AtomicReference<>();
 
@@ -49,6 +50,7 @@ class QueryStateTimer
     private final AtomicReference<Duration> executionTime = new AtomicReference<>();
     private final AtomicReference<Duration> planningTime = new AtomicReference<>();
     private final AtomicReference<Duration> planningCpuTime = new AtomicReference<>();
+    private final AtomicReference<Duration> startingTime = new AtomicReference<>();
     private final AtomicReference<Duration> finishingTime = new AtomicReference<>();
 
     private final AtomicReference<Long> beginAnalysisNanos = new AtomicReference<>();
@@ -113,6 +115,7 @@ class QueryStateTimer
         beginPlanning(now, cpuNow);
         planningTime.compareAndSet(null, nanosSince(beginPlanningNanos, now));
         planningCpuTime.compareAndSet(null, nanosSince(beginPlanningCpuNanos, cpuNow));
+        beginStartingNanos.compareAndSet(null, now);
     }
 
     public void beginRunning()
@@ -123,6 +126,7 @@ class QueryStateTimer
     private void beginRunning(long now)
     {
         beginStarting(now, currentThreadCpuTime());
+        startingTime.compareAndSet(null, nanosSince(beginStartingNanos, now));
     }
 
     public void beginFinishing()
@@ -186,19 +190,19 @@ class QueryStateTimer
     // Stats
     //
 
-    public DateTime getCreateTime()
+    public Instant getCreateTime()
     {
         return createTime;
     }
 
-    public Optional<DateTime> getExecutionStartTime()
+    public Optional<Instant> getExecutionStartTime()
     {
-        return toDateTime(beginPlanningNanos);
+        return toInstant(beginPlanningNanos);
     }
 
-    public Optional<DateTime> getPlanningStartTime()
+    public Optional<Instant> getPlanningStartTime()
     {
-        return toDateTime(beginPlanningNanos);
+        return toInstant(beginPlanningNanos);
     }
 
     public Duration getElapsedTime()
@@ -240,6 +244,11 @@ class QueryStateTimer
         return getDuration(planningCpuTime, beginPlanningCpuNanos);
     }
 
+    public Duration getStartingTime()
+    {
+        return getDuration(startingTime, beginStartingNanos);
+    }
+
     public Duration getFinishingTime()
     {
         return getDuration(finishingTime, beginFinishingNanos);
@@ -250,9 +259,9 @@ class QueryStateTimer
         return getDuration(executionTime, beginPlanningNanos);
     }
 
-    public Optional<DateTime> getEndTime()
+    public Optional<Instant> getEndTime()
     {
-        return toDateTime(endNanos);
+        return toInstant(endNanos);
     }
 
     public Duration getAnalysisTime()
@@ -260,9 +269,9 @@ class QueryStateTimer
         return getDuration(analysisTime, beginAnalysisNanos);
     }
 
-    public DateTime getLastHeartbeat()
+    public Instant getLastHeartbeat()
     {
-        return toDateTime(lastHeartbeatNanos.get());
+        return toInstant(lastHeartbeatNanos.get());
     }
 
     //
@@ -298,22 +307,21 @@ class QueryStateTimer
         if (startNanos != null) {
             return nanosSince(startNanos, tickerNanos());
         }
-        return new Duration(0, MILLISECONDS);
+        return succinctDuration(0, MILLISECONDS);
     }
 
-    private Optional<DateTime> toDateTime(AtomicReference<Long> instantNanos)
+    private Optional<Instant> toInstant(AtomicReference<Long> instantNanos)
     {
         Long nanos = instantNanos.get();
         if (nanos == null) {
             return Optional.empty();
         }
-        return Optional.of(toDateTime(nanos));
+        return Optional.of(toInstant(nanos));
     }
 
-    private DateTime toDateTime(long instantNanos)
+    private Instant toInstant(long instantNanos)
     {
-        long millisSinceCreate = NANOSECONDS.toMillis(instantNanos - createNanos);
-        return new DateTime(createTime.getMillis() + millisSinceCreate);
+        return createTime.plusNanos(instantNanos - createNanos);
     }
 
     private static long currentThreadCpuTime()

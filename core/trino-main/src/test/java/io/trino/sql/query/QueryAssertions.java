@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.errorprone.annotations.CheckReturnValue;
 import io.trino.Session;
+import io.trino.cost.StatsAndCosts;
 import io.trino.metadata.FunctionBundle;
 import io.trino.metadata.Metadata;
 import io.trino.spi.Plugin;
@@ -39,6 +40,7 @@ import io.trino.testing.MaterializedResult;
 import io.trino.testing.MaterializedRow;
 import io.trino.testing.PlanTester;
 import io.trino.testing.QueryRunner;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.testing.StandaloneQueryRunner;
 import io.trino.testing.assertions.TrinoExceptionAssert;
 import org.assertj.core.api.AbstractAssert;
@@ -74,10 +76,10 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.base.Suppliers.memoize;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static io.trino.cost.StatsCalculator.noopStatsCalculator;
 import static io.trino.metadata.OperatorNameUtil.mangleOperatorName;
 import static io.trino.sql.planner.assertions.PlanAssert.assertPlan;
+import static io.trino.sql.planner.planprinter.PlanPrinter.textLogicalPlan;
 import static io.trino.sql.query.QueryAssertions.QueryAssert.newQueryAssert;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static io.trino.testing.TestingSession.testSessionBuilder;
@@ -88,8 +90,7 @@ import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.fail;
 
 public class QueryAssertions
         implements Closeable
@@ -214,12 +215,14 @@ public class QueryAssertions
             fail("Execution of 'expected' query failed: " + expected, ex);
         }
 
-        assertEquals(expectedResults.getTypes(), actualResults.getTypes(), "Types mismatch for query: \n " + actual + "\n:");
+        assertThat(actualResults.getTypes())
+                .as("Types mismatch for query: \n " + actual + "\n:")
+                .isEqualTo(expectedResults.getTypes());
 
         List<MaterializedRow> actualRows = actualResults.getMaterializedRows();
         List<MaterializedRow> expectedRows = expectedResults.getMaterializedRows();
 
-        assertEqualsIgnoreOrder(actualRows, expectedRows, "For query: \n " + actual);
+        assertThat(actualRows).as("For query: \n " + actual).containsExactlyInAnyOrderElementsOf(expectedRows);
     }
 
     public void assertQueryReturnsEmptyResult(@Language("SQL") String actual)
@@ -232,7 +235,7 @@ public class QueryAssertions
             fail("Execution of 'actual' query failed: " + actual, ex);
         }
         List<MaterializedRow> actualRows = actualResults.getMaterializedRows();
-        assertEquals(0, actualRows.size());
+        assertThat(actualRows).isEmpty();
     }
 
     public MaterializedResult execute(@Language("SQL") String query)
@@ -533,22 +536,28 @@ public class QueryAssertions
 
         /**
          * Verifies join query is not fully pushed down by containing JOIN node.
-         *
-         * @deprecated because the method is not tested in BaseQueryAssertionsTest yet
          */
-        @Deprecated
         @CanIgnoreReturnValue
         public QueryAssert joinIsNotFullyPushedDown()
         {
-            return verifyPlan(plan -> {
-                if (PlanNodeSearcher.searchFrom(plan.getRoot())
-                        .whereIsInstanceOfAny(JoinNode.class)
-                        .findFirst()
-                        .isEmpty()) {
-                    // TODO show then plan when assertions fails (like hasPlan()) and add negative test coverage in BaseQueryAssertionsTest
-                    throw new IllegalStateException("Join node should be present in explain plan, when pushdown is not applied");
-                }
-            });
+            transaction(runner.getTransactionManager(), runner.getPlannerContext().getMetadata(), runner.getAccessControl())
+                    .execute(session, session -> {
+                        Plan plan = runner.createPlan(session, query());
+                        if (PlanNodeSearcher.searchFrom(plan.getRoot())
+                                .whereIsInstanceOfAny(JoinNode.class)
+                                .findFirst()
+                                .isEmpty()) {
+                            throw new IllegalStateException("Join node should be present in explain plan, when pushdown is not applied:\n" +
+                                    textLogicalPlan(plan.getRoot(), runner.getPlannerContext().getMetadata(), runner.getPlannerContext().getFunctionManager(), StatsAndCosts.empty(), session, 2, false));
+                        }
+                    });
+
+            if (!skipResultsCorrectnessCheckForPushdown) {
+                // Compare the results with pushdown disabled, so that explicit matches() call is not needed
+                hasCorrectResultsRegardlessOfPushdown();
+            }
+
+            return this;
         }
 
         /**
@@ -574,21 +583,6 @@ public class QueryAssertions
                                 plan,
                                 expectedPlan);
                         additionalPlanVerification.accept(plan);
-                    });
-
-            if (!skipResultsCorrectnessCheckForPushdown) {
-                // Compare the results with pushdown disabled, so that explicit matches() call is not needed
-                hasCorrectResultsRegardlessOfPushdown();
-            }
-            return this;
-        }
-
-        private QueryAssert verifyPlan(Consumer<Plan> planVerification)
-        {
-            transaction(runner.getTransactionManager(), runner.getPlannerContext().getMetadata(), runner.getAccessControl())
-                    .execute(session, session -> {
-                        Plan plan = runner.createPlan(session, query());
-                        planVerification.accept(plan);
                     });
 
             if (!skipResultsCorrectnessCheckForPushdown) {
@@ -656,7 +650,7 @@ public class QueryAssertions
         private final boolean ordered;
         private boolean skipTypesCheck;
 
-        private ResultAssert(
+        public ResultAssert(
                 QueryRunner runner,
                 Session session,
                 Description description,
@@ -764,6 +758,21 @@ public class QueryAssertions
         }
 
         @CanIgnoreReturnValue
+        public ResultAssert hasColumnNames(String... expectedColumnNames)
+        {
+            return hasColumnNames(Arrays.asList(expectedColumnNames));
+        }
+
+        @CanIgnoreReturnValue
+        public ResultAssert hasColumnNames(List<String> expectedColumnNames)
+        {
+            assertThat(actual.getColumnNames())
+                    .as("Column names for query [%s]", description)
+                    .isEqualTo(expectedColumnNames);
+            return this;
+        }
+
+        @CanIgnoreReturnValue
         public ResultAssert hasTypes(List<Type> expectedTypes)
         {
             assertThat(actual.getTypes())
@@ -841,29 +850,28 @@ public class QueryAssertions
             //  1. Avoid constant folding -> exercises the compiler and evaluation engine
             //  2. Force constant folding -> exercises the interpreter
 
-            Result full = run("""
+            Result full = run(
+                    """
                     SELECT %s
                     FROM (
                         VALUES ROW(%s)
                     ) t(%s)
                     WHERE rand() >= 0
-                    """
-                    .formatted(
+                    """.formatted(
                             expression,
                             Joiner.on(",").join(values),
                             Joiner.on(",").join(columns)));
 
-            Result withConstantFolding = run("""
+            Result withConstantFolding = run(
+                    """
                     SELECT %s
                     FROM (
                         VALUES ROW(%s)
                     ) t(%s)
-                    """
-                    .formatted(
+                    """.formatted(
                             expression,
                             Joiner.on(",").join(values),
                             Joiner.on(",").join(columns)));
-
             if (!full.type().equals(withConstantFolding.type())) {
                 fail("Mismatched types between interpreter and evaluation engine: %s vs %s".formatted(full.type(), withConstantFolding.type()));
             }
@@ -877,8 +885,8 @@ public class QueryAssertions
 
         private Result run(String query)
         {
-            MaterializedResult result = runner.execute(session, query);
-            return new Result(getOnlyElement(result.getTypes()), result.getOnlyColumnAsSet().iterator().next());
+            MaterializedResultWithPlan result = runner.executeWithPlan(session, query);
+            return new Result(getOnlyElement(result.result().getTypes()), result.result().getOnlyColumnAsSet().iterator().next());
         }
 
         @Override

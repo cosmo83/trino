@@ -13,8 +13,6 @@
  */
 package io.trino.spi.connector;
 
-import io.trino.spi.Experimental;
-import io.trino.spi.eventlistener.EventListener;
 import io.trino.spi.function.FunctionProvider;
 import io.trino.spi.function.table.ConnectorTableFunction;
 import io.trino.spi.procedure.Procedure;
@@ -76,6 +74,16 @@ public interface Connector
     }
 
     /**
+     * Provide a pageSourceProviderFactory to create stateful instances of PageSourceProvider per query.
+     * If not implemented a singleton instance returned by getPageSourceProvider will be used for all queries.
+     */
+    default ConnectorPageSourceProviderFactory getPageSourceProviderFactory()
+    {
+        ConnectorPageSourceProvider pageSourceProvider = getPageSourceProvider();
+        return () -> pageSourceProvider;
+    }
+
+    /**
      * @throws UnsupportedOperationException if this connector does not support reading tables record at a time
      */
     default ConnectorRecordSetProvider getRecordSetProvider()
@@ -118,7 +126,6 @@ public interface Connector
     /**
      * @return the set of procedures provided by this connector
      */
-    @Experimental(eta = "2022-10-31")
     default Optional<FunctionProvider> getFunctionProvider()
     {
         return Optional.empty();
@@ -178,6 +185,14 @@ public interface Connector
     }
 
     /**
+     * @return the view properties for this connector
+     */
+    default List<PropertyMetadata<?>> getViewProperties()
+    {
+        return emptyList();
+    }
+
+    /**
      * @return the materialized view properties for this connector
      */
     default List<PropertyMetadata<?>> getMaterializedViewProperties()
@@ -199,14 +214,6 @@ public interface Connector
     default ConnectorAccessControl getAccessControl()
     {
         throw new UnsupportedOperationException();
-    }
-
-    /**
-     * @return the event listeners provided by this connector
-     */
-    default Iterable<EventListener> getEventListeners()
-    {
-        return emptySet();
     }
 
     /**
@@ -239,7 +246,7 @@ public interface Connector
      * no methods will be called on the connector or any objects that
      * have been returned from the connector.
      */
-    default void shutdown() {}
+    void shutdown();
 
     default Set<ConnectorCapabilities> getCapabilities()
     {

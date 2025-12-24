@@ -19,15 +19,12 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.optimizations.SymbolMapper;
 import io.trino.sql.planner.plan.Assignments;
-import io.trino.sql.planner.plan.FilterNode;
-import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
-import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.TopNNode;
 
 import java.util.List;
@@ -46,7 +43,7 @@ import static io.trino.sql.planner.plan.Patterns.topN;
  * <pre>
  * - TopN
  *    - Project (non-identity)
- *       - Source other than Filter(TableScan) or TableScan
+ *       - Source
  * </pre>
  * Into:
  * <pre>
@@ -66,9 +63,7 @@ public final class PushTopNThroughProject
                             project()
                                     // do not push topN through identity projection which could be there for column pruning purposes
                                     .matching(projectNode -> !projectNode.isIdentity())
-                                    .capturedAs(PROJECT_CHILD)
-                                    // do not push topN between projection and table scan so that they can be merged into a PageProcessor
-                                    .with(source().matching(node -> !(node instanceof TableScanNode)))));
+                                    .capturedAs(PROJECT_CHILD)));
 
     @Override
     public Pattern<TopNNode> getPattern()
@@ -84,22 +79,13 @@ public final class PushTopNThroughProject
         // Do not push down if the projection is made up of symbol references and exclusive dereferences. This prevents
         // undoing of PushDownDereferencesThroughTopN. We still push topN in the case of overlapping dereferences since
         // it enables PushDownDereferencesThroughTopN rule to push optimal dereferences.
-        Set<Expression> projections = ImmutableSet.copyOf(projectNode.getAssignments().getExpressions());
+        Set<Expression> projections = ImmutableSet.copyOf(projectNode.getAssignments().expressions());
         if (!extractRowSubscripts(projections, false).isEmpty()
                 && exclusiveDereferences(projections)) {
             return Result.empty();
         }
 
-        // do not push topN between projection and filter(table scan) so that they can be merged into a PageProcessor
-        PlanNode projectSource = context.getLookup().resolve(projectNode.getSource());
-        if (projectSource instanceof FilterNode) {
-            PlanNode filterSource = context.getLookup().resolve(((FilterNode) projectSource).getSource());
-            if (filterSource instanceof TableScanNode) {
-                return Result.empty();
-            }
-        }
-
-        Optional<SymbolMapper> symbolMapper = symbolMapper(parent.getOrderingScheme().getOrderBy(), projectNode.getAssignments());
+        Optional<SymbolMapper> symbolMapper = symbolMapper(parent.getOrderingScheme().orderBy(), projectNode.getAssignments());
         if (symbolMapper.isEmpty()) {
             return Result.empty();
         }
@@ -113,7 +99,7 @@ public final class PushTopNThroughProject
         SymbolMapper.Builder mapper = SymbolMapper.builder();
         for (Symbol symbol : symbols) {
             Expression expression = assignments.get(symbol);
-            if (!(expression instanceof SymbolReference)) {
+            if (!(expression instanceof Reference)) {
                 return Optional.empty();
             }
             mapper.put(symbol, Symbol.from(expression));

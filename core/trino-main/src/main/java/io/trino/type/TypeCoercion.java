@@ -25,10 +25,9 @@ import io.trino.spi.type.TimeWithTimeZoneType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeParameter;
 import io.trino.spi.type.TypeSignature;
-import io.trino.spi.type.TypeSignatureParameter;
 import io.trino.spi.type.VarcharType;
-import io.trino.type.setdigest.SetDigestType;
 
 import java.util.List;
 import java.util.Optional;
@@ -132,8 +131,8 @@ public final class TypeCoercion
             return false;
         }
 
-        if (source instanceof DecimalType) {
-            int precision = ((DecimalType) source).getPrecision();
+        if (source instanceof DecimalType decimalType) {
+            int precision = decimalType.getPrecision();
             if (precision > 15 && result.equals(DOUBLE)) {
                 return false;
             }
@@ -295,7 +294,7 @@ public final class TypeCoercion
     private TypeCompatibility typeCompatibilityForCovariantParametrizedType(Type fromType, Type toType)
     {
         checkState(fromType.getClass().equals(toType.getClass()));
-        ImmutableList.Builder<TypeSignatureParameter> commonParameterTypes = ImmutableList.builder();
+        ImmutableList.Builder<TypeParameter> commonParameterTypes = ImmutableList.builder();
         List<Type> fromTypeParameters = fromType.getTypeParameters();
         List<Type> toTypeParameters = toType.getTypeParameters();
 
@@ -310,7 +309,7 @@ public final class TypeCoercion
                 return TypeCompatibility.incompatible();
             }
             coercible &= compatibility.isCoercible();
-            commonParameterTypes.add(TypeSignatureParameter.typeParameter(compatibility.getCommonSuperType().getTypeSignature()));
+            commonParameterTypes.add(TypeParameter.typeParameter(compatibility.getCommonSuperType().getTypeSignature()));
         }
         String typeBase = fromType.getBaseName();
         return TypeCompatibility.compatible(lookupType.apply(new TypeSignature(typeBase, commonParameterTypes.build())), coercible);
@@ -342,7 +341,7 @@ public final class TypeCoercion
                         StandardTypes.TIMESTAMP,
                         StandardTypes.TIMESTAMP_WITH_TIME_ZONE,
                         StandardTypes.HYPER_LOG_LOG,
-                        SetDigestType.NAME,
+                        StandardTypes.SET_DIGEST,
                         StandardTypes.P4_HYPER_LOG_LOG,
                         StandardTypes.JSON,
                         StandardTypes.INTERVAL_YEAR_TO_MONTH,

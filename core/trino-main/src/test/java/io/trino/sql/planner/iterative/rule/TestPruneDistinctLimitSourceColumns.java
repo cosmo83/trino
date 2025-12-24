@@ -15,12 +15,10 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import org.junit.jupiter.api.Test;
-
-import java.util.Optional;
 
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.distinctLimit;
@@ -48,28 +46,25 @@ public class TestPruneDistinctLimitSourceColumns
                                 5,
                                 ImmutableList.of("a"),
                                 strictProject(
-                                        ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a"))),
+                                        ImmutableMap.of("a", expression(new Reference(BIGINT, "a"))),
                                         values("a", "b"))));
 
         tester().assertThat(new PruneDistinctLimitSourceColumns())
                 .on(p -> {
                     Symbol a = p.symbol("a");
                     Symbol b = p.symbol("b");
-                    Symbol hashSymbol = p.symbol("hash_symbol");
                     return p.distinctLimit(
                             5,
                             ImmutableList.of(a),
-                            Optional.of(hashSymbol),
-                            p.values(a, b, hashSymbol));
+                            p.values(a, b));
                 })
                 .matches(
                         distinctLimit(
                                 5,
                                 ImmutableList.of("a"),
-                                "hash_symbol",
                                 strictProject(
-                                        ImmutableMap.of("a", expression(new SymbolReference(BIGINT, "a")), "hash_symbol", expression(new SymbolReference(BIGINT, "hash_symbol"))),
-                                        values("a", "b", "hash_symbol"))));
+                                        ImmutableMap.of("a", expression(new Reference(BIGINT, "a"))),
+                                        values("a", "b"))));
     }
 
     @Test
@@ -79,12 +74,10 @@ public class TestPruneDistinctLimitSourceColumns
                 .on(p -> {
                     Symbol a = p.symbol("a");
                     Symbol b = p.symbol("b");
-                    Symbol hashSymbol = p.symbol("hash_symbol");
                     return p.distinctLimit(
                             5,
                             ImmutableList.of(a, b),
-                            Optional.of(hashSymbol),
-                            p.values(a, b, hashSymbol));
+                            p.values(a, b));
                 })
                 .doesNotFire();
     }

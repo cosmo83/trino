@@ -34,44 +34,14 @@ public class DriverConnectionFactory
     private final Driver driver;
     private final String connectionUrl;
     private final Properties connectionProperties;
-    private final CredentialPropertiesProvider<String, String> credentialPropertiesProvider;
+    private final CredentialPropertiesProvider credentialPropertiesProvider;
     private final TracingDataSource dataSource;
-
-    /**
-     * @deprecated Use {@link #builder(Driver, String, CredentialProvider)} instead.
-     */
-    @Deprecated
-    public DriverConnectionFactory(Driver driver, BaseJdbcConfig config, CredentialProvider credentialProvider)
-    {
-        this(driver,
-                config.getConnectionUrl(),
-                new Properties(),
-                credentialProvider);
-    }
-
-    /**
-     * @deprecated Use {@link #builder(Driver, String, CredentialProvider)} instead.
-     */
-    @Deprecated
-    public DriverConnectionFactory(Driver driver, String connectionUrl, Properties connectionProperties, CredentialProvider credentialProvider)
-    {
-        this(driver, connectionUrl, connectionProperties, new DefaultCredentialPropertiesProvider(credentialProvider), OpenTelemetry.noop());
-    }
-
-    /**
-     * @deprecated Use {@link #builder(Driver, String, CredentialProvider)} instead.
-     */
-    @Deprecated
-    public DriverConnectionFactory(Driver driver, String connectionUrl, Properties connectionProperties, CredentialProvider credentialProvider, OpenTelemetry openTelemetry)
-    {
-        this(driver, connectionUrl, connectionProperties, new DefaultCredentialPropertiesProvider(credentialProvider), openTelemetry);
-    }
 
     public DriverConnectionFactory(
             Driver driver,
             String connectionUrl,
             Properties connectionProperties,
-            CredentialPropertiesProvider<String, String> credentialPropertiesProvider,
+            CredentialPropertiesProvider credentialPropertiesProvider,
             OpenTelemetry openTelemetry)
     {
         this.driver = requireNonNull(driver, "driver is null");
@@ -110,7 +80,7 @@ public class DriverConnectionFactory
         private final Driver driver;
         private final String connectionUrl;
         private Properties connectionProperties = new Properties();
-        private CredentialPropertiesProvider<String, String> credentialPropertiesProvider;
+        private CredentialPropertiesProvider credentialPropertiesProvider;
         private OpenTelemetry openTelemetry = OpenTelemetry.noop();
 
         private Builder(Driver driver, String connectionUrl, CredentialProvider credentialProvider)
@@ -126,7 +96,7 @@ public class DriverConnectionFactory
             return this;
         }
 
-        public Builder setCredentialPropertiesProvider(CredentialPropertiesProvider<String, String> credentialPropertiesProvider)
+        public Builder setCredentialPropertiesProvider(CredentialPropertiesProvider credentialPropertiesProvider)
         {
             this.credentialPropertiesProvider = credentialPropertiesProvider;
             return this;

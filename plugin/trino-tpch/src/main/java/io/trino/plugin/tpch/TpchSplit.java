@@ -27,6 +27,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
 import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
 public class TpchSplit
         implements ConnectorSplit
@@ -65,12 +66,6 @@ public class TpchSplit
     }
 
     @Override
-    public Object getInfo()
-    {
-        return this;
-    }
-
-    @Override
     public boolean isRemotelyAccessible()
     {
         return false;
@@ -93,8 +88,8 @@ public class TpchSplit
             return false;
         }
         TpchSplit other = (TpchSplit) obj;
-        return Objects.equals(this.totalParts, other.totalParts) &&
-                Objects.equals(this.partNumber, other.partNumber);
+        return this.totalParts == other.totalParts &&
+                this.partNumber == other.partNumber;
     }
 
     @Override
@@ -107,6 +102,7 @@ public class TpchSplit
     public String toString()
     {
         return toStringHelper(this)
+                .add("addresses", addresses.stream().map(HostAddress::toString).collect(joining(",")))
                 .add("partNumber", partNumber)
                 .add("totalParts", totalParts)
                 .toString();

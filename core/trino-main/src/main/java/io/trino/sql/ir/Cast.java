@@ -22,14 +22,9 @@ import java.util.List;
 import static java.util.Objects.requireNonNull;
 
 @JsonSerialize
-public record Cast(Expression expression, Type type, boolean safe)
+public record Cast(Expression expression, Type type)
         implements Expression
 {
-    public Cast(Expression expression, Type type)
-    {
-        this(expression, type, false);
-    }
-
     public Cast
     {
         requireNonNull(expression, "expression is null");
@@ -42,24 +37,6 @@ public record Cast(Expression expression, Type type, boolean safe)
         return type;
     }
 
-    @Deprecated
-    public Expression getExpression()
-    {
-        return expression;
-    }
-
-    @Deprecated
-    public Type getType()
-    {
-        return type;
-    }
-
-    @Deprecated
-    public boolean isSafe()
-    {
-        return safe;
-    }
-
     @Override
     public <R, C> R accept(IrVisitor<R, C> visitor, C context)
     {
@@ -67,7 +44,7 @@ public record Cast(Expression expression, Type type, boolean safe)
     }
 
     @Override
-    public List<? extends Expression> getChildren()
+    public List<? extends Expression> children()
     {
         return ImmutableList.of(expression);
     }
@@ -75,6 +52,6 @@ public record Cast(Expression expression, Type type, boolean safe)
     @Override
     public String toString()
     {
-        return "%sCast(%s, %s)".formatted(safe ? "Try" : "", expression, type);
+        return "Cast(%s, %s)".formatted(expression, type);
     }
 }

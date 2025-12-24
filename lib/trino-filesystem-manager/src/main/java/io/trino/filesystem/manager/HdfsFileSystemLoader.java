@@ -13,11 +13,10 @@
  */
 package io.trino.filesystem.manager;
 
-import io.opentelemetry.api.OpenTelemetry;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.spi.NodeManager;
 import io.trino.spi.Plugin;
 import io.trino.spi.classloader.ThreadContextClassLoader;
+import io.trino.spi.connector.ConnectorContext;
 import jakarta.annotation.PreDestroy;
 
 import java.io.File;
@@ -30,7 +29,6 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.Streams.stream;
@@ -47,8 +45,7 @@ final class HdfsFileSystemLoader
             boolean gcsEnabled,
             boolean s3Enabled,
             String catalogName,
-            NodeManager nodeManager,
-            OpenTelemetry openTelemetry)
+            ConnectorContext context)
     {
         Class<?> clazz = tryLoadExistingHdfsManager();
 
@@ -75,9 +72,9 @@ final class HdfsFileSystemLoader
             classLoader = null;
         }
 
-        try (var ignored = new ThreadContextClassLoader(classLoader)) {
-            manager = clazz.getConstructor(Map.class, boolean.class, boolean.class, boolean.class, String.class, NodeManager.class, OpenTelemetry.class)
-                    .newInstance(config, azureEnabled, gcsEnabled, s3Enabled, catalogName, nodeManager, openTelemetry);
+        try (var _ = new ThreadContextClassLoader(classLoader)) {
+            manager = clazz.getConstructor(Map.class, boolean.class, boolean.class, boolean.class, String.class, ConnectorContext.class)
+                    .newInstance(config, azureEnabled, gcsEnabled, s3Enabled, catalogName, context);
         }
         catch (ReflectiveOperationException e) {
             throw new RuntimeException(e);
@@ -85,10 +82,10 @@ final class HdfsFileSystemLoader
     }
 
     @SuppressWarnings("unchecked")
-    public Set<String> configure()
+    public Map<String, Boolean> configure()
     {
-        try (var ignored = new ThreadContextClassLoader(classLoader)) {
-            return (Set<String>) manager.getClass().getMethod("configure").invoke(manager);
+        try (var _ = new ThreadContextClassLoader(classLoader)) {
+            return (Map<String, Boolean>) manager.getClass().getMethod("configure").invoke(manager);
         }
         catch (ReflectiveOperationException e) {
             throw new RuntimeException("Failed to configure HDFS:\n%s\n%s\n%s".formatted("<".repeat(70), e.getCause(), ">".repeat(70)), e);
@@ -97,7 +94,7 @@ final class HdfsFileSystemLoader
 
     public TrinoFileSystemFactory create()
     {
-        try (var ignored = new ThreadContextClassLoader(classLoader)) {
+        try (var _ = new ThreadContextClassLoader(classLoader)) {
             return (TrinoFileSystemFactory) manager.getClass().getMethod("create").invoke(manager);
         }
         catch (ReflectiveOperationException e) {
@@ -109,7 +106,7 @@ final class HdfsFileSystemLoader
     public void stop()
             throws IOException, ReflectiveOperationException
     {
-        try (classLoader; var ignored = new ThreadContextClassLoader(classLoader)) {
+        try (classLoader; var _ = new ThreadContextClassLoader(classLoader)) {
             manager.getClass().getMethod("stop").invoke(manager);
         }
     }

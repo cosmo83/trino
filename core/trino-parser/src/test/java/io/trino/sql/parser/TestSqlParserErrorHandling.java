@@ -22,9 +22,8 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.util.stream.Stream;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestSqlParserErrorHandling
 {
@@ -72,9 +71,9 @@ public class TestSqlParserErrorHandling
                 Arguments.of("select fuu from dual limit 10 order by fuu",
                         "line 1:31: mismatched input 'order'. Expecting: <EOF>"),
                 Arguments.of("select CAST(12223222232535343423232435343 AS BIGINT)",
-                        "line 1:1: Invalid numeric literal: 12223222232535343423232435343"),
+                        "line 1:13: Invalid numeric literal: 12223222232535343423232435343"),
                 Arguments.of("select CAST(-12223222232535343423232435343 AS BIGINT)",
-                        "line 1:1: Invalid numeric literal: -12223222232535343423232435343"),
+                        "line 1:13: Invalid numeric literal: -12223222232535343423232435343"),
                 Arguments.of("select foo.!",
                         "line 1:12: mismatched input '!'. Expecting: '*', <identifier>"),
                 Arguments.of("select foo(,1)",
@@ -86,7 +85,7 @@ public class TestSqlParserErrorHandling
                 Arguments.of("select foo(DISTINCT ,1)",
                         "line 1:21: mismatched input ','. Expecting: <expression>"),
                 Arguments.of("CREATE )",
-                        "line 1:8: mismatched input ')'. Expecting: 'CATALOG', 'FUNCTION', 'MATERIALIZED', 'OR', 'ROLE', 'SCHEMA', 'TABLE', 'VIEW'"),
+                        "line 1:8: mismatched input ')'. Expecting: 'BRANCH', 'CATALOG', 'FUNCTION', 'MATERIALIZED', 'OR', 'ROLE', 'SCHEMA', 'TABLE', 'VIEW'"),
                 Arguments.of("CREATE TABLE ) AS (VALUES 1)",
                         "line 1:14: mismatched input ')'. Expecting: 'IF', <identifier>"),
                 Arguments.of("CREATE TABLE foo ",
@@ -106,7 +105,7 @@ public class TestSqlParserErrorHandling
                 Arguments.of("SELECT a FROM a AS x TABLESAMPLE x ",
                         "line 1:34: mismatched input 'x'. Expecting: 'BERNOULLI', 'SYSTEM'"),
                 Arguments.of("SELECT a AS z FROM t GROUP BY CUBE (a), ",
-                        "line 1:41: mismatched input '<EOF>'. Expecting: '(', 'CUBE', 'GROUPING', 'ROLLUP', <expression>"),
+                        "line 1:41: mismatched input '<EOF>'. Expecting: '(', 'AUTO', 'CUBE', 'GROUPING', 'ROLLUP', <expression>"),
                 Arguments.of("SELECT a AS z FROM t WHERE x = 1 + ",
                         "line 1:36: mismatched input '<EOF>'. Expecting: <expression>"),
                 Arguments.of("SELECT a AS z FROM t WHERE a. ",
@@ -160,8 +159,8 @@ public class TestSqlParserErrorHandling
                         "line 1:52: mismatched input '<EOF>'. Expecting: <expression>"),
                 Arguments.of("SELECT * FROM t FOR VERSION AS OF TIMESTAMP WHERE",
                         "line 1:50: mismatched input '<EOF>'. Expecting: <expression>"),
-                Arguments.of("SELECT ROW(DATE '2022-10-10', DOUBLE 12.0)",
-                        "line 1:38: mismatched input '12.0'. Expecting: '%', '(', ')', '*', '+', ',', '-', '->', '.', '/', 'AND', 'AT', 'OR', 'ORDER', 'OVER', 'PRECISION', '[', '||', <predicate>, <string>"),
+                Arguments.of("SELECT (DATE '2022-10-10', DOUBLE 12.0)",
+                        "line 1:35: mismatched input '12.0'. Expecting: '%', '(', ')', '*', '+', ',', '-', '->', '.', '/', 'AND', 'AT', 'OR', 'OVER', 'PRECISION', '[', '||', <predicate>, <string>"),
                 Arguments.of("VALUES(DATE 2)",
                         "line 1:13: mismatched input '2'. Expecting: '%', '(', ')', '*', '+', ',', '-', '->', '.', '/', 'AND', 'AT', 'OR', 'OVER', '[', '||', <predicate>, <string>"),
                 Arguments.of("SELECT count(DISTINCT *) FROM (VALUES 1)",
@@ -239,10 +238,10 @@ public class TestSqlParserErrorHandling
     {
         assertThatThrownBy(() -> SQL_PARSER.createStatement("select *\nfrom x\nwhere from"))
                 .isInstanceOfSatisfying(ParsingException.class, e -> {
-                    assertTrue(e.getMessage().startsWith("line 3:7: mismatched input 'from'"));
-                    assertTrue(e.getErrorMessage().startsWith("mismatched input 'from'"));
-                    assertEquals(3, e.getLineNumber());
-                    assertEquals(7, e.getColumnNumber());
+                    assertThat(e.getMessage().startsWith("line 3:7: mismatched input 'from'")).isTrue();
+                    assertThat(e.getErrorMessage().startsWith("mismatched input 'from'")).isTrue();
+                    assertThat(e.getLineNumber()).isEqualTo(3);
+                    assertThat(e.getColumnNumber()).isEqualTo(7);
                 });
     }
 

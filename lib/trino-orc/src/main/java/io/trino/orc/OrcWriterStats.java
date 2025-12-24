@@ -38,7 +38,7 @@ public class OrcWriterStats
     private final OrcWriterFlushStats closedFlush = new OrcWriterFlushStats(CLOSED.name());
     private final AtomicLong writerSizeInBytes = new AtomicLong();
 
-    public void recordStripeWritten(FlushReason flushReason, long stripeBytes, int stripeRows, int dictionaryBytes)
+    public void recordStripeWritten(FlushReason flushReason, long stripeBytes, long stripeRows, int dictionaryBytes)
     {
         getFlushStats(flushReason).recordStripeWritten(stripeBytes, stripeRows, dictionaryBytes);
         allFlush.recordStripeWritten(stripeBytes, stripeRows, dictionaryBytes);
@@ -92,17 +92,12 @@ public class OrcWriterStats
 
     private OrcWriterFlushStats getFlushStats(FlushReason flushReason)
     {
-        switch (flushReason) {
-            case MAX_ROWS:
-                return maxRowsFlush;
-            case MAX_BYTES:
-                return maxBytesFlush;
-            case DICTIONARY_FULL:
-                return dictionaryFullFlush;
-            case CLOSED:
-                return closedFlush;
-        }
-        throw new IllegalArgumentException("unknown flush reason " + flushReason);
+        return switch (flushReason) {
+            case MAX_ROWS -> maxRowsFlush;
+            case MAX_BYTES -> maxBytesFlush;
+            case DICTIONARY_FULL -> dictionaryFullFlush;
+            case CLOSED -> closedFlush;
+        };
     }
 
     @Override

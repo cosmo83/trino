@@ -5,40 +5,20 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>443</version>
+        <version>480-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-product-tests</artifactId>
+    <name>${project.artifactId}</name>
     <description>Trino - Product tests</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
         <main-class>io.trino.tests.product.TemptoProductTestRunner</main-class>
         <air.check.skip-duplicate-finder>true</air.check.skip-duplicate-finder>
     </properties>
 
     <dependencies>
-        <dependency>
-            <groupId>com.amazonaws</groupId>
-            <artifactId>aws-java-sdk-core</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>com.amazonaws</groupId>
-            <artifactId>aws-java-sdk-glue</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>com.amazonaws</groupId>
-            <artifactId>aws-java-sdk-s3</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>com.datastax.oss</groupId>
-            <artifactId>java-driver-core</artifactId>
-        </dependency>
-
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
@@ -47,6 +27,7 @@
         <dependency>
             <groupId>com.google.inject</groupId>
             <artifactId>guice</artifactId>
+            <classifier>classes</classifier>
         </dependency>
 
         <dependency>
@@ -56,13 +37,7 @@
 
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>
-            <artifactId>okhttp</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>com.squareup.okio</groupId>
-                    <artifactId>okio</artifactId>
-                </exclusion>
-            </exclusions>
+            <artifactId>okhttp-jvm</artifactId>
         </dependency>
 
         <dependency>
@@ -124,6 +99,11 @@
         </dependency>
 
         <dependency>
+            <groupId>io.github.jeschkies</groupId>
+            <artifactId>loki-client</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>io.minio</groupId>
             <artifactId>minio</artifactId>
         </dependency>
@@ -131,12 +111,6 @@
         <dependency>
             <groupId>io.trino</groupId>
             <artifactId>trino-hive</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.httpcomponents</groupId>
-                    <artifactId>httpclient</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
@@ -177,16 +151,6 @@
         <dependency>
             <groupId>io.trino.tempto</groupId>
             <artifactId>tempto-core</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>org.apache.httpcomponents</groupId>
-                    <artifactId>httpclient</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>org.apache.httpcomponents</groupId>
-                    <artifactId>httpcore</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
@@ -240,9 +204,45 @@
         </dependency>
 
         <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>auth</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>aws-core</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>glue</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>regions</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>sdk-core</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>com.clickhouse</groupId>
             <artifactId>clickhouse-jdbc</artifactId>
             <classifier>all</classifier>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.exasol</groupId>
+            <artifactId>exasol-jdbc</artifactId>
             <scope>runtime</scope>
         </dependency>
 
@@ -287,6 +287,14 @@
         <dependency>
             <groupId>io.trino.hive</groupId>
             <artifactId>hive-apache-jdbc</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <!-- Clickhouse client will by default use LZ4 compression, which requires this dependency -->
+            <!-- https://github.com/ClickHouse/clickhouse-docs/pull/2408/files -->
+            <groupId>org.lz4</groupId>
+            <artifactId>lz4-java</artifactId>
             <scope>runtime</scope>
         </dependency>
 

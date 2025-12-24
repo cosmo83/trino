@@ -44,7 +44,9 @@ import io.trino.testing.TestingTransactionHandle;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.function.Function;
 import java.util.stream.Stream;
@@ -73,12 +75,38 @@ public class TestNoMemoryAwarePartitionMemoryEstimator
         assertThat(estimator.getNextRetryMemoryRequirements(
                 new PartitionMemoryEstimator.MemoryRequirements(DataSize.ofBytes(1)),
                 DataSize.of(5, BYTE),
-                StandardErrorCode.NOT_SUPPORTED.toErrorCode()))
+                StandardErrorCode.NOT_SUPPORTED.toErrorCode(),
+                5))
                 .isEqualTo(noMemoryRequirements);
         assertThat(estimator.getNextRetryMemoryRequirements(
                 new PartitionMemoryEstimator.MemoryRequirements(DataSize.ofBytes(1)),
                 DataSize.of(5, BYTE),
-                StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES.toErrorCode()))
+                StandardErrorCode.NOT_SUPPORTED.toErrorCode(),
+                1))
+                .isEqualTo(noMemoryRequirements);
+        assertThat(estimator.getNextRetryMemoryRequirements(
+                new PartitionMemoryEstimator.MemoryRequirements(DataSize.ofBytes(1)),
+                DataSize.of(5, BYTE),
+                StandardErrorCode.NOT_SUPPORTED.toErrorCode(),
+                0))
+                .isEqualTo(noMemoryRequirements);
+        assertThat(estimator.getNextRetryMemoryRequirements(
+                new PartitionMemoryEstimator.MemoryRequirements(DataSize.ofBytes(1)),
+                DataSize.of(5, BYTE),
+                StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES.toErrorCode(),
+                5))
+                .isEqualTo(noMemoryRequirements);
+        assertThat(estimator.getNextRetryMemoryRequirements(
+                new PartitionMemoryEstimator.MemoryRequirements(DataSize.ofBytes(1)),
+                DataSize.of(5, BYTE),
+                StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES.toErrorCode(),
+                1))
+                .isEqualTo(noMemoryRequirements);
+        assertThat(estimator.getNextRetryMemoryRequirements(
+                new PartitionMemoryEstimator.MemoryRequirements(DataSize.ofBytes(1)),
+                DataSize.of(5, BYTE),
+                StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES.toErrorCode(),
+                0))
                 .isEqualTo(noMemoryRequirements);
     }
 
@@ -162,7 +190,7 @@ public class TestNoMemoryAwarePartitionMemoryEstimator
 
     private static PlanFragment getParentFragment(PlanFragment... childFragments)
     {
-        ImmutableList<PlanFragmentId> childFragmentIds = Stream.of(childFragments)
+        List<PlanFragmentId> childFragmentIds = Stream.of(childFragments)
                 .map(PlanFragment::getId)
                 .collect(toImmutableList());
         return new PlanFragment(
@@ -170,12 +198,13 @@ public class TestNoMemoryAwarePartitionMemoryEstimator
                 new RemoteSourceNode(new PlanNodeId("rsn"), childFragmentIds, ImmutableList.of(), Optional.empty(), ExchangeNode.Type.GATHER, RetryPolicy.TASK),
                 ImmutableSet.of(),
                 SOURCE_DISTRIBUTION,
-                Optional.empty(),
+                OptionalInt.empty(),
                 ImmutableList.of(),
                 new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of()),
+                OptionalInt.empty(),
                 StatsAndCosts.empty(),
                 ImmutableList.of(),
-                ImmutableList.of(),
+                ImmutableMap.of(),
                 Optional.empty());
     }
 
@@ -216,12 +245,13 @@ public class TestNoMemoryAwarePartitionMemoryEstimator
                 informationSchemaViewsTableScan,
                 ImmutableSet.of(),
                 SOURCE_DISTRIBUTION,
-                Optional.empty(),
+                OptionalInt.empty(),
                 ImmutableList.of(),
                 new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of()),
+                OptionalInt.empty(),
                 StatsAndCosts.empty(),
                 ImmutableList.of(),
-                ImmutableList.of(),
+                ImmutableMap.of(),
                 Optional.empty());
     }
 
@@ -245,7 +275,7 @@ public class TestNoMemoryAwarePartitionMemoryEstimator
         }
 
         @Override
-        public MemoryRequirements getNextRetryMemoryRequirements(MemoryRequirements previousMemoryRequirements, DataSize peakMemoryUsage, ErrorCode errorCode)
+        public MemoryRequirements getNextRetryMemoryRequirements(MemoryRequirements previousMemoryRequirements, DataSize peakMemoryUsage, ErrorCode errorCode, int remainingAttempts)
         {
             throw new RuntimeException("not implemented");
         }

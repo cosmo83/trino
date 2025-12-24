@@ -27,7 +27,6 @@ import org.apache.parquet.io.ColumnIO;
 import org.apache.parquet.io.ColumnIOFactory;
 import org.apache.parquet.io.GroupColumnIO;
 import org.apache.parquet.io.MessageColumnIO;
-import org.apache.parquet.io.ParquetDecodingException;
 import org.apache.parquet.io.PrimitiveColumnIO;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation.DecimalLogicalTypeAnnotation;
@@ -35,14 +34,15 @@ import org.apache.parquet.schema.MessageType;
 
 import java.math.BigInteger;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.type.StandardTypes.JSON;
+import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static java.lang.String.format;
 import static org.apache.parquet.schema.Type.Repetition.OPTIONAL;
 import static org.apache.parquet.schema.Type.Repetition.REPEATED;
@@ -89,12 +89,12 @@ public final class ParquetTypeUtils
          *     };
          *  }
          */
-        if (columnIO instanceof GroupColumnIO &&
+        if (columnIO instanceof GroupColumnIO groupColumnIO &&
                 columnIO.getType().getLogicalTypeAnnotation() == null &&
-                ((GroupColumnIO) columnIO).getChildrenCount() == 1 &&
+                groupColumnIO.getChildrenCount() == 1 &&
                 !columnIO.getName().equals("array") &&
                 !columnIO.getName().equals(columnIO.getParent().getName() + "_tuple")) {
-            return ((GroupColumnIO) columnIO).getChild(0);
+            return groupColumnIO.getChild(0);
         }
 
         /* Backward-compatibility support for 2-level arrays where a repeated field is not a group:
@@ -107,77 +107,33 @@ public final class ParquetTypeUtils
 
     public static Map<List<String>, ColumnDescriptor> getDescriptors(MessageType fileSchema, MessageType requestedSchema)
     {
-        Map<List<String>, ColumnDescriptor> descriptorsByPath = new HashMap<>();
-        List<PrimitiveColumnIO> columns = getColumns(fileSchema, requestedSchema);
-        for (String[] paths : fileSchema.getPaths()) {
-            List<String> columnPath = Arrays.asList(paths);
-            getDescriptor(columns, columnPath)
-                    .ifPresent(columnDescriptor -> descriptorsByPath.put(columnPath, columnDescriptor));
-        }
-        return descriptorsByPath;
-    }
-
-    public static Optional<ColumnDescriptor> getDescriptor(List<PrimitiveColumnIO> columns, List<String> path)
-    {
-        checkArgument(path.size() >= 1, "Parquet nested path should have at least one component");
-        int index = getPathIndex(columns, path);
-        if (index == -1) {
-            return Optional.empty();
-        }
-        PrimitiveColumnIO columnIO = columns.get(index);
-        return Optional.of(columnIO.getColumnDescriptor());
-    }
-
-    private static int getPathIndex(List<PrimitiveColumnIO> columns, List<String> path)
-    {
-        int maxLevel = path.size();
-        int index = -1;
-        for (int columnIndex = 0; columnIndex < columns.size(); columnIndex++) {
-            ColumnIO[] fields = columns.get(columnIndex).getPath();
-            if (fields.length <= maxLevel) {
-                continue;
-            }
-            if (fields[maxLevel].getName().equalsIgnoreCase(path.get(maxLevel - 1))) {
-                boolean match = true;
-                for (int level = 0; level < maxLevel - 1; level++) {
-                    if (!fields[level + 1].getName().equalsIgnoreCase(path.get(level))) {
-                        match = false;
-                    }
-                }
-
-                if (match) {
-                    index = columnIndex;
-                }
-            }
-        }
-        return index;
+        // io.trino.parquet.reader.MetadataReader.readFooter performs lower casing of all column names in fileSchema.
+        // requestedSchema also contains lower cased columns because of being derived from fileSchema.
+        // io.trino.parquet.ParquetTypeUtils.getParquetTypeByName takes care of case-insensitive matching if needed.
+        // Therefore, we don't need to repeat case-insensitive matching here.
+        return getColumns(fileSchema, requestedSchema)
+                .stream()
+                .collect(toImmutableMap(
+                        columnIO -> Arrays.asList(columnIO.getFieldPath()),
+                        PrimitiveColumnIO::getColumnDescriptor,
+                        // Same column name may occur more than once when the file is written by case-sensitive tools
+                        (oldValue, _) -> oldValue));
     }
 
     @SuppressWarnings("deprecation")
     public static ParquetEncoding getParquetEncoding(Encoding encoding)
     {
-        switch (encoding) {
-            case PLAIN:
-                return ParquetEncoding.PLAIN;
-            case RLE:
-                return ParquetEncoding.RLE;
-            case BYTE_STREAM_SPLIT:
-                // TODO: https://github.com/trinodb/trino/issues/8357
-                throw new ParquetDecodingException("Unsupported Parquet encoding: " + encoding);
-            case BIT_PACKED:
-                return ParquetEncoding.BIT_PACKED;
-            case PLAIN_DICTIONARY:
-                return ParquetEncoding.PLAIN_DICTIONARY;
-            case DELTA_BINARY_PACKED:
-                return ParquetEncoding.DELTA_BINARY_PACKED;
-            case DELTA_LENGTH_BYTE_ARRAY:
-                return ParquetEncoding.DELTA_LENGTH_BYTE_ARRAY;
-            case DELTA_BYTE_ARRAY:
-                return ParquetEncoding.DELTA_BYTE_ARRAY;
-            case RLE_DICTIONARY:
-                return ParquetEncoding.RLE_DICTIONARY;
-        }
-        throw new ParquetDecodingException("Unsupported Parquet encoding: " + encoding);
+        return switch (encoding) {
+            case PLAIN -> ParquetEncoding.PLAIN;
+            case RLE -> ParquetEncoding.RLE;
+            case BYTE_STREAM_SPLIT -> ParquetEncoding.BYTE_STREAM_SPLIT;
+            case BIT_PACKED -> ParquetEncoding.BIT_PACKED;
+            case PLAIN_DICTIONARY -> ParquetEncoding.PLAIN_DICTIONARY;
+            case DELTA_BINARY_PACKED -> ParquetEncoding.DELTA_BINARY_PACKED;
+            case DELTA_LENGTH_BYTE_ARRAY -> ParquetEncoding.DELTA_LENGTH_BYTE_ARRAY;
+            case DELTA_BYTE_ARRAY -> ParquetEncoding.DELTA_BYTE_ARRAY;
+            case RLE_DICTIONARY -> ParquetEncoding.RLE_DICTIONARY;
+        };
     }
 
     public static org.apache.parquet.schema.Type getParquetTypeByName(String columnName, GroupType groupType)
@@ -239,9 +195,11 @@ public final class ParquetTypeUtils
 
     /**
      * For optional fields:
-     * definitionLevel == maxDefinitionLevel     => Value is defined
-     * definitionLevel == maxDefinitionLevel - 1 => Value is null
-     * definitionLevel < maxDefinitionLevel - 1  => Value does not exist, because one of its optional parent fields is null
+     * <ul>
+     * <li>definitionLevel == maxDefinitionLevel     =&gt; Value is defined</li>
+     * <li>definitionLevel == maxDefinitionLevel - 1 =&gt; Value is null</li>
+     * <li>definitionLevel &lt; maxDefinitionLevel - 1  =&gt; Value does not exist, because one of its optional parent fields is null</li>
+     * </ul>
      */
     public static boolean isValueNull(boolean required, int definitionLevel, int maxDefinitionLevel)
     {
@@ -335,6 +293,21 @@ public final class ParquetTypeUtils
         boolean required = columnIO.getType().getRepetition() != OPTIONAL;
         int repetitionLevel = columnIO.getRepetitionLevel();
         int definitionLevel = columnIO.getDefinitionLevel();
+        if (isVariantType(type, columnIO)) {
+            if (!(columnIO instanceof GroupColumnIO groupColumnIo)) {
+                throw new IllegalStateException("Expected columnIO to be GroupColumnIO but got %s".formatted(columnIO.getClass().getSimpleName()));
+            }
+            PrimitiveField valueField = (PrimitiveField) constructField(VARBINARY, groupColumnIo.getChild(0), false).orElseThrow();
+            PrimitiveField metadataField = (PrimitiveField) constructField(VARBINARY, groupColumnIo.getChild(1), false).orElseThrow();
+            return Optional.of(new VariantField(
+                    type,
+                    repetitionLevel,
+                    definitionLevel,
+                    required,
+                    new PrimitiveField(valueField.getType(), false, valueField.getDescriptor(), valueField.getId()),
+                    // Mark the metadata field as optional, this is because the metadata field is not present when the actual Variant value is null
+                    new PrimitiveField(metadataField.getType(), false, metadataField.getDescriptor(), metadataField.getId())));
+        }
         if (type instanceof RowType rowType) {
             GroupColumnIO groupColumnIO = (GroupColumnIO) columnIO;
             ImmutableList.Builder<Optional<Field>> fieldsBuilder = ImmutableList.builder();
@@ -393,5 +366,14 @@ public final class ParquetTypeUtils
             throw new TrinoException(NOT_SUPPORTED, format("Unsupported Trino column type (%s) for Parquet column (%s)", type, primitiveColumnIO.getColumnDescriptor()));
         }
         return Optional.of(new PrimitiveField(type, required, primitiveColumnIO.getColumnDescriptor(), primitiveColumnIO.getId()));
+    }
+
+    private static boolean isVariantType(Type type, ColumnIO columnIO)
+    {
+        return type.getBaseName().equals(JSON) &&
+                columnIO instanceof GroupColumnIO groupColumnIo &&
+                groupColumnIo.getChildrenCount() == 2 &&
+                groupColumnIo.getChild("value") != null &&
+                groupColumnIo.getChild("metadata") != null;
     }
 }

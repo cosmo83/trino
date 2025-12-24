@@ -15,7 +15,7 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
@@ -50,7 +50,6 @@ public class TestPruneTableFunctionProcessorSourceColumns
                     Symbol c = p.symbol("c");
                     Symbol d = p.symbol("d");
                     Symbol unreferenced = p.symbol("unreferenced");
-                    Symbol hash = p.symbol("hash");
                     Symbol marker = p.symbol("marker");
                     return p.tableFunctionProcessor(
                             builder -> builder
@@ -65,8 +64,7 @@ public class TestPruneTableFunctionProcessorSourceColumns
                                             d, marker,
                                             unreferenced, marker))
                                     .specification(new DataOrganizationSpecification(ImmutableList.of(c), Optional.of(new OrderingScheme(ImmutableList.of(d), ImmutableMap.of(d, ASC_NULLS_FIRST)))))
-                                    .hashSymbol(hash)
-                                    .source(p.values(a, b, c, d, unreferenced, hash, marker)));
+                                    .source(p.values(a, b, c, d, unreferenced, marker)));
                 })
                 .matches(tableFunctionProcessor(builder -> builder
                                 .name("test_function")
@@ -78,17 +76,15 @@ public class TestPruneTableFunctionProcessorSourceColumns
                                         "b", "marker",
                                         "c", "marker",
                                         "d", "marker"))
-                                .specification(specification(ImmutableList.of("c"), ImmutableList.of("d"), ImmutableMap.of("d", ASC_NULLS_FIRST)))
-                                .hashSymbol("hash"),
+                                .specification(specification(ImmutableList.of("c"), ImmutableList.of("d"), ImmutableMap.of("d", ASC_NULLS_FIRST))),
                         project(
                                 ImmutableMap.of(
-                                        "a", expression(new SymbolReference(BIGINT, "a")),
-                                        "b", expression(new SymbolReference(BIGINT, "b")),
-                                        "c", expression(new SymbolReference(BIGINT, "c")),
-                                        "d", expression(new SymbolReference(BIGINT, "d")),
-                                        "hash", expression(new SymbolReference(BIGINT, "hash")),
-                                        "marker", expression(new SymbolReference(BIGINT, "marker"))),
-                                values("a", "b", "c", "d", "unreferenced", "hash", "marker"))));
+                                        "a", expression(new Reference(BIGINT, "a")),
+                                        "b", expression(new Reference(BIGINT, "b")),
+                                        "c", expression(new Reference(BIGINT, "c")),
+                                        "d", expression(new Reference(BIGINT, "d")),
+                                        "marker", expression(new Reference(BIGINT, "marker"))),
+                                values("a", "b", "c", "d", "unreferenced", "marker"))));
     }
 
     @Test
@@ -168,15 +164,15 @@ public class TestPruneTableFunctionProcessorSourceColumns
                                         "f", "marker3")),
                         project(
                                 ImmutableMap.of(
-                                        "a", expression(new SymbolReference(BIGINT, "a")),
-                                        "b", expression(new SymbolReference(BIGINT, "b")),
-                                        "c", expression(new SymbolReference(BIGINT, "c")),
-                                        "d", expression(new SymbolReference(BIGINT, "d")),
-                                        "e", expression(new SymbolReference(BIGINT, "e")),
-                                        "f", expression(new SymbolReference(BIGINT, "f")),
-                                        "marker1", expression(new SymbolReference(BIGINT, "marker1")),
-                                        "marker2", expression(new SymbolReference(BIGINT, "marker2")),
-                                        "marker3", expression(new SymbolReference(BIGINT, "marker3"))),
+                                        "a", expression(new Reference(BIGINT, "a")),
+                                        "b", expression(new Reference(BIGINT, "b")),
+                                        "c", expression(new Reference(BIGINT, "c")),
+                                        "d", expression(new Reference(BIGINT, "d")),
+                                        "e", expression(new Reference(BIGINT, "e")),
+                                        "f", expression(new Reference(BIGINT, "f")),
+                                        "marker1", expression(new Reference(BIGINT, "marker1")),
+                                        "marker2", expression(new Reference(BIGINT, "marker2")),
+                                        "marker3", expression(new Reference(BIGINT, "marker3"))),
                                 values("a", "b", "c", "d", "e", "f", "marker1", "marker2", "marker3", "unreferenced"))));
     }
 

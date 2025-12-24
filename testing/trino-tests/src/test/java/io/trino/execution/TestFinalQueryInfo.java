@@ -67,7 +67,7 @@ public class TestFinalQueryInfo
         try {
             ClientSession clientSession = ClientSession.builder()
                     .server(queryRunner.getCoordinator().getBaseUrl())
-                    .principal(Optional.of("user"))
+                    .user(Optional.of("user"))
                     .source("source")
                     .timeZone(ZoneId.of("America/Los_Angeles"))
                     .locale(Locale.ENGLISH)
@@ -97,7 +97,7 @@ public class TestFinalQueryInfo
             throws Exception
     {
         QueryRunner queryRunner = DistributedQueryRunner.builder(session)
-                .setNodeCount(2)
+                .setWorkerCount(1)
                 .build();
 
         try {

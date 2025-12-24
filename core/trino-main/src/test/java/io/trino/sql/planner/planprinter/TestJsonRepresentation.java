@@ -22,9 +22,10 @@ import io.trino.execution.TableInfo;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.spi.predicate.TupleDomain;
-import io.trino.sql.ir.ComparisonExpression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.PlanNodeIdAllocator;
+import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
 import io.trino.sql.planner.plan.DynamicFilterId;
 import io.trino.sql.planner.plan.JoinNode;
@@ -47,18 +48,15 @@ import static io.airlift.json.JsonCodec.jsonCodec;
 import static io.airlift.json.JsonCodec.mapJsonCodec;
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.operator.RetryPolicy.NONE;
-import static io.trino.plugin.tpch.TpchConnectorFactory.TPCH_SPLITS_PER_NODE;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.IntegerType.INTEGER;
-import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN;
 import static io.trino.sql.planner.iterative.rule.test.PlanBuilder.aggregation;
 import static io.trino.sql.planner.plan.AggregationNode.Step.FINAL;
 import static io.trino.sql.planner.plan.ExchangeNode.Type.REPARTITION;
 import static io.trino.sql.planner.plan.JoinType.INNER;
 import static io.trino.sql.planner.planprinter.JsonRenderer.JsonRenderedNode;
-import static io.trino.sql.planner.planprinter.NodeRepresentation.TypedSymbol;
-import static io.trino.sql.planner.planprinter.NodeRepresentation.TypedSymbol.typedSymbol;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
@@ -82,7 +80,7 @@ public class TestJsonRepresentation
         // the expected values below simple non-distributed plans
         queryRunner = new StandaloneQueryRunner(TEST_SESSION);
         queryRunner.installPlugin(new TpchPlugin());
-        queryRunner.createCatalog(TEST_SESSION.getCatalog().get(), "tpch", ImmutableMap.of(TPCH_SPLITS_PER_NODE, "1"));
+        queryRunner.createCatalog(TEST_SESSION.getCatalog().get(), "tpch", ImmutableMap.of("tpch.splits-per-node", "1"));
     }
 
     @AfterAll
@@ -100,21 +98,21 @@ public class TestJsonRepresentation
                 "8",
                 "Output",
                 ImmutableMap.of("columnNames", "[_col0]"),
-                ImmutableList.of(typedSymbol("field", INTEGER)),
+                ImmutableList.of(new Symbol(INTEGER, "field")),
                 ImmutableList.of("_col0 := field"),
                 ImmutableList.of(new PlanNodeStatsAndCostSummary(1, 5, 0, 0, 0)),
                 ImmutableList.of(new JsonRenderedNode(
                         "90",
                         "Limit",
                         ImmutableMap.of("count", "1", "withTies", "", "inputPreSortedBy", "[]"),
-                        ImmutableList.of(typedSymbol("field", INTEGER)),
+                        ImmutableList.of(new Symbol(INTEGER, "field")),
                         ImmutableList.of(),
                         ImmutableList.of(new PlanNodeStatsAndCostSummary(1, 5, 5, 0, 0)),
                         ImmutableList.of(new JsonRenderedNode(
                                 "0",
                                 "Values",
                                 ImmutableMap.of(),
-                                ImmutableList.of(typedSymbol("field", INTEGER)),
+                                ImmutableList.of(new Symbol(INTEGER, "field")),
                                 ImmutableList.of("(integer '1')", "(integer '2')"),
                                 ImmutableList.of(new PlanNodeStatsAndCostSummary(2, 10, 0, 0, 0)),
                                 ImmutableList.of())))));
@@ -123,7 +121,7 @@ public class TestJsonRepresentation
                 .isEqualTo(DISTRIBUTED_PLAN_JSON_CODEC.toJson(ImmutableMap.of("0", expectedPlan)));
 
         assertThat(queryRunner.execute("EXPLAIN (TYPE LOGICAL, FORMAT JSON) " + query).getOnlyValue())
-                .isEqualTo(JSON_RENDERED_NODE_CODEC.toJson(expectedPlan));
+                .isEqualTo(DISTRIBUTED_PLAN_JSON_CODEC.toJson(ImmutableMap.of("0", expectedPlan)));
     }
 
     @Test
@@ -132,7 +130,7 @@ public class TestJsonRepresentation
         assertJsonRepresentation(
                 pb -> pb.aggregation(ab -> ab
                         .step(FINAL)
-                        .addAggregation(pb.symbol("sum", BIGINT), aggregation("sum", ImmutableList.of(new SymbolReference(BIGINT, "x"))), ImmutableList.of(BIGINT))
+                        .addAggregation(pb.symbol("sum", BIGINT), aggregation("sum", ImmutableList.of(new Reference(BIGINT, "x"))), ImmutableList.of(BIGINT))
                         .singleGroupingSet(pb.symbol("y", BIGINT), pb.symbol("z", BIGINT))
                         .source(pb.values(pb.symbol("x", BIGINT), pb.symbol("y", BIGINT), pb.symbol("z", BIGINT)))),
                 new JsonRenderedNode(
@@ -140,17 +138,16 @@ public class TestJsonRepresentation
                         "Aggregate",
                         ImmutableMap.of(
                                 "type", "FINAL",
-                                "keys", "[y, z]",
-                                "hash", "[]"),
+                                "keys", "[y, z]"),
                         ImmutableList.of(
-                                typedSymbol("y", BIGINT),
-                                typedSymbol("z", BIGINT),
-                                typedSymbol("sum", BIGINT)),
+                                new Symbol(BIGINT, "y"),
+                                new Symbol(BIGINT, "z"),
+                                new Symbol(BIGINT, "sum")),
                         ImmutableList.of("sum := sum(x)"),
                         ImmutableList.of(),
                         ImmutableList.of(valuesRepresentation(
                                 "0",
-                                ImmutableList.of(typedSymbol("x", BIGINT), typedSymbol("y", BIGINT), typedSymbol("z", BIGINT))))));
+                                ImmutableList.of(new Symbol(BIGINT, "x"), new Symbol(BIGINT, "y"), new Symbol(BIGINT, "z"))))));
     }
 
     @Test
@@ -164,20 +161,18 @@ public class TestJsonRepresentation
                         ImmutableList.of(new JoinNode.EquiJoinClause(pb.symbol("a", BIGINT), pb.symbol("d", BIGINT))),
                         ImmutableList.of(pb.symbol("b", BIGINT)),
                         ImmutableList.of(),
-                        Optional.of(new ComparisonExpression(LESS_THAN, new SymbolReference(BIGINT, "a"), new SymbolReference(BIGINT, "c"))),
-                        Optional.empty(),
-                        Optional.empty(),
+                        Optional.of(new Comparison(LESS_THAN, new Reference(BIGINT, "a"), new Reference(BIGINT, "c"))),
                         ImmutableMap.of(new DynamicFilterId("DF"), pb.symbol("d", BIGINT))),
                 new JsonRenderedNode(
                         "2",
                         "InnerJoin",
-                        ImmutableMap.of("criteria", "(a = d)", "filter", "(a < c)", "hash", "[]"),
-                        ImmutableList.of(typedSymbol("b", BIGINT)),
+                        ImmutableMap.of("criteria", "(a = d)", "filter", "(a < c)"),
+                        ImmutableList.of(new Symbol(BIGINT, "b")),
                         ImmutableList.of("dynamicFilterAssignments = {d -> #DF}"),
                         ImmutableList.of(),
                         ImmutableList.of(
-                                valuesRepresentation("0", ImmutableList.of(typedSymbol("a", BIGINT), typedSymbol("b", BIGINT))),
-                                valuesRepresentation("1", ImmutableList.of(typedSymbol("c", BIGINT), typedSymbol("d", BIGINT))))));
+                                valuesRepresentation("0", ImmutableList.of(new Symbol(BIGINT, "a"), new Symbol(BIGINT, "b"))),
+                                valuesRepresentation("1", ImmutableList.of(new Symbol(BIGINT, "c"), new Symbol(BIGINT, "d"))))));
     }
 
     @Test
@@ -196,13 +191,13 @@ public class TestJsonRepresentation
                         "0",
                         "RemoteSource",
                         ImmutableMap.of("sourceFragmentIds", "[1, 2]"),
-                        ImmutableList.of(typedSymbol("a", BIGINT), typedSymbol("b", BIGINT)),
+                        ImmutableList.of(new Symbol(BIGINT, "a"), new Symbol(BIGINT, "b")),
                         ImmutableList.of(),
                         ImmutableList.of(),
                         ImmutableList.of()));
     }
 
-    private static JsonRenderedNode valuesRepresentation(String id, List<TypedSymbol> outputs)
+    private static JsonRenderedNode valuesRepresentation(String id, List<Symbol> outputs)
     {
         return new JsonRenderedNode(
                 id,
@@ -226,6 +221,8 @@ public class TestJsonRepresentation
                     valuePrinter,
                     StatsAndCosts.empty(),
                     Optional.empty(),
+                    ImmutableMap.of(),
+                    ImmutableMap.of(),
                     new NoOpAnonymizer())
                     .toJson();
             assertThat(jsonRenderedNode).isEqualTo(JSON_RENDERED_NODE_CODEC.toJson(expectedRepresentation));

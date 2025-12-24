@@ -18,9 +18,11 @@ import io.trino.execution.DynamicFilterConfig;
 import io.trino.testing.AbstractTestJoinQueries;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
-import io.trino.tests.tpch.TpchQueryRunnerBuilder;
+import io.trino.tests.tpch.TpchQueryRunner;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+
+import java.util.Map;
 
 import static com.google.common.base.Verify.verify;
 import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
@@ -36,7 +38,7 @@ public class TestJoinQueries
             throws Exception
     {
         verify(new DynamicFilterConfig().isEnableDynamicFiltering(), "this class assumes dynamic filtering is enabled by default");
-        return TpchQueryRunnerBuilder.builder().build();
+        return TpchQueryRunner.builder().build();
     }
 
     @Test
@@ -67,7 +69,7 @@ public class TestJoinQueries
     public void testBroadcastJoinDeadlockResolution()
             throws Exception
     {
-        try (QueryRunner queryRunner = TpchQueryRunnerBuilder.builder()
+        try (QueryRunner queryRunner = TpchQueryRunner.builder()
                 .setCoordinatorProperties(ImmutableMap.of(
                         "join-distribution-type", "BROADCAST",
                         "optimizer.join-reordering-strategy", "NONE",
@@ -79,7 +81,7 @@ public class TestJoinQueries
                         // make sure the build side will get blocked on a broadcast buffer
                         "sink.max-broadcast-buffer-size", "1kB"))
                 // make sure the connector produces enough splits for the scheduling to block on a split placement
-                .withSplitsPerNode(10)
+                .withConnectorProperties(Map.of("tpch.splits-per-node", "10"))
                 .build()) {
             String sql = "SELECT * FROM supplier s INNER JOIN lineitem l ON s.suppkey = l.suppkey";
             MaterializedResult actual = queryRunner.execute(sql);

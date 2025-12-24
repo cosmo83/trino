@@ -14,10 +14,11 @@
 package io.trino.orc;
 
 import com.google.common.annotations.VisibleForTesting;
-import io.airlift.compress.Compressor;
-import io.airlift.compress.lz4.Lz4Compressor;
-import io.airlift.compress.snappy.SnappyCompressor;
-import io.airlift.compress.zstd.ZstdCompressor;
+import io.airlift.compress.v3.Compressor;
+import io.airlift.compress.v3.deflate.DeflateCompressor;
+import io.airlift.compress.v3.lz4.Lz4Compressor;
+import io.airlift.compress.v3.snappy.SnappyCompressor;
+import io.airlift.compress.v3.zstd.ZstdCompressor;
 import io.airlift.slice.SizeOf;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
@@ -90,19 +91,13 @@ public class OrcOutputBuffer
     @Nullable
     private static Compressor getCompressor(CompressionKind compression)
     {
-        switch (compression) {
-            case NONE:
-                return null;
-            case SNAPPY:
-                return new SnappyCompressor();
-            case ZLIB:
-                return new DeflateCompressor();
-            case LZ4:
-                return new Lz4Compressor();
-            case ZSTD:
-                return new ZstdCompressor();
-        }
-        throw new IllegalArgumentException("Unsupported compression " + compression);
+        return switch (compression) {
+            case NONE -> null;
+            case SNAPPY -> SnappyCompressor.create();
+            case ZLIB -> new DeflateCompressor();
+            case LZ4 -> Lz4Compressor.create();
+            case ZSTD -> ZstdCompressor.create();
+        };
     }
 
     public long getOutputDataSize()

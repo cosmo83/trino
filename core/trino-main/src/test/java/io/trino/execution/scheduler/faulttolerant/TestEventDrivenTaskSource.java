@@ -26,13 +26,13 @@ import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningScheduledExecutorService;
 import com.google.common.util.concurrent.SettableFuture;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
+import io.trino.connector.CatalogHandle;
 import io.trino.exchange.SpoolingExchangeInput;
 import io.trino.execution.TableExecuteContextManager;
 import io.trino.execution.scheduler.TestingExchangeSourceHandle;
 import io.trino.execution.scheduler.faulttolerant.SplitAssigner.AssignmentResult;
 import io.trino.metadata.Split;
 import io.trino.spi.QueryId;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.exchange.Exchange;
 import io.trino.spi.exchange.ExchangeId;
@@ -40,6 +40,7 @@ import io.trino.spi.exchange.ExchangeSinkHandle;
 import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
 import io.trino.spi.exchange.ExchangeSourceHandle;
 import io.trino.spi.exchange.ExchangeSourceHandleSource;
+import io.trino.spi.metrics.Metrics;
 import io.trino.split.RemoteSplit;
 import io.trino.split.SplitSource;
 import io.trino.sql.planner.plan.PlanFragmentId;
@@ -322,11 +323,12 @@ public class TestEventDrivenTaskSource
                 1,
                 1,
                 partitioningScheme,
-                getSplitDuration -> getSplitInvocations.incrementAndGet())) {
+                (_, _, _) -> getSplitInvocations.incrementAndGet())) {
             while (tester.getTaskDescriptors().isEmpty()) {
-                AssignmentResult result = taskSource.process().get(10, SECONDS);
+                AssignmentResult result = taskSource.process().orElseThrow().get(10, SECONDS);
                 tester.update(result);
             }
+            assertThat(taskSource.process()).as("Expected taskSource to be finished").isEmpty();
             taskDescriptors = tester.getTaskDescriptors().get();
         }
 
@@ -502,6 +504,12 @@ public class TestEventDrivenTaskSource
             return Optional.empty();
         }
 
+        @Override
+        public Metrics getMetrics()
+        {
+            return Metrics.EMPTY;
+        }
+
         public synchronized boolean isClosed()
         {
             return closed;
@@ -670,7 +678,7 @@ public class TestEventDrivenTaskSource
             AssignmentResult.Builder result = AssignmentResult.builder();
             Multimaps.asMap(splitsMap).forEach((partition, splits) -> {
                 if (partitions.add(partition)) {
-                    result.addPartition(new Partition(partition, new NodeRequirements(Optional.empty(), ImmutableSet.of())));
+                    result.addPartition(new Partition(partition, new NodeRequirements(Optional.empty(), Optional.empty(), true)));
                     for (PlanNodeId finishedSource : finishedSources) {
                         result.updatePartition(new PartitionUpdate(partition, finishedSource, false, ImmutableListMultimap.of(), true));
                     }
@@ -705,16 +713,11 @@ public class TestEventDrivenTaskSource
             if (partitions.isEmpty()) {
                 partitions.add(0);
                 result
-                        .addPartition(new Partition(0, new NodeRequirements(Optional.empty(), ImmutableSet.of())))
+                        .addPartition(new Partition(0, new NodeRequirements(Optional.empty(), Optional.empty(), true)))
                         .sealPartition(0);
             }
             return result.setNoMorePartitions()
                     .build();
-        }
-
-        public boolean isFinished()
-        {
-            return finished;
         }
     }
 }

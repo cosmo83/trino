@@ -18,11 +18,12 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.metadata.Metadata;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.Type;
-import io.trino.sql.ir.ComparisonExpression;
+import io.trino.sql.ir.Case;
+import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Constant;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SearchedCaseExpression;
-import io.trino.sql.ir.SimpleCaseExpression;
+import io.trino.sql.ir.IrUtils;
+import io.trino.sql.ir.Switch;
 import io.trino.sql.ir.WhenClause;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
@@ -46,16 +47,15 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static io.trino.sql.ir.BooleanLiteral.FALSE_LITERAL;
-import static io.trino.sql.ir.BooleanLiteral.TRUE_LITERAL;
-import static io.trino.sql.ir.ComparisonExpression.Operator.EQUAL;
-import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN;
-import static io.trino.sql.ir.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN;
-import static io.trino.sql.ir.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
-import static io.trino.sql.ir.ComparisonExpression.Operator.NOT_EQUAL;
+import static io.trino.sql.ir.Booleans.FALSE;
+import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.NOT_EQUAL;
 import static io.trino.sql.ir.IrUtils.combineConjuncts;
-import static io.trino.sql.ir.IrUtils.combineDisjuncts;
 import static io.trino.sql.planner.plan.AggregationNode.globalAggregation;
 import static io.trino.sql.planner.plan.AggregationNode.singleAggregation;
 import static io.trino.sql.planner.plan.ApplyNode.Quantifier.ALL;
@@ -113,7 +113,7 @@ public class TransformQuantifiedComparisonApplyToCorrelatedJoin
             PlanNode subqueryPlan = context.rewrite(node.getSubquery());
 
             Symbol outputColumn = getOnlyElement(subqueryPlan.getOutputSymbols());
-            Type outputColumnType = outputColumn.getType();
+            Type outputColumnType = outputColumn.type();
             checkState(outputColumnType.isOrderable(), "Subquery result type must be orderable");
 
             Symbol minValue = symbolAllocator.newSymbol("min", outputColumnType);
@@ -163,7 +163,7 @@ public class TransformQuantifiedComparisonApplyToCorrelatedJoin
                     subqueryPlan,
                     node.getCorrelation(),
                     JoinType.INNER,
-                    TRUE_LITERAL,
+                    TRUE,
                     node.getOriginSubquery());
 
             Expression valueComparedToSubquery = rewriteUsingBounds(quantifiedComparison, minValue, maxValue, countAllValue, countNonNullValue);
@@ -178,28 +178,28 @@ public class TransformQuantifiedComparisonApplyToCorrelatedJoin
             Constant emptySetResult;
             Function<List<Expression>, Expression> quantifier;
             if (quantifiedComparison.quantifier() == ALL) {
-                emptySetResult = TRUE_LITERAL;
-                quantifier = expressions -> combineConjuncts(expressions);
+                emptySetResult = TRUE;
+                quantifier = IrUtils::combineConjuncts;
             }
             else {
-                emptySetResult = FALSE_LITERAL;
-                quantifier = expressions -> combineDisjuncts(expressions);
+                emptySetResult = FALSE;
+                quantifier = IrUtils::combineDisjuncts;
             }
             Expression comparisonWithExtremeValue = getBoundComparisons(quantifiedComparison, minValue, maxValue);
 
-            return new SimpleCaseExpression(
+            return new Switch(
                     countAllValue.toSymbolReference(),
                     ImmutableList.of(new WhenClause(
                             new Constant(BIGINT, 0L),
                             emptySetResult)),
-                    Optional.of(quantifier.apply(ImmutableList.of(
+                    quantifier.apply(ImmutableList.of(
                             comparisonWithExtremeValue,
-                            new SearchedCaseExpression(
+                            new Case(
                                     ImmutableList.of(
                                             new WhenClause(
-                                                    new ComparisonExpression(NOT_EQUAL, countAllValue.toSymbolReference(), countNonNullValue.toSymbolReference()),
+                                                    new Comparison(NOT_EQUAL, countAllValue.toSymbolReference(), countNonNullValue.toSymbolReference()),
                                                     new Constant(BOOLEAN, null))),
-                                    Optional.of(emptySetResult))))));
+                                    emptySetResult))));
         }
 
         private Expression getBoundComparisons(ApplyNode.QuantifiedComparison quantifiedComparison, Symbol minValue, Symbol maxValue)
@@ -207,8 +207,8 @@ public class TransformQuantifiedComparisonApplyToCorrelatedJoin
             if (mapOperator(quantifiedComparison) == EQUAL && quantifiedComparison.quantifier() == ALL) {
                 // A = ALL B <=> min B = max B && A = min B
                 return combineConjuncts(
-                        new ComparisonExpression(EQUAL, minValue.toSymbolReference(), maxValue.toSymbolReference()),
-                        new ComparisonExpression(EQUAL, quantifiedComparison.value().toSymbolReference(), maxValue.toSymbolReference()));
+                        new Comparison(EQUAL, minValue.toSymbolReference(), maxValue.toSymbolReference()),
+                        new Comparison(EQUAL, quantifiedComparison.value().toSymbolReference(), maxValue.toSymbolReference()));
             }
 
             if (EnumSet.of(LESS_THAN, LESS_THAN_OR_EQUAL, GREATER_THAN, GREATER_THAN_OR_EQUAL).contains(mapOperator(quantifiedComparison))) {
@@ -217,12 +217,12 @@ public class TransformQuantifiedComparisonApplyToCorrelatedJoin
                 // A < ANY B <=> A < max B
                 // A > ANY B <=> A > min B
                 Symbol boundValue = shouldCompareValueWithLowerBound(quantifiedComparison) ? minValue : maxValue;
-                return new ComparisonExpression(mapOperator(quantifiedComparison), quantifiedComparison.value().toSymbolReference(), boundValue.toSymbolReference());
+                return new Comparison(mapOperator(quantifiedComparison), quantifiedComparison.value().toSymbolReference(), boundValue.toSymbolReference());
             }
             throw new IllegalArgumentException("Unsupported quantified comparison: " + quantifiedComparison);
         }
 
-        private static ComparisonExpression.Operator mapOperator(ApplyNode.QuantifiedComparison quantifiedComparison)
+        private static Comparison.Operator mapOperator(ApplyNode.QuantifiedComparison quantifiedComparison)
         {
             return switch (quantifiedComparison.operator()) {
                 case EQUAL -> EQUAL;

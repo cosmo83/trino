@@ -19,7 +19,7 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
@@ -63,7 +63,7 @@ public class PushLimitThroughProject
         // Do not push down if the projection is made up of symbol references and exclusive dereferences. This prevents
         // undoing of PushDownDereferencesThroughLimit. We still push limit in the case of overlapping dereferences since
         // it enables PushDownDereferencesThroughLimit rule to push optimal dereferences.
-        Set<Expression> projections = ImmutableSet.copyOf(projectNode.getAssignments().getExpressions());
+        Set<Expression> projections = ImmutableSet.copyOf(projectNode.getAssignments().expressions());
         if (!extractRowSubscripts(projections, false).isEmpty()
                 && exclusiveDereferences(projections)) {
             return Result.empty();
@@ -78,12 +78,12 @@ public class PushLimitThroughProject
         SymbolMapper.Builder symbolMapper = SymbolMapper.builder();
         Set<Symbol> symbolsForRewrite = ImmutableSet.<Symbol>builder()
                 .addAll(parent.getPreSortedInputs())
-                .addAll(parent.getTiesResolvingScheme().map(OrderingScheme::getOrderBy).orElse(ImmutableList.of()))
+                .addAll(parent.getTiesResolvingScheme().map(OrderingScheme::orderBy).orElse(ImmutableList.of()))
                 .build();
         for (Symbol symbol : symbolsForRewrite) {
             Expression expression = projectNode.getAssignments().get(symbol);
             // if a symbol results from some computation, the translation fails
-            if (!(expression instanceof SymbolReference)) {
+            if (!(expression instanceof Reference)) {
                 return Result.empty();
             }
             symbolMapper.put(symbol, Symbol.from(expression));

@@ -13,14 +13,18 @@
  */
 package io.trino.filesystem.gcs;
 
+import com.google.cloud.storage.Blob;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
+import com.google.cloud.storage.Bucket;
 import com.google.cloud.storage.BucketInfo;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.testing.RemoteStorageHelper;
 import io.trino.filesystem.AbstractTestTrinoFileSystem;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
+import io.trino.filesystem.encryption.EncryptionEnforcingFileSystem;
+import io.trino.filesystem.encryption.EncryptionKey;
 import io.trino.spi.security.ConnectorIdentity;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -31,23 +35,19 @@ import java.io.IOException;
 import java.util.Base64;
 
 import static com.google.cloud.storage.Storage.BlobTargetOption.doesNotExist;
+import static io.trino.filesystem.encryption.EncryptionKey.randomAes256;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public abstract class AbstractTestGcsFileSystem
         extends AbstractTestTrinoFileSystem
 {
+    protected final EncryptionKey randomEncryptionKey = randomAes256();
     private TrinoFileSystem fileSystem;
     private Location rootLocation;
     private Storage storage;
     private GcsFileSystemFactory gcsFileSystemFactory;
-
-    protected static String getRequiredEnvironmentVariable(String name)
-    {
-        return requireNonNull(System.getenv(name), "Environment variable not set: " + name);
-    }
 
     protected void initialize(String gcpCredentialKey)
             throws IOException
@@ -57,8 +57,9 @@ public abstract class AbstractTestGcsFileSystem
         // create/get/list/delete blob
         // For gcp testing this corresponds to the Cluster Storage Admin and Cluster Storage Object Admin roles
         byte[] jsonKeyBytes = Base64.getDecoder().decode(gcpCredentialKey);
-        GcsFileSystemConfig config = new GcsFileSystemConfig().setJsonKey(new String(jsonKeyBytes, UTF_8));
-        GcsStorageFactory storageFactory = new GcsStorageFactory(config);
+        GcsFileSystemConfig config = new GcsFileSystemConfig();
+        GcsServiceAccountAuthConfig authConfig = new GcsServiceAccountAuthConfig().setJsonKey(new String(jsonKeyBytes, UTF_8));
+        GcsStorageFactory storageFactory = new GcsStorageFactory(config, new GcsServiceAccountAuth(authConfig));
         this.gcsFileSystemFactory = new GcsFileSystemFactory(config, storageFactory);
         this.storage = storageFactory.create(ConnectorIdentity.ofUser("test"));
         String bucket = RemoteStorageHelper.generateBucketName();
@@ -72,7 +73,11 @@ public abstract class AbstractTestGcsFileSystem
     void tearDown()
     {
         try {
-            storage.delete(rootLocation.host().get());
+            Bucket bucket = storage.get(new GcsLocation(rootLocation).bucket());
+            for (Blob blob : bucket.list().iterateAll()) {
+                storage.delete(blob.getBlobId());
+            }
+            bucket.delete();
         }
         finally {
             fileSystem = null;
@@ -109,6 +114,9 @@ public abstract class AbstractTestGcsFileSystem
     @Override
     protected TrinoFileSystem getFileSystem()
     {
+        if (useServerSideEncryptionWithCustomerKey()) {
+            return new EncryptionEnforcingFileSystem(fileSystem, randomEncryptionKey);
+        }
         return fileSystem;
     }
 
@@ -126,15 +134,15 @@ public abstract class AbstractTestGcsFileSystem
     }
 
     @Override
-    protected final boolean supportsCreateExclusive()
-    {
-        return true;
-    }
-
-    @Override
     protected final boolean supportsRenameFile()
     {
         return false;
+    }
+
+    @Override
+    protected boolean supportsPreSignedUri()
+    {
+        return true;
     }
 
     @Test

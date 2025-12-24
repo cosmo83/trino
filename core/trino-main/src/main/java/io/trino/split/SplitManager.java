@@ -19,11 +19,11 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Context;
 import io.trino.Session;
+import io.trino.connector.CatalogHandle;
 import io.trino.connector.CatalogServiceProvider;
 import io.trino.execution.QueryManagerConfig;
 import io.trino.metadata.TableFunctionHandle;
 import io.trino.metadata.TableHandle;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorSplitSource;
@@ -73,7 +73,7 @@ public class SplitManager
             DynamicFilter dynamicFilter,
             Constraint constraint)
     {
-        CatalogHandle catalogHandle = table.getCatalogHandle();
+        CatalogHandle catalogHandle = table.catalogHandle();
         ConnectorSplitManager splitManager = splitManagerProvider.getService(catalogHandle);
         if (!isAllowPushdownIntoConnectors(session)) {
             dynamicFilter = DynamicFilter.EMPTY;
@@ -84,12 +84,12 @@ public class SplitManager
         ConnectorSplitSource source;
         try (var ignore = scopedSpan(tracer.spanBuilder("SplitManager.getSplits")
                 .setParent(Context.current().with(parentSpan))
-                .setAttribute(TrinoAttributes.TABLE, table.getConnectorHandle().toString())
+                .setAttribute(TrinoAttributes.TABLE, table.connectorHandle().toString())
                 .startSpan())) {
             source = splitManager.getSplits(
-                    table.getTransaction(),
+                    table.transaction(),
                     connectorSession,
-                    table.getConnectorHandle(),
+                    table.connectorHandle(),
                     dynamicFilter,
                     constraint);
         }
@@ -112,18 +112,18 @@ public class SplitManager
 
     public SplitSource getSplits(Session session, Span parentSpan, TableFunctionHandle function)
     {
-        CatalogHandle catalogHandle = function.getCatalogHandle();
+        CatalogHandle catalogHandle = function.catalogHandle();
         ConnectorSplitManager splitManager = splitManagerProvider.getService(catalogHandle);
 
         ConnectorSplitSource source;
         try (var ignore = scopedSpan(tracer.spanBuilder("SplitManager.getSplits")
                 .setParent(Context.current().with(parentSpan))
-                .setAttribute(TrinoAttributes.FUNCTION, function.getFunctionHandle().toString())
+                .setAttribute(TrinoAttributes.FUNCTION, function.functionHandle().toString())
                 .startSpan())) {
             source = splitManager.getSplits(
-                    function.getTransactionHandle(),
+                    function.transactionHandle(),
                     session.toConnectorSession(catalogHandle),
-                    function.getFunctionHandle());
+                    function.functionHandle());
         }
 
         SplitSource splitSource = new ConnectorAwareSplitSource(catalogHandle, source);

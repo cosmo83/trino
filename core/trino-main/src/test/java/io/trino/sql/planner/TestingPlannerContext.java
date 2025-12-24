@@ -16,18 +16,17 @@ package io.trino.sql.planner;
 import com.google.common.collect.ImmutableSet;
 import io.trino.FeaturesConfig;
 import io.trino.connector.CatalogServiceProvider;
-import io.trino.metadata.BlockEncodingManager;
 import io.trino.metadata.FunctionBundle;
 import io.trino.metadata.FunctionManager;
 import io.trino.metadata.GlobalFunctionCatalog;
 import io.trino.metadata.InternalBlockEncodingSerde;
 import io.trino.metadata.InternalFunctionBundle;
+import io.trino.metadata.LanguageFunctionEngineManager;
 import io.trino.metadata.LanguageFunctionManager;
 import io.trino.metadata.LanguageFunctionProvider;
 import io.trino.metadata.Metadata;
-import io.trino.metadata.MetadataManager;
-import io.trino.metadata.MetadataManager.TestMetadataManagerBuilder;
 import io.trino.metadata.SystemFunctionBundle;
+import io.trino.metadata.TestMetadataManager;
 import io.trino.metadata.TypeRegistry;
 import io.trino.operator.scalar.json.JsonExistsFunction;
 import io.trino.operator.scalar.json.JsonQueryFunction;
@@ -51,6 +50,7 @@ import java.util.List;
 import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.tracing.Tracing.noopTracer;
 import static io.trino.client.NodeVersion.UNKNOWN;
+import static io.trino.testing.PlanTester.TESTING_BLOCK_ENCODING_MANAGER;
 import static java.util.Objects.requireNonNull;
 
 public final class TestingPlannerContext
@@ -125,13 +125,18 @@ public final class TestingPlannerContext
             globalFunctionCatalog.addFunctions(SystemFunctionBundle.create(featuresConfig, typeOperators, new BlockTypeOperators(typeOperators), UNKNOWN));
             functionBundles.forEach(globalFunctionCatalog::addFunctions);
 
-            BlockEncodingSerde blockEncodingSerde = new InternalBlockEncodingSerde(new BlockEncodingManager(), typeManager);
+            BlockEncodingSerde blockEncodingSerde = new InternalBlockEncodingSerde(TESTING_BLOCK_ENCODING_MANAGER, typeManager);
 
-            LanguageFunctionManager languageFunctionManager = new LanguageFunctionManager(new SqlParser(), typeManager, user -> ImmutableSet.of());
+            LanguageFunctionManager languageFunctionManager = new LanguageFunctionManager(
+                    new SqlParser(),
+                    typeManager,
+                    _ -> ImmutableSet.of(),
+                    blockEncodingSerde,
+                    new LanguageFunctionEngineManager());
 
             Metadata metadata = this.metadata;
             if (metadata == null) {
-                TestMetadataManagerBuilder builder = MetadataManager.testMetadataManagerBuilder()
+                TestMetadataManager.Builder builder = TestMetadataManager.builder()
                         .withTypeManager(typeManager)
                         .withLanguageFunctionManager(languageFunctionManager)
                         .withGlobalFunctionCatalog(globalFunctionCatalog);

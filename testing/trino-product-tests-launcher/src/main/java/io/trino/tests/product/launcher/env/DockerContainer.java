@@ -51,7 +51,6 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
-import java.util.function.Consumer;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.io.MoreFiles.deleteRecursively;
@@ -122,54 +121,6 @@ public class DockerContainer
         return this;
     }
 
-    public DockerContainer onContainerStarting(Consumer<InspectContainerResponse> callback)
-    {
-        return addContainerListener(new ContainerListener()
-        {
-            @Override
-            public void containerStarting(DockerContainer container, InspectContainerResponse response)
-            {
-                callback.accept(response);
-            }
-        });
-    }
-
-    public DockerContainer onContainerStarted(Consumer<InspectContainerResponse> callback)
-    {
-        return addContainerListener(new ContainerListener()
-        {
-            @Override
-            public void containerStarted(DockerContainer container, InspectContainerResponse containerInfo)
-            {
-                callback.accept(containerInfo);
-            }
-        });
-    }
-
-    public DockerContainer onContainerStopping(Consumer<InspectContainerResponse> callback)
-    {
-        return addContainerListener(new ContainerListener()
-        {
-            @Override
-            public void containerStopping(DockerContainer container, InspectContainerResponse response)
-            {
-                callback.accept(response);
-            }
-        });
-    }
-
-    public DockerContainer onContainerStopped(Consumer<InspectContainerResponse> callback)
-    {
-        return addContainerListener(new ContainerListener()
-        {
-            @Override
-            public void containerStopped(DockerContainer container, InspectContainerResponse response)
-            {
-                callback.accept(response);
-            }
-        });
-    }
-
     @Override
     public void addFileSystemBind(String hostPath, String containerPath, BindMode mode)
     {
@@ -206,7 +157,6 @@ public class DockerContainer
 
     public DockerContainer withExposedLogPaths(String... logPaths)
     {
-        requireNonNull(this.logPaths, "log paths are already exposed");
         this.logPaths.addAll(Arrays.asList(logPaths));
         return this;
     }
@@ -341,6 +291,10 @@ public class DockerContainer
 
     public void copyLogsToHostPath(Path hostPath)
     {
+        if (logPaths.isEmpty()) {
+            return;
+        }
+
         if (!isRunning()) {
             log.warn("Could not copy files from stopped container %s", logicalName);
             return;
@@ -362,7 +316,7 @@ public class DockerContainer
             }
         }
 
-        ImmutableList<String> filesToCopy = files.build();
+        List<String> filesToCopy = files.build();
         if (filesToCopy.isEmpty()) {
             log.warn("There are no log files to copy from container %s", logicalName);
             return;
@@ -446,7 +400,7 @@ public class DockerContainer
         try {
             return super.isHealthy();
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
             // Container without health checks will throw
             return true;
         }

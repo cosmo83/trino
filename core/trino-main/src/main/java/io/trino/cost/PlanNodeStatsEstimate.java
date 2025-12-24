@@ -82,7 +82,7 @@ public class PlanNodeStatsEstimate
         requireNonNull(outputSymbols, "outputSymbols is null");
 
         return outputSymbols.stream()
-                .mapToDouble(symbol -> getOutputSizeForSymbol(getSymbolStatistics(symbol), symbol.getType()))
+                .mapToDouble(symbol -> getOutputSizeForSymbol(getSymbolStatistics(symbol), symbol.type()))
                 .sum();
     }
 
@@ -98,8 +98,8 @@ public class PlanNodeStatsEstimate
         // account for "is null" boolean array
         outputSize += outputRowCount;
 
-        if (type instanceof FixedWidthType) {
-            outputSize += numberOfNonNullRows * ((FixedWidthType) type).getFixedSize();
+        if (type instanceof FixedWidthType fixedType) {
+            outputSize += numberOfNonNullRows * fixedType.getFixedSize();
         }
         else {
             double averageRowSize = firstNonNaN(symbolStatistics.getAverageRowSize(), DEFAULT_DATA_SIZE_PER_COLUMN);

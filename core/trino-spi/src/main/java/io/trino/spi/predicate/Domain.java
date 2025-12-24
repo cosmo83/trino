@@ -15,7 +15,6 @@ package io.trino.spi.predicate;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
 
 import java.util.ArrayList;
@@ -31,14 +30,12 @@ import static java.util.Objects.requireNonNull;
  * Defines the possible values of a single variable in terms of its valid scalar values and nullability.
  * <p>
  * For example:
- * <p>
  * <ul>
  * <li>Domain.none() => no scalar values allowed, NULL not allowed
  * <li>Domain.all() => all scalar values allowed, NULL allowed
  * <li>Domain.onlyNull() => no scalar values allowed, NULL allowed
  * <li>Domain.notNull() => all scalar values allowed, NULL not allowed
  * </ul>
- * <p>
  */
 public final class Domain
 {
@@ -320,15 +317,10 @@ public final class Domain
     @Override
     public String toString()
     {
-        return toString(ToStringSession.INSTANCE);
+        return toString(10);
     }
 
-    public String toString(ConnectorSession session)
-    {
-        return toString(session, 10);
-    }
-
-    public String toString(ConnectorSession session, int limit)
+    public String toString(int limit)
     {
         if (isAll()) {
             return "ALL";
@@ -339,7 +331,7 @@ public final class Domain
         if (isOnlyNull()) {
             return "[NULL]";
         }
-        return "[ " + (nullAllowed ? "NULL, " : "") + values.toString(session, limit) + " ]";
+        return "[ " + (nullAllowed ? "NULL, " : "") + values.toString(limit) + " ]";
     }
 
     public long getRetainedSizeInBytes()

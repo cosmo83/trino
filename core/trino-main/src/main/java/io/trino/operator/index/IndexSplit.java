@@ -44,12 +44,6 @@ public class IndexSplit
     }
 
     @Override
-    public Object getInfo()
-    {
-        return null;
-    }
-
-    @Override
     public long getRetainedSizeInBytes()
     {
         // IndexSplit is expected to be short lived and is not expected to be queried for the memory it retains

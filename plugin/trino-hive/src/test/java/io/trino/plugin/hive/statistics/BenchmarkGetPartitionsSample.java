@@ -15,7 +15,7 @@ package io.trino.plugin.hive.statistics;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.plugin.hive.HivePartition;
+import io.trino.metastore.HivePartition;
 import io.trino.spi.connector.SchemaTableName;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -68,7 +68,7 @@ public class BenchmarkGetPartitionsSample
         }
     }
 
-    public static void main(String[] args)
+    static void main()
             throws Exception
     {
         benchmark(BenchmarkGetPartitionsSample.class).run();

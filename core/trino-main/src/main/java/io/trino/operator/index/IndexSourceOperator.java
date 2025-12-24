@@ -13,7 +13,6 @@
  */
 package io.trino.operator.index;
 
-import com.google.common.base.Suppliers;
 import io.trino.metadata.Split;
 import io.trino.operator.DriverContext;
 import io.trino.operator.FinishedOperator;
@@ -22,7 +21,6 @@ import io.trino.operator.OperatorContext;
 import io.trino.operator.PageSourceOperator;
 import io.trino.operator.SourceOperator;
 import io.trino.operator.SourceOperatorFactory;
-import io.trino.operator.SplitOperatorInfo;
 import io.trino.spi.Page;
 import io.trino.spi.connector.ConnectorIndex;
 import io.trino.spi.connector.ConnectorPageSource;
@@ -126,11 +124,6 @@ public class IndexSourceOperator
         RecordSet normalizedRecordSet = probeKeyNormalizer.apply(indexSplit.getKeyRecordSet());
         ConnectorPageSource result = index.lookup(normalizedRecordSet);
         source = new PageSourceOperator(result, operatorContext);
-
-        Object splitInfo = split.getInfo();
-        if (splitInfo != null) {
-            operatorContext.setInfoSupplier(Suppliers.ofInstance(new SplitOperatorInfo(split.getCatalogHandle(), splitInfo)));
-        }
     }
 
     @Override

@@ -17,6 +17,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.inject.Injector;
 import com.google.inject.Key;
+import com.google.inject.Scopes;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.discovery.client.ServiceSelector;
 import io.airlift.discovery.client.testing.TestingDiscoveryModule;
@@ -26,10 +27,10 @@ import io.airlift.jmx.testing.TestingJmxModule;
 import io.airlift.json.JsonModule;
 import io.airlift.json.ObjectMapperProvider;
 import io.airlift.node.testing.TestingNodeModule;
-import io.airlift.tracetoken.TraceTokenModule;
 import io.trino.execution.QueryManagerConfig;
 import io.trino.failuredetector.HeartbeatFailureDetector.Stats;
 import io.trino.server.InternalCommunicationConfig;
+import io.trino.server.StartupStatus;
 import io.trino.server.security.SecurityConfig;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
@@ -53,8 +54,7 @@ public class TestHeartbeatFailureDetector
                 new TestingNodeModule(),
                 new TestingJmxModule(),
                 new TestingDiscoveryModule(),
-                new TestingHttpServerModule(),
-                new TraceTokenModule(),
+                new TestingHttpServerModule("test-heartbeat-failure-detector"),
                 new JsonModule(),
                 new JaxrsModule(),
                 new FailureDetectorModule(),
@@ -68,6 +68,7 @@ public class TestHeartbeatFailureDetector
                     // Jersey with jetty 9 requires at least one resource
                     // todo add a dummy resource to airlift jaxrs in this case
                     jaxrsBinder(binder).bind(FooResource.class);
+                    binder.bind(StartupStatus.class).in(Scopes.SINGLETON);
                 });
 
         Injector injector = app
@@ -75,8 +76,11 @@ public class TestHeartbeatFailureDetector
                 .quiet()
                 .initialize();
 
+        StartupStatus startupStatus = injector.getInstance(StartupStatus.class);
+        startupStatus.startupComplete();
+
         ServiceSelector selector = injector.getInstance(Key.get(ServiceSelector.class, serviceType("trino")));
-        assertThat(selector.selectAllServices().size()).isEqualTo(1);
+        assertThat(selector.selectAllServices()).hasSize(1);
 
         HeartbeatFailureDetector detector = injector.getInstance(HeartbeatFailureDetector.class);
         detector.updateMonitoredServices();
@@ -84,7 +88,7 @@ public class TestHeartbeatFailureDetector
         assertThat(detector.getTotalCount()).isEqualTo(0);
         assertThat(detector.getActiveCount()).isEqualTo(0);
         assertThat(detector.getFailedCount()).isEqualTo(0);
-        assertThat(detector.getFailed().isEmpty()).isTrue();
+        assertThat(detector.getFailed()).isEmpty();
     }
 
     @Test

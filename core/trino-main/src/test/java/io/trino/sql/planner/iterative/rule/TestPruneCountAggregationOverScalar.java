@@ -21,7 +21,7 @@ import io.trino.plugin.tpch.TpchTableHandle;
 import io.trino.plugin.tpch.TpchTransactionHandle;
 import io.trino.spi.type.BigintType;
 import io.trino.sql.ir.Constant;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
@@ -139,7 +139,7 @@ public class TestPruneCountAggregationOverScalar
                     AggregationNode inner = p.aggregation((a) -> a
                             .addAggregation(
                                     totalPrice,
-                                    PlanBuilder.aggregation("sum", ImmutableList.of(new SymbolReference(DOUBLE, "totalprice"))),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(new Reference(DOUBLE, "totalprice"))),
                                     ImmutableList.of(DOUBLE))
                             .globalGrouping()
                             .source(
@@ -151,12 +151,12 @@ public class TestPruneCountAggregationOverScalar
                                                             new TpchTableHandle(TINY_SCHEMA_NAME, "orders", TINY_SCALE_FACTOR),
                                                             TpchTransactionHandle.INSTANCE),
                                                     ImmutableList.of(totalPrice),
-                                                    ImmutableMap.of(totalPrice, new TpchColumnHandle(totalPrice.getName(), DOUBLE))))));
+                                                    ImmutableMap.of(totalPrice, new TpchColumnHandle(totalPrice.name(), DOUBLE))))));
 
                     return p.aggregation((a) -> a
                             .addAggregation(
                                     p.symbol("sum_outer", DOUBLE),
-                                    PlanBuilder.aggregation("sum", ImmutableList.of(new SymbolReference(BIGINT, "sum_inner"))),
+                                    PlanBuilder.aggregation("sum", ImmutableList.of(new Reference(BIGINT, "sum_inner"))),
                                     ImmutableList.of(DOUBLE))
                             .globalGrouping()
                             .source(inner));

@@ -18,5 +18,9 @@ public interface Distribution<T>
 {
     long getTotal();
 
-    double getPercentile(double percentile);
+    double getMin();
+
+    double getMax();
+
+    double[] getPercentiles(double... percentiles);
 }

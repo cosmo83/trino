@@ -15,8 +15,9 @@ package io.trino.execution;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.inject.Inject;
+import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.execution.warnings.WarningCollector;
-import io.trino.metadata.CatalogManager;
+import io.trino.metadata.Metadata;
 import io.trino.security.AccessControl;
 import io.trino.spi.TrinoException;
 import io.trino.spi.catalog.CatalogName;
@@ -27,18 +28,19 @@ import java.util.List;
 
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
 public class DropCatalogTask
         implements DataDefinitionTask<DropCatalog>
 {
-    private final CatalogManager catalogManager;
+    private final Metadata metadata;
     private final AccessControl accessControl;
 
     @Inject
-    public DropCatalogTask(CatalogManager catalogManager, AccessControl accessControl)
+    public DropCatalogTask(Metadata metadata, AccessControl accessControl)
     {
-        this.catalogManager = requireNonNull(catalogManager, "catalogManager is null");
+        this.metadata = requireNonNull(metadata, "metadata is null");
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
     }
 
@@ -56,11 +58,15 @@ public class DropCatalogTask
             WarningCollector warningCollector)
     {
         if (statement.isCascade()) {
-            throw new TrinoException(NOT_SUPPORTED, "CASCADE is not yet supported for DROP SCHEMA");
+            throw new TrinoException(NOT_SUPPORTED, "CASCADE is not yet supported for DROP CATALOG");
         }
 
-        accessControl.checkCanDropCatalog(stateMachine.getSession().toSecurityContext(), statement.getCatalogName().toString());
-        catalogManager.dropCatalog(new CatalogName(statement.getCatalogName().toString()), statement.isExists());
+        String catalogName = statement.getCatalogName().getValue().toLowerCase(ENGLISH);
+        if (catalogName.equals(GlobalSystemConnector.NAME)) {
+            throw new TrinoException(NOT_SUPPORTED, "Dropping system catalog is not allowed");
+        }
+        accessControl.checkCanDropCatalog(stateMachine.getSession().toSecurityContext(), catalogName);
+        metadata.dropCatalog(stateMachine.getSession(), new CatalogName(catalogName), statement.isExists());
         return immediateVoidFuture();
     }
 }

@@ -52,9 +52,7 @@ public final class QueryAssertions
 {
     private static final Logger log = Logger.get(QueryAssertions.class);
 
-    private QueryAssertions()
-    {
-    }
+    private QueryAssertions() {}
 
     public static void assertUpdate(QueryRunner queryRunner, Session session, @Language("SQL") String sql, OptionalLong count, Optional<Consumer<Plan>> planAssertion)
     {
@@ -338,7 +336,7 @@ public final class QueryAssertions
         List<MaterializedRow> actualRows = actualResults.getMaterializedRows();
         List<MaterializedRow> expectedRows = expectedResults.getMaterializedRows();
 
-        if (compareUpdate) {
+        if (compareUpdate && !actualResults.getUpdateType().equals(Optional.of("ALTER TABLE EXECUTE"))) {
             if (actualResults.getUpdateType().isEmpty()) {
                 fail("update type not present for query " + queryId + ": \n" + actual);
             }
@@ -459,7 +457,7 @@ public final class QueryAssertions
         assertEventually(timeout, () -> assertQueryFails(queryRunner, session, sql, expectedMessageRegExp));
     }
 
-    protected static void assertQueryFails(QueryRunner queryRunner, Session session, @Language("SQL") String sql, @Language("RegExp") String expectedMessageRegExp)
+    public static void assertQueryFails(QueryRunner queryRunner, Session session, @Language("SQL") String sql, @Language("RegExp") String expectedMessageRegExp)
     {
         try {
             MaterializedResultWithPlan resultWithPlan = queryRunner.executeWithPlan(session, sql);
@@ -472,7 +470,7 @@ public final class QueryAssertions
         }
     }
 
-    protected static void assertQueryReturnsEmptyResult(QueryRunner queryRunner, Session session, @Language("SQL") String sql)
+    public static void assertQueryReturnsEmptyResult(QueryRunner queryRunner, Session session, @Language("SQL") String sql)
     {
         QueryId queryId = null;
         try {
@@ -496,6 +494,15 @@ public final class QueryAssertions
             QueryRunner queryRunner,
             String sourceCatalog,
             String sourceSchema,
+            Iterable<TpchTable<?>> tables)
+    {
+        copyTpchTables(queryRunner, sourceCatalog, sourceSchema, queryRunner.getDefaultSession(), tables);
+    }
+
+    public static void copyTpchTables(
+            QueryRunner queryRunner,
+            String sourceCatalog,
+            String sourceSchema,
             Session session,
             Iterable<TpchTable<?>> tables)
     {
@@ -513,12 +520,12 @@ public final class QueryAssertions
     public static void copyTable(QueryRunner queryRunner, QualifiedObjectName table, Session session)
     {
         long start = System.nanoTime();
-        @Language("SQL") String sql = format("CREATE TABLE IF NOT EXISTS %s AS SELECT * FROM %s", table.getObjectName(), table);
+        @Language("SQL") String sql = format("CREATE TABLE IF NOT EXISTS %s AS SELECT * FROM %s", table.objectName(), table);
         long rows = (Long) queryRunner.execute(session, sql).getMaterializedRows().get(0).getField(0);
         log.debug("Imported %s rows from %s in %s", rows, table, nanosSince(start));
 
-        assertThat(queryRunner.execute(session, "SELECT count(*) FROM " + table.getObjectName()).getOnlyValue())
-                .as("Table is not loaded properly: %s", table.getObjectName())
+        assertThat(queryRunner.execute(session, "SELECT count(*) FROM " + table.objectName()).getOnlyValue())
+                .as("Table is not loaded properly: %s", table.objectName())
                 .isEqualTo(queryRunner.execute(session, "SELECT count(*) FROM " + table).getOnlyValue());
     }
 

@@ -15,7 +15,7 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.sql.ir.SymbolReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
@@ -24,7 +24,6 @@ import io.trino.sql.planner.plan.PlanNode;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.function.Predicate;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -42,11 +41,11 @@ public class TestPruneSemiJoinColumns
     public void testSemiJoinNotNeeded()
     {
         tester().assertThat(new PruneSemiJoinColumns())
-                .on(p -> buildProjectedSemiJoin(p, symbol -> symbol.getName().equals("leftValue")))
+                .on(p -> buildProjectedSemiJoin(p, symbol -> symbol.name().equals("leftValue")))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("leftValue", expression(new SymbolReference(BIGINT, "leftValue"))),
-                                values("leftKey", "leftKeyHash", "leftValue")));
+                                ImmutableMap.of("leftValue", expression(new Reference(BIGINT, "leftValue"))),
+                                values("leftKey", "leftValue")));
     }
 
     @Test
@@ -61,7 +60,7 @@ public class TestPruneSemiJoinColumns
     public void testKeysNotNeeded()
     {
         tester().assertThat(new PruneSemiJoinColumns())
-                .on(p -> buildProjectedSemiJoin(p, symbol -> (symbol.getName().equals("leftValue") || symbol.getName().equals("match"))))
+                .on(p -> buildProjectedSemiJoin(p, symbol -> (symbol.name().equals("leftValue") || symbol.name().equals("match"))))
                 .doesNotFire();
     }
 
@@ -69,16 +68,15 @@ public class TestPruneSemiJoinColumns
     public void testValueNotNeeded()
     {
         tester().assertThat(new PruneSemiJoinColumns())
-                .on(p -> buildProjectedSemiJoin(p, symbol -> symbol.getName().equals("match")))
+                .on(p -> buildProjectedSemiJoin(p, symbol -> symbol.name().equals("match")))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("match", expression(new SymbolReference(BOOLEAN, "match"))),
+                                ImmutableMap.of("match", expression(new Reference(BOOLEAN, "match"))),
                                 semiJoin("leftKey", "rightKey", "match",
                                         strictProject(
                                                 ImmutableMap.of(
-                                                        "leftKey", expression(new SymbolReference(BIGINT, "leftKey")),
-                                                        "leftKeyHash", expression(new SymbolReference(BIGINT, "leftKeyHash"))),
-                                                values("leftKey", "leftKeyHash", "leftValue")),
+                                                        "leftKey", expression(new Reference(BIGINT, "leftKey"))),
+                                                values("leftKey", "leftValue")),
                                         values("rightKey"))));
     }
 
@@ -86,10 +84,9 @@ public class TestPruneSemiJoinColumns
     {
         Symbol match = p.symbol("match");
         Symbol leftKey = p.symbol("leftKey");
-        Symbol leftKeyHash = p.symbol("leftKeyHash");
         Symbol leftValue = p.symbol("leftValue");
         Symbol rightKey = p.symbol("rightKey");
-        List<Symbol> outputs = ImmutableList.of(match, leftKey, leftKeyHash, leftValue);
+        List<Symbol> outputs = ImmutableList.of(match, leftKey, leftValue);
         return p.project(
                 Assignments.identity(
                         outputs.stream()
@@ -99,9 +96,7 @@ public class TestPruneSemiJoinColumns
                         leftKey,
                         rightKey,
                         match,
-                        Optional.of(leftKeyHash),
-                        Optional.empty(),
-                        p.values(leftKey, leftKeyHash, leftValue),
+                        p.values(leftKey, leftValue),
                         p.values(rightKey)));
     }
 }

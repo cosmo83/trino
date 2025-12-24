@@ -21,6 +21,7 @@ import io.trino.operator.project.PageProcessor;
 import io.trino.spi.Page;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.connector.SourcePage;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
@@ -68,7 +69,7 @@ public class BenchmarkRowToRowCast
                 SESSION,
                 new DriverYieldSignal(),
                 newSimpleAggregatedMemoryContext().newLocalMemoryContext(PageProcessor.class.getSimpleName()),
-                data.getPage()));
+                SourcePage.create(data.getPage())));
     }
 
     @SuppressWarnings("FieldMayBeFinal")
@@ -141,7 +142,7 @@ public class BenchmarkRowToRowCast
         new BenchmarkRowToRowCast().benchmark(data);
     }
 
-    public static void main(String[] args)
+    static void main()
             throws Exception
     {
         // assure the benchmarks are valid before running

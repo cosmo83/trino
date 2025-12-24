@@ -22,6 +22,7 @@ import io.trino.spi.Page;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.function.AggregationImplementation;
+import io.trino.spi.function.WindowAccumulator;
 import io.trino.spi.function.WindowIndex;
 import io.trino.spi.type.Type;
 import org.junit.jupiter.api.Test;
@@ -39,7 +40,7 @@ public class TestDoubleSumAggregation
     @Override
     protected Block[] getSequenceBlocks(int start, int length)
     {
-        BlockBuilder blockBuilder = DOUBLE.createBlockBuilder(null, length);
+        BlockBuilder blockBuilder = DOUBLE.createFixedSizeBlockBuilder(length);
         for (int i = start; i < start + length; i++) {
             DOUBLE.writeDouble(blockBuilder, i);
         }
@@ -74,7 +75,7 @@ public class TestDoubleSumAggregation
 
     protected static Block[] getSequenceBlocksForDoubleNaNTest(int start, int length)
     {
-        BlockBuilder blockBuilder = DOUBLE.createBlockBuilder(null, length);
+        BlockBuilder blockBuilder = DOUBLE.createFixedSizeBlockBuilder(length);
         for (int i = start; i < start + length - 5; i++) {
             DOUBLE.writeDouble(blockBuilder, i);
         }
@@ -87,7 +88,7 @@ public class TestDoubleSumAggregation
 
     protected static Block[] getSequenceBlocksForDoubleInfinityTest(int start, int length)
     {
-        BlockBuilder blockBuilder = DOUBLE.createBlockBuilder(null, length);
+        BlockBuilder blockBuilder = DOUBLE.createFixedSizeBlockBuilder(length);
         for (int i = start; i < start + length - 5; i++) {
             DOUBLE.writeDouble(blockBuilder, i);
         }
@@ -127,8 +128,8 @@ public class TestDoubleSumAggregation
         ResolvedFunction resolvedFunction = functionResolution.resolveFunction(getFunctionName(), fromTypes(getFunctionParameterTypes()));
         AggregationImplementation aggregationImplementation = functionResolution.getPlannerContext().getFunctionManager().getAggregationImplementation(resolvedFunction);
         WindowAccumulator aggregation = createWindowAccumulator(resolvedFunction, aggregationImplementation);
-        assertThat(resolvedFunction.getSignature().getReturnType().toString().contains("double")).isTrue();
-        assertThat(resolvedFunction.getSignature().getName().toString().contains("sum")).isTrue();
+        assertThat(resolvedFunction.signature().getReturnType().toString()).contains("double");
+        assertThat(resolvedFunction.signature().getName().toString()).contains("sum");
         int oldStart = 0;
         int oldWidth = 0;
         for (int start = 0; start < totalPositions; ++start) {
@@ -152,9 +153,9 @@ public class TestDoubleSumAggregation
             oldStart = start;
             oldWidth = width;
 
-            Type outputType = resolvedFunction.getSignature().getReturnType();
+            Type outputType = resolvedFunction.signature().getReturnType();
             BlockBuilder blockBuilder = outputType.createBlockBuilder(null, 1000);
-            aggregation.evaluateFinal(blockBuilder);
+            aggregation.output(blockBuilder);
             Block block = blockBuilder.build();
 
             assertThat(makeValidityAssertion(expectedValues[start]).apply(
@@ -192,9 +193,9 @@ public class TestDoubleSumAggregation
             oldStart = start;
             oldWidth = width;
 
-            Type outputType = resolvedFunction.getSignature().getReturnType();
+            Type outputType = resolvedFunction.signature().getReturnType();
             BlockBuilder blockBuilder = outputType.createBlockBuilder(null, 1000);
-            aggregation2.evaluateFinal(blockBuilder);
+            aggregation2.output(blockBuilder);
             Block block = blockBuilder.build();
 
             assertThat(makeValidityAssertion(expectedValues2[start]).apply(

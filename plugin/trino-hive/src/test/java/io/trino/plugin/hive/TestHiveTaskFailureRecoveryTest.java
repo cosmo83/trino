@@ -13,10 +13,10 @@
  */
 package io.trino.plugin.hive;
 
+import com.google.inject.Module;
 import io.trino.operator.RetryPolicy;
-import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.exchange.filesystem.containers.MinioStorage;
-import io.trino.plugin.hive.containers.HiveMinioDataLake;
+import io.trino.plugin.hive.containers.Hive3MinioDataLake;
 import io.trino.plugin.hive.s3.S3HiveQueryRunner;
 import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
@@ -42,31 +42,30 @@ public class TestHiveTaskFailureRecoveryTest
         super(RetryPolicy.TASK);
     }
 
-    private HiveMinioDataLake hiveMinioDataLake;
+    private Hive3MinioDataLake hiveMinioDataLake;
     private MinioStorage minioStorage;
 
     @Override
     protected QueryRunner createQueryRunner(
             List<TpchTable<?>> requiredTpchTables,
             Map<String, String> configProperties,
-            Map<String, String> coordinatorProperties)
+            Map<String, String> coordinatorProperties,
+            Module failureInjectionModule)
             throws Exception
     {
         String bucketName = "test-hive-insert-overwrite-" + randomNameSuffix(); // randomizing bucket name to ensure cached TrinoS3FileSystem objects are not reused
-        this.hiveMinioDataLake = new HiveMinioDataLake(bucketName);
+        this.hiveMinioDataLake = closeAfterClass(new Hive3MinioDataLake(bucketName));
         hiveMinioDataLake.start();
 
-        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomNameSuffix());
+        this.minioStorage = closeAfterClass(new MinioStorage("test-exchange-spooling-" + randomNameSuffix()));
         minioStorage.start();
 
         return S3HiveQueryRunner.builder(hiveMinioDataLake)
-                .setInitialTables(requiredTpchTables)
                 .setExtraProperties(configProperties)
                 .setCoordinatorProperties(coordinatorProperties)
-                .setAdditionalSetup(runner -> {
-                    runner.installPlugin(new FileSystemExchangePlugin());
-                    runner.loadExchangeManager("filesystem", getExchangeManagerProperties(minioStorage));
-                })
+                .withExchange("filesystem", getExchangeManagerProperties(minioStorage))
+                .setAdditionalModule(failureInjectionModule)
+                .setInitialTables(requiredTpchTables)
                 .build();
     }
 
@@ -74,13 +73,7 @@ public class TestHiveTaskFailureRecoveryTest
     public void destroy()
             throws Exception
     {
-        if (hiveMinioDataLake != null) {
-            hiveMinioDataLake.close();
-            hiveMinioDataLake = null;
-        }
-        if (minioStorage != null) {
-            minioStorage.close();
-            minioStorage = null;
-        }
+        hiveMinioDataLake = null; // closed by closeAfterClass
+        minioStorage = null; // closed by closeAfterClass
     }
 }
