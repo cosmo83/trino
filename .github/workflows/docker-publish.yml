@@ -99,55 +99,52 @@ jobs:
           echo "Disk space after Maven clean:"
           df -h
 
-      - name: Prepare build context
+      - name: Build Docker images
         run: |
           cd core/docker
-          TRINO_VERSION="${{ steps.version.outputs.trino_version }}"
-          WORK_DIR="$(mktemp -d)"
+          # Build images for all architectures using the existing build script
+          ./build.sh -a amd64,arm64,ppc64le
+          echo "Disk space after Docker build:"
+          df -h
 
-          trino_server="../../core/trino-server/target/trino-server-${TRINO_VERSION}.tar.gz"
-          trino_client="../../client/trino-cli/target/trino-cli-${TRINO_VERSION}-executable.jar"
-
-          cp "$trino_server" "${WORK_DIR}/"
-          cp "$trino_client" "${WORK_DIR}/trino-cli.jar"
-          tar -C "${WORK_DIR}" -xzf "${WORK_DIR}/trino-server-${TRINO_VERSION}.tar.gz"
-          rm "${WORK_DIR}/trino-server-${TRINO_VERSION}.tar.gz"
-          mv "${WORK_DIR}/trino-server-${TRINO_VERSION}" "${WORK_DIR}/trino-server"
-          cp -R bin "${WORK_DIR}/trino-server"
-          cp -R default "${WORK_DIR}/"
-
-          echo "BUILD_CONTEXT=${WORK_DIR}" >> $GITHUB_ENV
-
-      - name: Build and push Docker image
-        id: build-and-push
-        uses: docker/build-push-action@v6
-        env:
-          TEMURIN_RELEASE: ${{ hashFiles('core/.temurin-release') != '' && 'jdk-25.0.1+6' || 'jdk-25.0.1+6' }}
-        with:
-          context: ${{ env.BUILD_CONTEXT }}
-          file: core/docker/Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/ppc64le
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            ARCH=amd64
-            JDK_VERSION=jdk-25.0.1+6
-            JDK_DOWNLOAD_LINK=https://api.adoptium.net/v3/binary/version/jdk-25.0.1+6/linux/x64/jdk/hotspot/normal/eclipse?project=jdk
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Generate artifact attestation
+      - name: Tag and push Docker images
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          subject-digest: ${{ steps.build-and-push.outputs.digest }}
-          push-to-registry: true
-
-      - name: Cleanup build context
-        if: always()
         run: |
-          if [ -n "${{ env.BUILD_CONTEXT }}" ] && [ -d "${{ env.BUILD_CONTEXT }}" ]; then
-            rm -rf "${{ env.BUILD_CONTEXT }}"
-          fi
+          TRINO_VERSION="${{ steps.version.outputs.trino_version }}"
+
+          # Split tags from metadata action
+          TAGS="${{ steps.meta.outputs.tags }}"
+
+          # For each architecture, tag and push
+          for ARCH in amd64 arm64 ppc64le; do
+            echo "Processing $ARCH images..."
+            SOURCE_TAG="trino:${TRINO_VERSION}-${ARCH}"
+
+            # Tag and push each tag from metadata
+            echo "$TAGS" | while IFS= read -r TAG; do
+              if [ -n "$TAG" ]; then
+                TARGET_TAG="${TAG}-${ARCH}"
+                echo "Tagging ${SOURCE_TAG} as ${TARGET_TAG}"
+                docker tag "${SOURCE_TAG}" "${TARGET_TAG}"
+                echo "Pushing ${TARGET_TAG}"
+                docker push "${TARGET_TAG}"
+              fi
+            done
+          done
+
+      - name: Create and push manifest
+        if: github.event_name != 'pull_request'
+        run: |
+          TAGS="${{ steps.meta.outputs.tags }}"
+
+          # Create and push manifest for each tag
+          echo "$TAGS" | while IFS= read -r TAG; do
+            if [ -n "$TAG" ]; then
+              echo "Creating manifest for ${TAG}"
+              docker buildx imagetools create \
+                -t "${TAG}" \
+                "${TAG}-amd64" \
+                "${TAG}-arm64" \
+                "${TAG}-ppc64le"
+            fi
+          done
