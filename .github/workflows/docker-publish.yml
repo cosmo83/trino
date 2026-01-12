@@ -54,7 +54,7 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: arm64,ppc64le
+          platforms: arm64
 
       - name: Log into registry ${{ env.REGISTRY }}
         if: github.event_name != 'pull_request'
@@ -102,26 +102,41 @@ jobs:
       - name: Build Docker images
         run: |
           cd core/docker
-          # Build images for all architectures using the existing build script
-          ./build.sh -a amd64,arm64,ppc64le
+          # Build images for amd64 and arm64 architectures using the existing build script
+          ./build.sh -a amd64,arm64
           echo "Disk space after Docker build:"
           df -h
 
       - name: Tag and push Docker images
         if: github.event_name != 'pull_request'
         run: |
+          set -euo pipefail
           TRINO_VERSION="${{ steps.version.outputs.trino_version }}"
 
-          # Split tags from metadata action
+          # Get tags from metadata action
           TAGS="${{ steps.meta.outputs.tags }}"
 
+          echo "=== Available tags from metadata ==="
+          echo "$TAGS"
+          echo "===================================="
+
+          echo "=== Available Docker images ==="
+          docker images | grep trino
+          echo "================================"
+
           # For each architecture, tag and push
-          for ARCH in amd64 arm64 ppc64le; do
+          for ARCH in amd64 arm64; do
             echo "Processing $ARCH images..."
             SOURCE_TAG="trino:${TRINO_VERSION}-${ARCH}"
 
+            # Check if source image exists
+            if ! docker image inspect "${SOURCE_TAG}" > /dev/null 2>&1; then
+              echo "ERROR: Source image ${SOURCE_TAG} not found!"
+              continue
+            fi
+
             # Tag and push each tag from metadata
-            echo "$TAGS" | while IFS= read -r TAG; do
+            while IFS= read -r TAG; do
               if [ -n "$TAG" ]; then
                 TARGET_TAG="${TAG}-${ARCH}"
                 echo "Tagging ${SOURCE_TAG} as ${TARGET_TAG}"
@@ -129,22 +144,27 @@ jobs:
                 echo "Pushing ${TARGET_TAG}"
                 docker push "${TARGET_TAG}"
               fi
-            done
+            done <<< "$TAGS"
           done
 
       - name: Create and push manifest
         if: github.event_name != 'pull_request'
         run: |
+          set -euo pipefail
           TAGS="${{ steps.meta.outputs.tags }}"
 
+          echo "=== Creating multi-arch manifests ==="
+
           # Create and push manifest for each tag
-          echo "$TAGS" | while IFS= read -r TAG; do
+          while IFS= read -r TAG; do
             if [ -n "$TAG" ]; then
               echo "Creating manifest for ${TAG}"
               docker buildx imagetools create \
                 -t "${TAG}" \
                 "${TAG}-amd64" \
-                "${TAG}-arm64" \
-                "${TAG}-ppc64le"
+                "${TAG}-arm64"
+              echo "✓ Manifest created for ${TAG}"
             fi
-          done
+          done <<< "$TAGS"
+
+          echo "=== All manifests created successfully ==="
