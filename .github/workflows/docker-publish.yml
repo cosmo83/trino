@@ -76,7 +76,7 @@ jobs:
       - name: Build Trino artifacts
         run: |
           export MAVEN_OPTS="-Xmx3G -XX:+ExitOnOutOfMemoryError"
-          ./mvnw clean install -B -V -T 1C -DskipTests -Dmaven.source.skip=true -Dair.check.skip-all -pl core/trino-server,client/trino-cli -am
+          ./mvnw clean install -B -V -T 1C -DskipTests -Dmaven.source.skip=true -Dair.check.skip-all -pl '!:trino-docs'
 
       - name: Prepare build context
         run: |
