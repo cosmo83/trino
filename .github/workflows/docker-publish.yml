@@ -1,0 +1,132 @@
+name: Docker Build and Push
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,ppc64le
+
+      - name: Log into registry ${{ env.REGISTRY }}
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Get Trino version
+        id: version
+        run: |
+          TRINO_VERSION=$(./mvnw -f pom.xml --quiet help:evaluate -Dexpression=project.version -DforceStdout --raw-streams)
+          echo "trino_version=${TRINO_VERSION}" >> $GITHUB_OUTPUT
+          echo "Trino version: ${TRINO_VERSION}"
+
+      - name: Build Trino artifacts
+        run: |
+          export MAVEN_OPTS="-Xmx3G -XX:+ExitOnOutOfMemoryError"
+          ./mvnw clean install -B -V -T 1C -DskipTests -Dmaven.source.skip=true -Dair.check.skip-all -pl core/trino-server,client/trino-cli -am
+
+      - name: Prepare build context
+        run: |
+          cd core/docker
+          TRINO_VERSION="${{ steps.version.outputs.trino_version }}"
+          WORK_DIR="$(mktemp -d)"
+
+          trino_server="../../core/trino-server/target/trino-server-${TRINO_VERSION}.tar.gz"
+          trino_client="../../client/trino-cli/target/trino-cli-${TRINO_VERSION}-executable.jar"
+
+          cp "$trino_server" "${WORK_DIR}/"
+          cp "$trino_client" "${WORK_DIR}/trino-cli.jar"
+          tar -C "${WORK_DIR}" -xzf "${WORK_DIR}/trino-server-${TRINO_VERSION}.tar.gz"
+          rm "${WORK_DIR}/trino-server-${TRINO_VERSION}.tar.gz"
+          mv "${WORK_DIR}/trino-server-${TRINO_VERSION}" "${WORK_DIR}/trino-server"
+          cp -R bin "${WORK_DIR}/trino-server"
+          cp -R default "${WORK_DIR}/"
+
+          echo "BUILD_CONTEXT=${WORK_DIR}" >> $GITHUB_ENV
+
+      - name: Build and push Docker image
+        id: build-and-push
+        uses: docker/build-push-action@v6
+        env:
+          TEMURIN_RELEASE: ${{ hashFiles('core/.temurin-release') != '' && 'jdk-25.0.1+6' || 'jdk-25.0.1+6' }}
+        with:
+          context: ${{ env.BUILD_CONTEXT }}
+          file: core/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64,linux/ppc64le
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            ARCH=amd64
+            JDK_VERSION=jdk-25.0.1+6
+            JDK_DOWNLOAD_LINK=https://api.adoptium.net/v3/binary/version/jdk-25.0.1+6/linux/x64/jdk/hotspot/normal/eclipse?project=jdk
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate artifact attestation
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build-and-push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Cleanup build context
+        if: always()
+        run: |
+          if [ -n "${{ env.BUILD_CONTEXT }}" ] && [ -d "${{ env.BUILD_CONTEXT }}" ]; then
+            rm -rf "${{ env.BUILD_CONTEXT }}"
+          fi
